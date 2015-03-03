@@ -473,7 +473,7 @@ public class TaskLog {
    * @return the number of bytes to cap the log files at
    */
   public static long getTaskLogLength(JobConf conf) {
-    return conf.getLong(JobContext.TASK_USERLOG_LIMIT, 0) * 1024;
+    return conf.getLong(JobContext.TASK_USERLOG_LIMIT, 8000) * 1024;
   }
 
   

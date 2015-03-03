@@ -377,6 +377,29 @@ abstract public class Shell {
     return winUtilsPath;
   }
 
+  public static boolean isSetCgroupSupported(String value) {
+	if (Shell.WINDOWS) {
+		return false;
+	}
+
+	ShellCommandExecutor shexec = null;
+	boolean setcgroupSupported = true;
+	try {
+		String[] args = {"cgexec", "-g" , value, "echo"};
+		shexec = new ShellCommandExecutor(args);
+		shexec.execute();
+	} catch (IOException ioe) {
+		LOG.info("cgroup is not available on this machine. So not using it.");
+		setcgroupSupported = false;
+	} finally { // handle the exit code
+		if (LOG.isDebugEnabled()) {
+			LOG.debug("cgroup exited with exit code "
+				+ (shexec != null ? shexec.getExitCode() : "(null executor)"));
+		}   
+	}   
+	return setcgroupSupported;
+  }
+
   public static final boolean isSetsidAvailable = isSetsidSupported();
   private static boolean isSetsidSupported() {
     if (Shell.WINDOWS) {

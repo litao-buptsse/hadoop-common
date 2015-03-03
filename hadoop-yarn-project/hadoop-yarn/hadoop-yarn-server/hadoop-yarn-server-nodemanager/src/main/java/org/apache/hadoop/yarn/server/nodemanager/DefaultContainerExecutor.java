@@ -33,6 +33,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileContext;
@@ -62,6 +63,8 @@ public class DefaultContainerExecutor extends ContainerExecutor {
 
   private static final int WIN_MAX_PATH = 260;
 
+  private String cgexecGParamValue;
+
   private final FileContext lfs;
 
   public DefaultContainerExecutor() {
@@ -74,6 +77,16 @@ public class DefaultContainerExecutor extends ContainerExecutor {
 
   DefaultContainerExecutor(FileContext lfs) {
     this.lfs = lfs;
+  }
+
+  @Override
+  public void setConf(Configuration conf) {
+	super.setConf(conf);
+	String v = conf.getTrimmed(YarnConfiguration.NM_DEFAULT_CONTAINER_EXECUTOR_CGEXEC_G_PARAM_VALUE);
+	if (v != null && !v.isEmpty()){
+		cgexecGParamValue = v;
+		LOG.debug(String.format("Init DefaultContainerExecutor with cgexecGParamValue = '%s' ", v));
+	}
   }
 
   @Override
@@ -318,6 +331,11 @@ public class DefaultContainerExecutor extends ContainerExecutor {
         pout.println("echo $$ > " + pidFile.toString() + ".tmp");
         pout.println("/bin/mv -f " + pidFile.toString() + ".tmp " + pidFile);
         String exec = Shell.isSetsidAvailable? "exec setsid" : "exec";
+		if (cgexecGParamValue != null) {
+		  if (Shell.isSetCgroupSupported(cgexecGParamValue)) {
+			exec = exec + " cgexec -g " + cgexecGParamValue;
+		  }
+		}
         pout.println(exec + " /bin/bash \"" +
             launchDst.toUri().getPath().toString() + "\"");
       } finally {

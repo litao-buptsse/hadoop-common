@@ -266,7 +266,7 @@ public class ContainerLaunch implements Callable<Integer> {
           localResources);
         
         // Write out the environment
-        writeLaunchEnv(containerScriptOutStream, environment, localResources,
+        writeLaunchEnv(containerID.getId(), containerScriptOutStream, environment, localResources,
             launchContext.getCommands());
         
         // /////////// End of writing out container-script
@@ -546,9 +546,12 @@ public class ContainerLaunch implements Callable<Integer> {
     protected abstract void link(Path src, Path dst) throws IOException;
 
     protected abstract void mkdir(Path path) throws IOException;
+
+	public abstract void setContainerId(int id);
   }
 
   private static final class UnixShellScriptBuilder extends ShellScriptBuilder {
+	private int container_id;
 
     private void errorCheck() {
       line("hadoop_shell_errorcode=$?");
@@ -563,9 +566,19 @@ public class ContainerLaunch implements Callable<Integer> {
       line();
     }
 
+ 	@Override
+	public void setContainerId(int id) {
+	  container_id = id;
+	}   
+
     @Override
     public void command(List<String> command) {
-      line("exec /bin/bash -c \"", StringUtils.join(" ", command), "\"");
+	  if (container_id == 1) { // for aapplication master
+		line("exec /bin/bash -c \"", StringUtils.join(" ", command), "\"");
+	  }
+	  else {
+		line(" ", StringUtils.join(" ", command), " ");
+	  }
       errorCheck();
     }
 
@@ -603,6 +616,11 @@ public class ContainerLaunch implements Callable<Integer> {
       line("@setlocal");
       line();
     }
+
+	@Override
+	public void setContainerId(int id) {
+		// for windows nothing to do
+	}
 
     @Override
     public void command(List<String> command) throws IOException {
@@ -776,11 +794,12 @@ public class ContainerLaunch implements Callable<Integer> {
     }
   }
     
-  static void writeLaunchEnv(OutputStream out,
+  static void writeLaunchEnv(int id, OutputStream out,
       Map<String,String> environment, Map<Path,List<String>> resources,
       List<String> command)
       throws IOException {
     ShellScriptBuilder sb = ShellScriptBuilder.create();
+	sb.setContainerId(id);
     if (environment != null) {
       for (Map.Entry<String,String> env : environment.entrySet()) {
         sb.env(env.getKey().toString(), env.getValue().toString());

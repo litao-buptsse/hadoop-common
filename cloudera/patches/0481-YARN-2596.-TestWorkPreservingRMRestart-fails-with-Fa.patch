@@ -1,0 +1,29 @@
+From dbbdd46e948e36f0597f6e77f5270dc4022bdc69 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 24 Sep 2014 15:23:31 -0700
+Subject: [PATCH 481/813] YARN-2596. TestWorkPreservingRMRestart fails with
+ FairScheduler. (kasha) (cherry picked from commit
+ 39c87344e16a08ab69e25345b3bce92aec92db47) (cherry
+ picked from commit
+ 30165d4cdd88f191a98f8bb0594669585d75ae81)
+
+---
+ .../scheduler/SchedulerApplicationAttempt.java     |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+index 933f456..8580cf1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+@@ -81,7 +81,7 @@
+   protected final Resource currentReservation = Resource.newInstance(0, 0);
+   private Resource resourceLimit = Resource.newInstance(0, 0);
+   protected Resource currentConsumption = Resource.newInstance(0, 0);
+-  private Resource amResource;
++  private Resource amResource = Resources.none();
+   private boolean unmanagedAM = true;
+   private boolean amRunning = false;
+ 
+-- 
+1.7.9.5
+

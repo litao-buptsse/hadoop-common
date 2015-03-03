@@ -1,0 +1,406 @@
+From 073ee60d6123b99f9faa16247f97d5619e47f91d Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:43 +0000
+Subject: [PATCH 225/813] HADOOP-10793. KeyShell args should use single-dash
+ style. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619542 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7fe5320e1511faee72df051df3f7d6a0f8b0beca)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/crypto/key/KeyShell.java     |   84 ++++++++++----------
+ .../org/apache/hadoop/crypto/key/TestKeyShell.java |   48 +++++------
+ 2 files changed, 66 insertions(+), 66 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
+index dd31909..18c7f05 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
+@@ -38,9 +38,9 @@
+  */
+ public class KeyShell extends Configured implements Tool {
+   final static private String USAGE_PREFIX = "Usage: hadoop key " +
+-		"[generic options]\n";
++      "[generic options]\n";
+   final static private String COMMANDS =
+-      "   [--help]\n" +
++      "   [-help]\n" +
+       "   [" + CreateCommand.USAGE + "]\n" +
+       "   [" + RollCommand.USAGE + "]\n" +
+       "   [" + DeleteCommand.USAGE + "]\n" +
+@@ -90,11 +90,11 @@ public int run(String[] args) throws Exception {
+   /**
+    * Parse the command line arguments and initialize the data
+    * <pre>
+-   * % hadoop key create keyName [--size size] [--cipher algorithm]
+-   *    [--provider providerPath]
+-   * % hadoop key roll keyName [--provider providerPath]
++   * % hadoop key create keyName [-size size] [-cipher algorithm]
++   *    [-provider providerPath]
++   * % hadoop key roll keyName [-provider providerPath]
+    * % hadoop key list [-provider providerPath]
+-   * % hadoop key delete keyName [--provider providerPath] [-i]
++   * % hadoop key delete keyName [-provider providerPath] [-i]
+    * </pre>
+    * @param args Command line arguments.
+    * @return 0 on success, 1 on failure.
+@@ -107,47 +107,47 @@ private int init(String[] args) throws IOException {
+     for (int i = 0; i < args.length; i++) { // parse command line
+       boolean moreTokens = (i < args.length - 1);
+       if (args[i].equals("create")) {
+-        String keyName = "--help";
++        String keyName = "-help";
+         if (moreTokens) {
+           keyName = args[++i];
+         }
+ 
+         command = new CreateCommand(keyName, options);
+-        if ("--help".equals(keyName)) {
++        if ("-help".equals(keyName)) {
+           printKeyShellUsage();
+           return 1;
+         }
+       } else if (args[i].equals("delete")) {
+-        String keyName = "--help";
++        String keyName = "-help";
+         if (moreTokens) {
+           keyName = args[++i];
+         }
+ 
+         command = new DeleteCommand(keyName);
+-        if ("--help".equals(keyName)) {
++        if ("-help".equals(keyName)) {
+           printKeyShellUsage();
+           return 1;
+         }
+       } else if (args[i].equals("roll")) {
+-        String keyName = "--help";
++        String keyName = "-help";
+         if (moreTokens) {
+           keyName = args[++i];
+         }
+ 
+         command = new RollCommand(keyName);
+-        if ("--help".equals(keyName)) {
++        if ("-help".equals(keyName)) {
+           printKeyShellUsage();
+           return 1;
+         }
+       } else if ("list".equals(args[i])) {
+         command = new ListCommand();
+-      } else if ("--size".equals(args[i]) && moreTokens) {
++      } else if ("-size".equals(args[i]) && moreTokens) {
+         options.setBitLength(Integer.parseInt(args[++i]));
+-      } else if ("--cipher".equals(args[i]) && moreTokens) {
++      } else if ("-cipher".equals(args[i]) && moreTokens) {
+         options.setCipher(args[++i]);
+-      } else if ("--description".equals(args[i]) && moreTokens) {
++      } else if ("-description".equals(args[i]) && moreTokens) {
+         options.setDescription(args[++i]);
+-      } else if ("--attr".equals(args[i]) && moreTokens) {
++      } else if ("-attr".equals(args[i]) && moreTokens) {
+         final String attrval[] = args[++i].split("=", 2);
+         final String attr = attrval[0].trim();
+         final String val = attrval[1].trim();
+@@ -164,14 +164,14 @@ private int init(String[] args) throws IOException {
+           return 1;
+         }
+         attributes.put(attr, val);
+-      } else if ("--provider".equals(args[i]) && moreTokens) {
++      } else if ("-provider".equals(args[i]) && moreTokens) {
+         userSuppliedProvider = true;
+         getConf().set(KeyProviderFactory.KEY_PROVIDER_PATH, args[++i]);
+-      } else if ("--metadata".equals(args[i])) {
++      } else if ("-metadata".equals(args[i])) {
+         getConf().setBoolean(LIST_METADATA, true);
+-      } else if ("-i".equals(args[i]) || ("--interactive".equals(args[i]))) {
++      } else if ("-i".equals(args[i]) || ("-interactive".equals(args[i]))) {
+         interactive = true;
+-      } else if ("--help".equals(args[i])) {
++      } else if ("-help".equals(args[i])) {
+         printKeyShellUsage();
+         return 1;
+       } else {
+@@ -258,11 +258,11 @@ protected void warnIfTransientProvider() {
+ 
+   private class ListCommand extends Command {
+     public static final String USAGE =
+-        "list [--provider <provider>] [--metadata] [--help]";
++        "list [-provider <provider>] [-metadata] [-help]";
+     public static final String DESC =
+         "The list subcommand displays the keynames contained within\n" +
+         "a particular provider as configured in core-site.xml or\n" +
+-        "specified with the --provider argument. --metadata displays\n" +
++        "specified with the -provider argument. -metadata displays\n" +
+         "the metadata.";
+ 
+     private boolean metadata = false;
+@@ -272,9 +272,9 @@ public boolean validate() {
+       provider = getKeyProvider();
+       if (provider == null) {
+         out.println("There are no non-transient KeyProviders configured.\n"
+-          + "Use the --provider option to specify a provider. If you\n"
++          + "Use the -provider option to specify a provider. If you\n"
+           + "want to list a transient provider then you must use the\n"
+-          + "--provider argument.");
++          + "-provider argument.");
+         rc = false;
+       }
+       metadata = getConf().getBoolean(LIST_METADATA, false);
+@@ -310,10 +310,10 @@ public String getUsage() {
+   }
+ 
+   private class RollCommand extends Command {
+-    public static final String USAGE = "roll <keyname> [--provider <provider>] [--help]";
++    public static final String USAGE = "roll <keyname> [-provider <provider>] [-help]";
+     public static final String DESC =
+       "The roll subcommand creates a new version for the specified key\n" +
+-      "within the provider indicated using the --provider argument\n";
++      "within the provider indicated using the -provider argument\n";
+ 
+     String keyName = null;
+ 
+@@ -326,13 +326,13 @@ public boolean validate() {
+       provider = getKeyProvider();
+       if (provider == null) {
+         out.println("There are no valid KeyProviders configured. The key\n" +
+-          "has not been rolled. Use the --provider option to specify\n" +
++          "has not been rolled. Use the -provider option to specify\n" +
+           "a provider.");
+         rc = false;
+       }
+       if (keyName == null) {
+         out.println("Please provide a <keyname>.\n" +
+-          "See the usage description by using --help.");
++          "See the usage description by using -help.");
+         rc = false;
+       }
+       return rc;
+@@ -367,11 +367,11 @@ public String getUsage() {
+   }
+ 
+   private class DeleteCommand extends Command {
+-    public static final String USAGE = "delete <keyname> [--provider <provider>] [--help]";
++    public static final String USAGE = "delete <keyname> [-provider <provider>] [-help]";
+     public static final String DESC =
+         "The delete subcommand deletes all versions of the key\n" +
+         "specified by the <keyname> argument from within the\n" +
+-        "provider specified --provider.";
++        "provider specified -provider.";
+ 
+     String keyName = null;
+     boolean cont = true;
+@@ -385,12 +385,12 @@ public boolean validate() {
+       provider = getKeyProvider();
+       if (provider == null) {
+         out.println("There are no valid KeyProviders configured. Nothing\n"
+-          + "was deleted. Use the --provider option to specify a provider.");
++          + "was deleted. Use the -provider option to specify a provider.");
+         return false;
+       }
+       if (keyName == null) {
+         out.println("There is no keyName specified. Please specify a " +
+-            "<keyname>. See the usage description with --help.");
++            "<keyname>. See the usage description with -help.");
+         return false;
+       }
+       if (interactive) {
+@@ -436,19 +436,19 @@ public String getUsage() {
+ 
+   private class CreateCommand extends Command {
+     public static final String USAGE =
+-      "create <keyname> [--cipher <cipher>] [--size <size>]\n" +
+-      "                     [--description <description>]\n" +
+-      "                     [--attr <attribute=value>]\n" +
+-      "                     [--provider <provider>] [--help]";
++      "create <keyname> [-cipher <cipher>] [-size <size>]\n" +
++      "                     [-description <description>]\n" +
++      "                     [-attr <attribute=value>]\n" +
++      "                     [-provider <provider>] [-help]";
+     public static final String DESC =
+       "The create subcommand creates a new key for the name specified\n" +
+       "by the <keyname> argument within the provider specified by the\n" +
+-      "--provider argument. You may specify a cipher with the --cipher\n" +
++      "-provider argument. You may specify a cipher with the -cipher\n" +
+       "argument. The default cipher is currently \"AES/CTR/NoPadding\".\n" +
+       "The default keysize is 256. You may specify the requested key\n" +
+-      "length using the --size argument. Arbitrary attribute=value\n" +
+-      "style attributes may be specified using the --attr argument.\n" +
+-      "--attr may be specified multiple times, once per attribute.\n";
++      "length using the -size argument. Arbitrary attribute=value\n" +
++      "style attributes may be specified using the -attr argument.\n" +
++      "-attr may be specified multiple times, once per attribute.\n";
+ 
+     final String keyName;
+     final Options options;
+@@ -463,13 +463,13 @@ public boolean validate() {
+       provider = getKeyProvider();
+       if (provider == null) {
+         out.println("There are no valid KeyProviders configured. No key\n" +
+-          " was created. You can use the --provider option to specify\n" +
++          " was created. You can use the -provider option to specify\n" +
+           " a provider to use.");
+         rc = false;
+       }
+       if (keyName == null) {
+         out.println("Please provide a <keyname>. See the usage description" +
+-          " with --help.");
++          " with -help.");
+         rc = false;
+       }
+       return rc;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
+index e22949e..1771504 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
+@@ -73,7 +73,7 @@ public void cleanUp() throws Exception {
+   private void deleteKey(KeyShell ks, String keyName) throws Exception {
+     int rc;
+     outContent.reset();
+-    final String[] delArgs = {"delete", keyName, "--provider", jceksProvider};
++    final String[] delArgs = {"delete", keyName, "-provider", jceksProvider};
+     rc = ks.run(delArgs);
+     assertEquals(0, rc);
+     assertTrue(outContent.toString().contains(keyName + " has been " +
+@@ -90,8 +90,8 @@ private void deleteKey(KeyShell ks, String keyName) throws Exception {
+   private String listKeys(KeyShell ks, boolean wantMetadata) throws Exception {
+     int rc;
+     outContent.reset();
+-    final String[] listArgs = {"list", "--provider", jceksProvider };
+-    final String[] listArgsM = {"list", "--metadata", "--provider", jceksProvider };
++    final String[] listArgs = {"list", "-provider", jceksProvider };
++    final String[] listArgsM = {"list", "-metadata", "-provider", jceksProvider };
+     rc = ks.run(wantMetadata ? listArgsM : listArgs);
+     assertEquals(0, rc);
+     return outContent.toString();
+@@ -106,7 +106,7 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+     ks.setConf(new Configuration());
+ 
+     outContent.reset();
+-    final String[] args1 = {"create", keyName, "--provider", jceksProvider};
++    final String[] args1 = {"create", keyName, "-provider", jceksProvider};
+     rc = ks.run(args1);
+     assertEquals(0, rc);
+     assertTrue(outContent.toString().contains(keyName + " has been " +
+@@ -121,7 +121,7 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+     assertTrue(listOut.contains("created"));
+ 
+     outContent.reset();
+-    final String[] args2 = {"roll", keyName, "--provider", jceksProvider};
++    final String[] args2 = {"roll", keyName, "-provider", jceksProvider};
+     rc = ks.run(args2);
+     assertEquals(0, rc);
+     assertTrue(outContent.toString().contains("key1 has been successfully " +
+@@ -137,8 +137,8 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+   @Test
+   public void testKeySuccessfulCreationWithDescription() throws Exception {
+     outContent.reset();
+-    final String[] args1 = {"create", "key1", "--provider", jceksProvider,
+-                      "--description", "someDescription"};
++    final String[] args1 = {"create", "key1", "-provider", jceksProvider,
++                      "-description", "someDescription"};
+     int rc = 0;
+     KeyShell ks = new KeyShell();
+     ks.setConf(new Configuration());
+@@ -154,7 +154,7 @@ public void testKeySuccessfulCreationWithDescription() throws Exception {
+ 
+   @Test
+   public void testInvalidKeySize() throws Exception {
+-    final String[] args1 = {"create", "key1", "--size", "56", "--provider",
++    final String[] args1 = {"create", "key1", "-size", "56", "-provider",
+             jceksProvider};
+ 
+     int rc = 0;
+@@ -167,7 +167,7 @@ public void testInvalidKeySize() throws Exception {
+ 
+   @Test
+   public void testInvalidCipher() throws Exception {
+-    final String[] args1 = {"create", "key1", "--cipher", "LJM", "--provider",
++    final String[] args1 = {"create", "key1", "-cipher", "LJM", "-provider",
+             jceksProvider};
+ 
+     int rc = 0;
+@@ -180,7 +180,7 @@ public void testInvalidCipher() throws Exception {
+ 
+   @Test
+   public void testInvalidProvider() throws Exception {
+-    final String[] args1 = {"create", "key1", "--cipher", "AES", "--provider",
++    final String[] args1 = {"create", "key1", "-cipher", "AES", "-provider",
+       "sdff://file/tmp/keystore.jceks"};
+ 
+     int rc = 0;
+@@ -194,7 +194,7 @@ public void testInvalidProvider() throws Exception {
+ 
+   @Test
+   public void testTransientProviderWarning() throws Exception {
+-    final String[] args1 = {"create", "key1", "--cipher", "AES", "--provider",
++    final String[] args1 = {"create", "key1", "-cipher", "AES", "-provider",
+       "user:///"};
+ 
+     int rc = 0;
+@@ -224,8 +224,8 @@ public void testTransientProviderOnlyConfig() throws Exception {
+   @Test
+   public void testFullCipher() throws Exception {
+     final String keyName = "key1";
+-    final String[] args1 = {"create", keyName, "--cipher", "AES/CBC/pkcs5Padding",
+-        "--provider", jceksProvider};
++    final String[] args1 = {"create", keyName, "-cipher", "AES/CBC/pkcs5Padding",
++        "-provider", jceksProvider};
+ 
+     int rc = 0;
+     KeyShell ks = new KeyShell();
+@@ -245,8 +245,8 @@ public void testAttributes() throws Exception {
+     ks.setConf(new Configuration());
+ 
+     /* Simple creation test */
+-    final String[] args1 = {"create", "keyattr1", "--provider", jceksProvider,
+-            "--attr", "foo=bar"};
++    final String[] args1 = {"create", "keyattr1", "-provider", jceksProvider,
++            "-attr", "foo=bar"};
+     rc = ks.run(args1);
+     assertEquals(0, rc);
+     assertTrue(outContent.toString().contains("keyattr1 has been " +
+@@ -259,8 +259,8 @@ public void testAttributes() throws Exception {
+ 
+     /* Negative tests: no attribute */
+     outContent.reset();
+-    final String[] args2 = {"create", "keyattr2", "--provider", jceksProvider,
+-            "--attr", "=bar"};
++    final String[] args2 = {"create", "keyattr2", "-provider", jceksProvider,
++            "-attr", "=bar"};
+     rc = ks.run(args2);
+     assertEquals(1, rc);
+ 
+@@ -288,10 +288,10 @@ public void testAttributes() throws Exception {
+ 
+     /* Test several attrs together... */
+     outContent.reset();
+-    final String[] args3 = {"create", "keyattr3", "--provider", jceksProvider,
+-            "--attr", "foo = bar",
+-            "--attr", " glarch =baz  ",
+-            "--attr", "abc=def"};
++    final String[] args3 = {"create", "keyattr3", "-provider", jceksProvider,
++            "-attr", "foo = bar",
++            "-attr", " glarch =baz  ",
++            "-attr", "abc=def"};
+     rc = ks.run(args3);
+     assertEquals(0, rc);
+ 
+@@ -304,9 +304,9 @@ public void testAttributes() throws Exception {
+ 
+     /* Negative test - repeated attributes should fail */
+     outContent.reset();
+-    final String[] args4 = {"create", "keyattr4", "--provider", jceksProvider,
+-            "--attr", "foo=bar",
+-            "--attr", "foo=glarch"};
++    final String[] args4 = {"create", "keyattr4", "-provider", jceksProvider,
++            "-attr", "foo=bar",
++            "-attr", "foo=glarch"};
+     rc = ks.run(args4);
+     assertEquals(1, rc);
+ 
+-- 
+1.7.9.5
+

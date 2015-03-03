@@ -1,0 +1,283 @@
+From ae35d39e737b2c12dcad880331f3b72d9587e36f Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 19 Jul 2014 00:20:16 +0000
+Subject: [PATCH 372/813] YARN-2244. FairScheduler missing handling of
+ containers for unknown application attempts.
+ (Anubhav Dhoot via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611841 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9b72197e401dfe301a3fac89d6b0e094879f71dd)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+---
+ .../scheduler/AbstractYarnScheduler.java           |   17 ++++
+ .../scheduler/capacity/CapacityScheduler.java      |   16 ----
+ .../scheduler/fair/FairScheduler.java              |   16 ----
+ .../scheduler/fifo/FifoScheduler.java              |   18 ----
+ .../resourcemanager/TestApplicationCleanup.java    |  101 +++++++++++++++-----
+ 5 files changed, 92 insertions(+), 76 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+index 92588db..9728dc2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+@@ -144,6 +144,23 @@ public Resource getMaximumResourceCapability() {
+     return maximumAllocation;
+   }
+ 
++  protected void containerLaunchedOnNode(ContainerId containerId,
++                                         SchedulerNode node) {
++    // Get the application for the finished container
++    SchedulerApplicationAttempt application = getCurrentAttemptForContainer
++        (containerId);
++    if (application == null) {
++      LOG.info("Unknown application "
++          + containerId.getApplicationAttemptId().getApplicationId()
++          + " launched container " + containerId + " on node: " + node);
++      this.rmContext.getDispatcher().getEventHandler()
++        .handle(new RMNodeCleanContainerEvent(node.getNodeID(), containerId));
++      return;
++    }
++
++    application.containerLaunchedOnNode(containerId, node.getNodeID());
++  }
++
+   public T getApplicationAttempt(ApplicationAttemptId applicationAttemptId) {
+     SchedulerApplication<T> app =
+         applications.get(applicationAttemptId.getApplicationId());
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 2e01ac0..1c73d36 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -67,7 +67,6 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+-import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeCleanContainerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.UpdatedContainerInfo;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
+@@ -843,21 +842,6 @@ private synchronized void allocateContainersToNode(FiCaSchedulerNode node) {
+   
+   }
+ 
+-  private void containerLaunchedOnNode(ContainerId containerId, FiCaSchedulerNode node) {
+-    // Get the application for the finished container
+-    FiCaSchedulerApp application = getCurrentAttemptForContainer(containerId);
+-    if (application == null) {
+-      LOG.info("Unknown application "
+-          + containerId.getApplicationAttemptId().getApplicationId()
+-          + " launched container " + containerId + " on node: " + node);
+-      this.rmContext.getDispatcher().getEventHandler()
+-        .handle(new RMNodeCleanContainerEvent(node.getNodeID(), containerId));
+-      return;
+-    }
+-    
+-    application.containerLaunchedOnNode(containerId, node.getNodeID());
+-  }
+-
+   @Override
+   public void handle(SchedulerEvent event) {
+     switch(event.getType()) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 63b32e7..f7b9d72 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -922,22 +922,6 @@ public Allocation allocate(ApplicationAttemptId appAttemptId,
+   }
+ 
+   /**
+-   * Process a container which has launched on a node, as reported by the node.
+-   */
+-  private void containerLaunchedOnNode(ContainerId containerId, FSSchedulerNode node) {
+-    // Get the application for the finished container
+-    FSAppAttempt application = getCurrentAttemptForContainer(containerId);
+-    if (application == null) {
+-      LOG.info("Unknown application "
+-          + containerId.getApplicationAttemptId().getApplicationId()
+-          + " launched container " + containerId + " on node: " + node);
+-      return;
+-    }
+-
+-    application.containerLaunchedOnNode(containerId, node.getNodeID());
+-  }
+-
+-  /**
+    * Process a heartbeat update from a node.
+    */
+   private synchronized void nodeUpdate(RMNode nm) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index a027556..cf5626a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -64,7 +64,6 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+-import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeCleanContainerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.UpdatedContainerInfo;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ActiveUsersManager;
+@@ -806,23 +805,6 @@ public void handle(SchedulerEvent event) {
+     }
+   }
+ 
+-  private void containerLaunchedOnNode(ContainerId containerId, FiCaSchedulerNode node) {
+-    // Get the application for the finished container
+-    FiCaSchedulerApp application = getCurrentAttemptForContainer(containerId);
+-    if (application == null) {
+-      LOG.info("Unknown application "
+-          + containerId.getApplicationAttemptId().getApplicationId()
+-          + " launched container " + containerId + " on node: " + node);
+-      // Some unknown container sneaked into the system. Kill it.
+-      this.rmContext.getDispatcher().getEventHandler()
+-        .handle(new RMNodeCleanContainerEvent(node.getNodeID(), containerId));
+-
+-      return;
+-    }
+-    
+-    application.containerLaunchedOnNode(containerId, node.getNodeID());
+-  }
+-
+   @Lock(FifoScheduler.class)
+   @Override
+   protected synchronized void completedContainer(RMContainer rmContainer,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationCleanup.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationCleanup.java
+index 45ccd1c..e88ebd2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationCleanup.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationCleanup.java
+@@ -232,20 +232,7 @@ protected Dispatcher createDispatcher() {
+     containerStatuses.put(app.getApplicationId(), containerStatusList);
+ 
+     NodeHeartbeatResponse resp = nm1.nodeHeartbeat(containerStatuses, true);
+-    dispatcher.await();
+-    List<ContainerId> contsToClean = resp.getContainersToCleanup();
+-    int cleanedConts = contsToClean.size();
+-    waitCount = 0;
+-    while (cleanedConts < 1 && waitCount++ < 200) {
+-      LOG.info("Waiting to get cleanup events.. cleanedConts: " + cleanedConts);
+-      Thread.sleep(100);
+-      resp = nm1.nodeHeartbeat(true);
+-      dispatcher.await();
+-      contsToClean = resp.getContainersToCleanup();
+-      cleanedConts += contsToClean.size();
+-    }
+-    LOG.info("Got cleanup for " + contsToClean.get(0));
+-    Assert.assertEquals(1, cleanedConts);
++    waitForContainerCleanup(dispatcher, nm1, resp);
+ 
+     // Now to test the case when RM already gave cleanup, and NM suddenly
+     // realizes that the container is running.
+@@ -258,26 +245,36 @@ protected Dispatcher createDispatcher() {
+     containerStatuses.put(app.getApplicationId(), containerStatusList);
+ 
+     resp = nm1.nodeHeartbeat(containerStatuses, true);
+-    dispatcher.await();
+-    contsToClean = resp.getContainersToCleanup();
+-    cleanedConts = contsToClean.size();
+     // The cleanup list won't be instantaneous as it is given out by scheduler
+     // and not RMNodeImpl.
+-    waitCount = 0;
+-    while (cleanedConts < 1 && waitCount++ < 200) {
+-      LOG.info("Waiting to get cleanup events.. cleanedConts: " + cleanedConts);
+-      Thread.sleep(100);
+-      resp = nm1.nodeHeartbeat(true);
++    waitForContainerCleanup(dispatcher, nm1, resp);
++
++    rm.stop();
++  }
++
++  protected void waitForContainerCleanup(DrainDispatcher dispatcher, MockNM nm,
++      NodeHeartbeatResponse resp) throws Exception {
++    int waitCount = 0, cleanedConts = 0;
++    List<ContainerId> contsToClean;
++    do {
+       dispatcher.await();
+       contsToClean = resp.getContainersToCleanup();
+       cleanedConts += contsToClean.size();
++      if (cleanedConts >= 1) {
++        break;
++      }
++      Thread.sleep(100);
++      resp = nm.nodeHeartbeat(true);
++    } while(waitCount++ < 200);
++
++    if (contsToClean.isEmpty()) {
++      LOG.error("Failed to get any containers to cleanup");
++    } else {
++      LOG.info("Got cleanup for " + contsToClean.get(0));
+     }
+-    LOG.info("Got cleanup for " + contsToClean.get(0));
+     Assert.assertEquals(1, cleanedConts);
+-
+-    rm.stop();
+   }
+-  
++
+   private void waitForAppCleanupMessageRecved(MockNM nm, ApplicationId appId)
+       throws Exception {
+     while (true) {
+@@ -400,6 +397,58 @@ public void testAppCleanupWhenRMRestartedBeforeAppFinished() throws Exception {
+     rm2.stop();
+   }
+ 
++  @SuppressWarnings("resource")
++  @Test (timeout = 60000)
++  public void testContainerCleanupWhenRMRestartedAppNotRegistered() throws
++      Exception {
++    conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++
++    // start RM
++    final DrainDispatcher dispatcher = new DrainDispatcher();
++    MockRM rm1 = new MockRM(conf, memStore) {
++      @Override
++      protected Dispatcher createDispatcher() {
++        return dispatcher;
++      }
++    };
++    rm1.start();
++    MockNM nm1 =
++        new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
++    nm1.registerNode();
++
++    // create app and launch the AM
++    RMApp app0 = rm1.submitApp(200);
++    MockAM am0 = launchAM(app0, rm1, nm1);
++    nm1.nodeHeartbeat(am0.getApplicationAttemptId(), 1, ContainerState.RUNNING);
++    rm1.waitForState(app0.getApplicationId(), RMAppState.RUNNING);
++
++    // start new RM
++    final DrainDispatcher dispatcher2 = new DrainDispatcher();
++    MockRM rm2 = new MockRM(conf, memStore) {
++      @Override
++      protected Dispatcher createDispatcher() {
++        return dispatcher2;
++      }
++    };
++    rm2.start();
++
++    // nm1 register to rm2, and do a heartbeat
++    nm1.setResourceTrackerService(rm2.getResourceTrackerService());
++    nm1.registerNode(Arrays.asList(app0.getApplicationId()));
++    rm2.waitForState(app0.getApplicationId(), RMAppState.ACCEPTED);
++
++    // Add unknown container for application unknown to scheduler
++    NodeHeartbeatResponse response = nm1.nodeHeartbeat(am0
++        .getApplicationAttemptId(), 2, ContainerState.RUNNING);
++
++    waitForContainerCleanup(dispatcher2, nm1, response);
++
++    rm1.stop();
++    rm2.stop();
++  }
++
+   public static void main(String[] args) throws Exception {
+     TestApplicationCleanup t = new TestApplicationCleanup();
+     t.testAppCleanup();
+-- 
+1.7.9.5
+

@@ -1,0 +1,92 @@
+From c21ec1689be9a9c7cf5a51dc11d636fdd9f7537d Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 4 Sep 2014 09:08:31 -0700
+Subject: [PATCH 277/813] HADOOP-11054. Add a KeyProvider instantiation based
+ on a URI. (tucu)
+
+(cherry picked from commit 41f1662d467ec0b295b742bb80c87482504fbf25)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/KeyProviderFactory.java      |   36 ++++++++++++++------
+ .../hadoop/crypto/key/TestKeyProviderFactory.java  |   13 +++++++
+ 2 files changed, 39 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
+index 799147e..cb63dcd 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
+@@ -63,16 +63,10 @@ public abstract KeyProvider createProvider(URI providerName,
+     for(String path: conf.getStringCollection(KEY_PROVIDER_PATH)) {
+       try {
+         URI uri = new URI(path);
+-        boolean found = false;
+-        for(KeyProviderFactory factory: serviceLoader) {
+-          KeyProvider kp = factory.createProvider(uri, conf);
+-          if (kp != null) {
+-            result.add(kp);
+-            found = true;
+-            break;
+-          }
+-        }
+-        if (!found) {
++        KeyProvider kp = get(uri, conf);
++        if (kp != null) {
++          result.add(kp);
++        } else {
+           throw new IOException("No KeyProviderFactory for " + uri + " in " +
+               KEY_PROVIDER_PATH);
+         }
+@@ -83,4 +77,26 @@ public abstract KeyProvider createProvider(URI providerName,
+     }
+     return result;
+   }
++
++  /**
++   * Create a KeyProvider based on a provided URI.
++   *
++   * @param uri key provider URI
++   * @param conf configuration to initialize the key provider
++   * @return the key provider for the specified URI, or <code>NULL</code> if
++   *         a provider for the specified URI scheme could not be found.
++   * @throws IOException thrown if the provider failed to initialize.
++   */
++  public static KeyProvider get(URI uri, Configuration conf)
++      throws IOException {
++    KeyProvider kp = null;
++    for (KeyProviderFactory factory : serviceLoader) {
++      kp = factory.createProvider(uri, conf);
++      if (kp != null) {
++        break;
++      }
++    }
++    return kp;
++  }
++
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+index d72ac51..8c4c7b3 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+@@ -357,4 +357,17 @@ public void testJksProviderPasswordViaConfig() throws Exception {
+     }
+   }
+ 
++  @Test
++  public void testGetProviderViaURI() throws Exception {
++    Configuration conf = new Configuration(false);
++    URI uri = new URI(JavaKeyStoreProvider.SCHEME_NAME + "://file" + tmpDir +
++        "/test.jks");
++    KeyProvider kp = KeyProviderFactory.get(uri, conf);
++    Assert.assertNotNull(kp);
++    Assert.assertEquals(JavaKeyStoreProvider.class, kp.getClass());
++    uri = new URI("foo://bar");
++    kp = KeyProviderFactory.get(uri, conf);
++    Assert.assertNull(kp);
++
++  }
+ }
+-- 
+1.7.9.5
+

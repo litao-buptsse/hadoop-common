@@ -1,0 +1,347 @@
+From 867d70fe2ddf331417a5465ebbb95735c7bad91a Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 9 Jul 2014 20:03:18 +0000
+Subject: [PATCH 165/813] YARN-2131. Add a way to format the RMStateStore.
+ (Robert Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1609280 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8da2e85960a1444938cf8e47992d4ad1e0dfe4ee)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/bin/yarn
+
+(cherry picked from commit c6b2e84973fb1ec0076de9f4fc442b334cceaf4b)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/bin/yarn
+---
+ hadoop-yarn-project/hadoop-yarn/bin/yarn           |   26 ++++++------
+ .../server/resourcemanager/ResourceManager.java    |   36 +++++++++++++---
+ .../recovery/FileSystemRMStateStore.java           |    7 ++++
+ .../recovery/MemoryRMStateStore.java               |    4 ++
+ .../resourcemanager/recovery/NullRMStateStore.java |    5 +++
+ .../resourcemanager/recovery/RMStateStore.java     |    6 +++
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   30 +++++++++++++
+ .../recovery/RMStateStoreTestBase.java             |   44 +++++++++++++-------
+ .../recovery/TestFSRMStateStore.java               |    1 +
+ .../recovery/TestZKRMStateStore.java               |    1 +
+ .../src/site/apt/YarnCommands.apt.vm               |   10 ++++-
+ 11 files changed, 135 insertions(+), 35 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/bin/yarn b/hadoop-yarn-project/hadoop-yarn/bin/yarn
+index c84aa34..330aabd 100644
+--- a/hadoop-yarn-project/hadoop-yarn/bin/yarn
++++ b/hadoop-yarn-project/hadoop-yarn/bin/yarn
+@@ -61,20 +61,18 @@ HADOOP_LIBEXEC_DIR=${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}
+ function print_usage(){
+   echo "Usage: yarn [--config confdir] COMMAND"
+   echo "where COMMAND is one of:"
+-  echo "  resourcemanager      run the ResourceManager" 
+-  echo "  nodemanager          run a nodemanager on each slave" 
+-  echo "  timelineserver       run the timeline server"
+-  echo "  rmadmin              admin tools" 
+-  echo "  version              print the version"
+-  echo "  jar <jar>            run a jar file"
+-  echo "  application          prints application(s) report/kill application"
+-  echo "  applicationattempt   prints applicationattempt(s) report"
+-  echo "  container            prints container(s) report"
+-  echo "  node                 prints node report(s)"
+-  echo "  logs                 dump container logs"
+-  echo "  classpath            prints the class path needed to get the"
+-  echo "                       Hadoop jar and the required libraries"
+-  echo "  daemonlog            get/set the log level for each daemon"
++  echo "  resourcemanager -format deletes the RMStateStore"
++  echo "  resourcemanager         run the ResourceManager"
++  echo "  nodemanager             run a nodemanager on each slave"
++  echo "  rmadmin                 admin tools"
++  echo "  version                 print the version"
++  echo "  jar <jar>               run a jar file"
++  echo "  application             prints application(s) report/kill application"
++  echo "  node                    prints node report(s)"
++  echo "  logs                    dump container logs"
++  echo "  classpath               prints the class path needed to get the"
++  echo "                          Hadoop jar and the required libraries"
++  echo "  daemonlog               get/set the log level for each daemon"
+   echo " or"
+   echo "  CLASSNAME            run the class named CLASSNAME"
+   echo "Most commands print help when invoked w/o parameters."
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index c2ce67b..d332354 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -1096,12 +1096,17 @@ public static void main(String argv[]) {
+     StringUtils.startupShutdownMessage(ResourceManager.class, argv, LOG);
+     try {
+       Configuration conf = new YarnConfiguration();
+-      ResourceManager resourceManager = new ResourceManager();
+-      ShutdownHookManager.get().addShutdownHook(
+-        new CompositeServiceShutdownHook(resourceManager),
+-        SHUTDOWN_HOOK_PRIORITY);
+-      resourceManager.init(conf);
+-      resourceManager.start();
++      // If -format, then delete RMStateStore; else startup normally
++      if (argv.length == 1 && argv[0].equals("-format")) {
++        deleteRMStateStore(conf);
++      } else {
++        ResourceManager resourceManager = new ResourceManager();
++        ShutdownHookManager.get().addShutdownHook(
++          new CompositeServiceShutdownHook(resourceManager),
++          SHUTDOWN_HOOK_PRIORITY);
++        resourceManager.init(conf);
++        resourceManager.start();
++      }
+     } catch (Throwable t) {
+       LOG.fatal("Error starting ResourceManager", t);
+       System.exit(-1);
+@@ -1138,4 +1143,23 @@ public static InetSocketAddress getBindAddress(Configuration conf) {
+     return conf.getSocketAddr(YarnConfiguration.RM_ADDRESS,
+       YarnConfiguration.DEFAULT_RM_ADDRESS, YarnConfiguration.DEFAULT_RM_PORT);
+   }
++
++  /**
++   * Deletes the RMStateStore
++   *
++   * @param conf
++   * @throws Exception
++   */
++  private static void deleteRMStateStore(Configuration conf) throws Exception {
++    RMStateStore rmStore = RMStateStoreFactory.getStore(conf);
++    rmStore.init(conf);
++    rmStore.start();
++    try {
++      LOG.info("Deleting ResourceManager state store...");
++      rmStore.deleteStore();
++      LOG.info("State store deleted");
++    } finally {
++      rmStore.stop();
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+index b315a84..0e605a9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+@@ -515,6 +515,13 @@ public synchronized void storeRMDTMasterKeyState(DelegationKey masterKey)
+     deleteFile(nodeCreatePath);
+   }
+ 
++  @Override
++  public synchronized void deleteStore() throws IOException {
++    if (fs.exists(rootDirPath)) {
++      fs.delete(rootDirPath, true);
++    }
++  }
++
+   private Path getAppDir(Path root, String appId) {
+     return getNodePath(root, appId);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
+index 6b5b602..05cbb09 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
+@@ -267,4 +267,8 @@ protected RMStateVersion getCurrentVersion() {
+     return null;
+   }
+ 
++  @Override
++  public void deleteStore() throws Exception {
++  }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
+index 603d020..690f0be 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
+@@ -138,4 +138,9 @@ protected RMStateVersion getCurrentVersion() {
+     return null;
+   }
+ 
++  @Override
++  public void deleteStore() throws Exception {
++    // Do nothing
++  }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index 9b05ea1..5b75b42 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -845,4 +845,10 @@ public void handle(RMStateStoreEvent event) {
+       handleStoreEvent(event);
+     }
+   }
++
++  /**
++   * Derived classes must implement this method to delete the state store
++   * @throws Exception
++   */
++  public abstract void deleteStore() throws Exception;
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 6dd4574..68b4632 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -805,6 +805,13 @@ protected synchronized void removeRMDTMasterKeyState(
+     }
+   }
+ 
++  @Override
++  public synchronized void deleteStore() throws Exception {
++    if (existsWithRetries(zkRootNodePath, true) != null) {
++      deleteWithRetries(zkRootNodePath, true);
++    }
++  }
++
+   // ZK related code
+   /**
+    * Watcher implementation which forward events to the ZKRMStateStore This
+@@ -959,6 +966,29 @@ Stat run() throws KeeperException, InterruptedException {
+     }.runWithRetries();
+   }
+ 
++  private void deleteWithRetries(
++      final String path, final boolean watch) throws Exception {
++    new ZKAction<Void>() {
++      @Override
++      Void run() throws KeeperException, InterruptedException {
++        recursiveDeleteWithRetriesHelper(path, watch);
++        return null;
++      }
++    }.runWithRetries();
++  }
++
++  /**
++   * Helper method that deletes znodes recursively
++   */
++  private void recursiveDeleteWithRetriesHelper(String path, boolean watch)
++          throws KeeperException, InterruptedException {
++    List<String> children = zkClient.getChildren(path, watch);
++    for (String child : children) {
++      recursiveDeleteWithRetriesHelper(path + "/" + child, false);
++    }
++    zkClient.delete(path, -1);
++  }
++
+   /**
+    * Helper class that periodically attempts creating a znode to ensure that
+    * this RM continues to be the Active.
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+index 49d7135..6ac23a2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+@@ -515,16 +515,33 @@ public void testAppDeletion(RMStateStoreHelper stateStoreHelper)
+       throws Exception {
+     RMStateStore store = stateStoreHelper.getRMStateStore();
+     store.setRMDispatcher(new TestDispatcher());
+-    // create and store apps
++    ArrayList<RMApp> appList = createAndStoreApps(stateStoreHelper, store, 5);
++
++    for (RMApp app : appList) {
++      // remove the app
++      store.removeApplication(app);
++      // wait for app to be removed.
++      while (true) {
++        if (!stateStoreHelper.appExists(app)) {
++          break;
++        } else {
++          Thread.sleep(100);
++        }
++      }
++    }
++  }
++
++  private ArrayList<RMApp> createAndStoreApps(
++      RMStateStoreHelper stateStoreHelper, RMStateStore store, int numApps)
++      throws Exception {
+     ArrayList<RMApp> appList = new ArrayList<RMApp>();
+-    int NUM_APPS = 5;
+-    for (int i = 0; i < NUM_APPS; i++) {
++    for (int i = 0; i < numApps; i++) {
+       ApplicationId appId = ApplicationId.newInstance(1383183338, i);
+       RMApp app = storeApp(store, appId, 123456789, 987654321);
+       appList.add(app);
+     }
+ 
+-    Assert.assertEquals(NUM_APPS, appList.size());
++    Assert.assertEquals(numApps, appList.size());
+     for (RMApp app : appList) {
+       // wait for app to be stored.
+       while (true) {
+@@ -535,18 +552,17 @@ public void testAppDeletion(RMStateStoreHelper stateStoreHelper)
+         }
+       }
+     }
++    return appList;
++  }
+ 
++  public void testDeleteStore(RMStateStoreHelper stateStoreHelper)
++      throws Exception {
++    RMStateStore store = stateStoreHelper.getRMStateStore();
++    ArrayList<RMApp> appList = createAndStoreApps(stateStoreHelper, store, 5);
++    store.deleteStore();
++    // verify apps deleted
+     for (RMApp app : appList) {
+-      // remove the app
+-      store.removeApplication(app);
+-      // wait for app to be removed.
+-      while (true) {
+-        if (!stateStoreHelper.appExists(app)) {
+-          break;
+-        } else {
+-          Thread.sleep(100);
+-        }
+-      }
++      Assert.assertFalse(stateStoreHelper.appExists(app));
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
+index 6ccaeae..ea90c3d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
+@@ -160,6 +160,7 @@ public void testFSRMStateStore() throws Exception {
+       testCheckVersion(fsTester);
+       testEpoch(fsTester);
+       testAppDeletion(fsTester);
++      testDeleteStore(fsTester);
+     } finally {
+       cluster.shutdown();
+     }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+index d3a5475..e56f775 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+@@ -122,6 +122,7 @@ public void testZKRMStateStoreRealZK() throws Exception {
+     testCheckVersion(zkTester);
+     testEpoch(zkTester);
+     testAppDeletion(zkTester);
++    testDeleteStore(zkTester);
+   }
+ 
+   private Configuration createHARMConf(
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm
+index 018949e..4f3825b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm
+@@ -157,9 +157,17 @@ Usage: yarn [--config confdir] COMMAND
+   Start the ResourceManager
+ 
+ -------
+-  Usage: yarn resourcemanager
++  Usage: yarn resourcemanager [-format]
+ -------
+ 
++*---------------+--------------+
++|| COMMAND_OPTIONS || Description                   |
++*---------------+--------------+
++| -format | Formats the RMStateStore. This will clear the RMStateStore and is
++|         | useful if past applications are no longer needed. This should be run
++|         | only when the ResourceManager is not running.
++*---------------+--------------+
++
+ ** nodemanager
+ 
+   Start the NodeManager
+-- 
+1.7.9.5
+

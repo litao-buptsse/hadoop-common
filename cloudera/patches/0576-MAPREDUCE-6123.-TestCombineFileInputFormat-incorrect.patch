@@ -1,0 +1,33 @@
+From 9cfca583519147692d8230c376fe16e4678530e0 Mon Sep 17 00:00:00 2001
+From: cnauroth <cnauroth@apache.org>
+Date: Thu, 9 Oct 2014 22:35:58 -0700
+Subject: [PATCH 576/813] MAPREDUCE-6123. TestCombineFileInputFormat
+ incorrectly starts 2 MiniDFSCluster instances.
+ Contributed by Chris Nauroth.
+
+(cherry picked from commit 777877d079ecb025c293deac741800800e413179)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../lib/input/TestCombineFileInputFormat.java      |    4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java
+index 4290914..db51ec6 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java
+@@ -1286,10 +1286,6 @@ public void testGetSplitsWithDirectory() throws Exception {
+           .build();
+       dfs.waitActive();
+ 
+-      dfs = new MiniDFSCluster.Builder(conf).racks(rack1).hosts(hosts1)
+-          .build();
+-      dfs.waitActive();
+-
+       FileSystem fileSys = dfs.getFileSystem();
+ 
+       // Set up the following directory structure:
+-- 
+1.7.9.5
+

@@ -1,0 +1,31 @@
+From 7111ac68dc2c1ec6c7a697c8b9813f69ba5c02fa Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Mon, 20 Oct 2014 22:21:37 -0700
+Subject: [PATCH 703/813] YARN-2717. Avoided duplicate logging when container
+ logs are not found. Contributed by Xuan Gong.
+
+(cherry picked from commit 171f2376d23d51b61b9c9b3804ee86dbd4de033a)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/LogCLIHelpers.java
+---
+ .../hadoop/yarn/logaggregation/LogCLIHelpers.java  |    2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/LogCLIHelpers.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/LogCLIHelpers.java
+index 3bafdb3..5476ce7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/LogCLIHelpers.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/LogCLIHelpers.java
+@@ -81,8 +81,6 @@ public int dumpAContainerLogs(String containerIdStr,
+     }
+ 
+     if (valueStream == null) {
+-      System.out.println("Logs for container " + containerIdStr
+-          + " are not present in this log-file.");
+       return -1;
+     }
+ 
+-- 
+1.7.9.5
+

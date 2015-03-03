@@ -1,0 +1,27 @@
+From 09d49fb5f049382f5740a7b7fd2f8715cd067906 Mon Sep 17 00:00:00 2001
+From: Allen Wittenauer <aw@apache.org>
+Date: Thu, 25 Sep 2014 11:28:50 -0700
+Subject: [PATCH 496/813] MAPREDUCE-6109. Fix minor typo in distcp -p usage
+ text (Charles Lamb via aw) (cherry picked from
+ afde00a0f5f8311f292eaeba3ece8d4e44c46285)
+
+---
+ .../apache/hadoop/tools/DistCpOptionSwitch.java    |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java
+index 48b9b50..128986f 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java
+@@ -51,7 +51,7 @@
+           "block size, user, group, permission and checksum type." +
+           "raw.* xattrs are preserved when both the source and destination " +
+           "paths are in the /.reserved/raw hierarchy (HDFS only). raw.* xattr" +
+-          "preservation is independent of the -p flag." +
++          "preservation is independent of the -p flag. " +
+           "Refer to the DistCp documentation for more details.")),
+ 
+   /**
+-- 
+1.7.9.5
+

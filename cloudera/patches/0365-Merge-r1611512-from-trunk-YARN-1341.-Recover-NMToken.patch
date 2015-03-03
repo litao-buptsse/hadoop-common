@@ -1,0 +1,854 @@
+From d3af056ad010152a05a6a80c5d1e40d5cc18a44d Mon Sep 17 00:00:00 2001
+From: Junping Du <junping_du@apache.org>
+Date: Thu, 17 Jul 2014 23:38:36 +0000
+Subject: [PATCH 365/813] Merge r1611512 from trunk: YARN-1341. Recover
+ NMTokens upon nodemanager restart. (Contributed by
+ Jason Lowe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611514 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c0d5b903c0119bea28583c99718f6c2eb1662dee)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/security/BaseNMTokenSecretManager.java  |    2 +-
+ .../yarn/server/nodemanager/NodeManager.java       |   13 +-
+ .../recovery/NMLeveldbStateStoreService.java       |   99 +++++++++++++
+ .../recovery/NMNullStateStoreService.java          |   28 ++++
+ .../nodemanager/recovery/NMStateStoreService.java  |   35 +++++
+ .../security/NMTokenSecretManagerInNM.java         |  116 ++++++++++++---
+ .../recovery/NMMemoryStateStoreService.java        |   49 +++++++
+ .../recovery/TestNMLeveldbStateStoreService.java   |   81 ++++++++++
+ .../security/TestNMTokenSecretManagerInNM.java     |  154 ++++++++++++++++++++
+ 9 files changed, 558 insertions(+), 19 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/security/TestNMTokenSecretManagerInNM.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/BaseNMTokenSecretManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/BaseNMTokenSecretManager.java
+index 01da1af..759b6f2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/BaseNMTokenSecretManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/BaseNMTokenSecretManager.java
+@@ -42,7 +42,7 @@
+   private static Log LOG = LogFactory
+       .getLog(BaseNMTokenSecretManager.class);
+ 
+-  private int serialNo = new SecureRandom().nextInt();
++  protected int serialNo = new SecureRandom().nextInt();
+ 
+   protected final ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+   protected final Lock readLock = readWriteLock.readLock();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java
+index 1109b08..65988a2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java
+@@ -169,6 +169,15 @@ private void stopRecoveryStore() throws IOException {
+     }
+   }
+ 
++  private void recoverTokens(NMTokenSecretManagerInNM nmTokenSecretManager,
++      NMContainerTokenSecretManager containerTokenSecretManager)
++          throws IOException {
++    if (nmStore.canRecover()) {
++      nmTokenSecretManager.recover(nmStore.loadNMTokenState());
++      // TODO: recover containerTokenSecretManager
++    }
++  }
++
+   @Override
+   protected void serviceInit(Configuration conf) throws Exception {
+ 
+@@ -184,7 +193,9 @@ protected void serviceInit(Configuration conf) throws Exception {
+         new NMContainerTokenSecretManager(conf);
+ 
+     NMTokenSecretManagerInNM nmTokenSecretManager =
+-        new NMTokenSecretManagerInNM();
++        new NMTokenSecretManagerInNM(nmStore);
++
++    recoverTokens(nmTokenSecretManager, containerTokenSecretManager);
+     
+     this.aclsManager = new ApplicationACLsManager(conf);
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java
+index dc9aa886..1954fee 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java
+@@ -35,11 +35,15 @@
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsPermission;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.MasterKeyProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
+ import org.apache.hadoop.yarn.server.utils.LeveldbIterator;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.fusesource.leveldbjni.JniDBFactory;
+@@ -72,6 +76,14 @@
+   private static final String LOCALIZATION_FILECACHE_SUFFIX = "filecache/";
+   private static final String LOCALIZATION_APPCACHE_SUFFIX = "appcache/";
+ 
++  private static final String CURRENT_MASTER_KEY_SUFFIX = "CurrentMasterKey";
++  private static final String PREV_MASTER_KEY_SUFFIX = "PreviousMasterKey";
++  private static final String NM_TOKENS_KEY_PREFIX = "NMTokens/";
++  private static final String NM_TOKENS_CURRENT_MASTER_KEY =
++      NM_TOKENS_KEY_PREFIX + CURRENT_MASTER_KEY_SUFFIX;
++  private static final String NM_TOKENS_PREV_MASTER_KEY =
++      NM_TOKENS_KEY_PREFIX + PREV_MASTER_KEY_SUFFIX;
++
+   private DB db;
+ 
+   public NMLeveldbStateStoreService() {
+@@ -368,6 +380,93 @@ public void removeDeletionTask(int taskId) throws IOException {
+ 
+ 
+   @Override
++  public RecoveredNMTokenState loadNMTokenState() throws IOException {
++    RecoveredNMTokenState state = new RecoveredNMTokenState();
++    state.applicationMasterKeys =
++        new HashMap<ApplicationAttemptId, MasterKey>();
++    LeveldbIterator iter = null;
++    try {
++      iter = new LeveldbIterator(db);
++      iter.seek(bytes(NM_TOKENS_KEY_PREFIX));
++      while (iter.hasNext()) {
++        Entry<byte[], byte[]> entry = iter.next();
++        String fullKey = asString(entry.getKey());
++        if (!fullKey.startsWith(NM_TOKENS_KEY_PREFIX)) {
++          break;
++        }
++        String key = fullKey.substring(NM_TOKENS_KEY_PREFIX.length());
++        if (key.equals(CURRENT_MASTER_KEY_SUFFIX)) {
++          state.currentMasterKey = parseMasterKey(entry.getValue());
++        } else if (key.equals(PREV_MASTER_KEY_SUFFIX)) {
++          state.previousMasterKey = parseMasterKey(entry.getValue());
++        } else if (key.startsWith(
++            ApplicationAttemptId.appAttemptIdStrPrefix)) {
++          ApplicationAttemptId attempt;
++          try {
++            attempt = ConverterUtils.toApplicationAttemptId(key);
++          } catch (IllegalArgumentException e) {
++            throw new IOException("Bad application master key state for "
++                + fullKey, e);
++          }
++          state.applicationMasterKeys.put(attempt,
++              parseMasterKey(entry.getValue()));
++        }
++      }
++    } catch (DBException e) {
++      throw new IOException(e.getMessage(), e);
++    } finally {
++      if (iter != null) {
++        iter.close();
++      }
++    }
++    return state;
++  }
++
++  @Override
++  public void storeNMTokenCurrentMasterKey(MasterKey key)
++      throws IOException {
++    storeMasterKey(NM_TOKENS_CURRENT_MASTER_KEY, key);
++  }
++
++  @Override
++  public void storeNMTokenPreviousMasterKey(MasterKey key)
++      throws IOException {
++    storeMasterKey(NM_TOKENS_PREV_MASTER_KEY, key);
++  }
++
++  @Override
++  public void storeNMTokenApplicationMasterKey(
++      ApplicationAttemptId attempt, MasterKey key) throws IOException {
++    storeMasterKey(NM_TOKENS_KEY_PREFIX + attempt, key);
++  }
++
++  @Override
++  public void removeNMTokenApplicationMasterKey(
++      ApplicationAttemptId attempt) throws IOException {
++    String key = NM_TOKENS_KEY_PREFIX + attempt;
++    try {
++      db.delete(bytes(key));
++    } catch (DBException e) {
++      throw new IOException(e.getMessage(), e);
++    }
++  }
++
++  private MasterKey parseMasterKey(byte[] keyData) throws IOException {
++    return new MasterKeyPBImpl(MasterKeyProto.parseFrom(keyData));
++  }
++
++  private void storeMasterKey(String dbKey, MasterKey key)
++      throws IOException {
++    MasterKeyPBImpl pb = (MasterKeyPBImpl) key;
++    try {
++      db.put(bytes(dbKey), pb.getProto().toByteArray());
++    } catch (DBException e) {
++      throw new IOException(e.getMessage(), e);
++    }
++  }
++
++
++  @Override
+   protected void initStorage(Configuration conf)
+       throws IOException {
+     Path storeRoot = createStorageDir(conf);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMNullStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMNullStateStoreService.java
+index dfe4f09..5d9e0ea 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMNullStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMNullStateStoreService.java
+@@ -22,10 +22,12 @@
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
+ 
+ // The state store to use when state isn't being stored
+ public class NMNullStateStoreService extends NMStateStoreService {
+@@ -78,6 +80,32 @@ public void removeDeletionTask(int taskId) throws IOException {
+   }
+ 
+   @Override
++  public RecoveredNMTokenState loadNMTokenState() throws IOException {
++    throw new UnsupportedOperationException(
++        "Recovery not supported by this state store");
++  }
++
++  @Override
++  public void storeNMTokenCurrentMasterKey(MasterKey key)
++      throws IOException {
++  }
++
++  @Override
++  public void storeNMTokenPreviousMasterKey(MasterKey key)
++      throws IOException {
++  }
++
++  @Override
++  public void storeNMTokenApplicationMasterKey(ApplicationAttemptId attempt,
++      MasterKey key) throws IOException {
++  }
++
++  @Override
++  public void removeNMTokenApplicationMasterKey(ApplicationAttemptId attempt)
++      throws IOException {
++  }
++
++  @Override
+   protected void initStorage(Configuration conf) throws IOException {
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMStateStoreService.java
+index f2e5945..8a5944d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMStateStoreService.java
+@@ -29,10 +29,12 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.service.AbstractService;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
+ 
+ @Private
+ @Unstable
+@@ -100,6 +102,24 @@ public LocalResourceTrackerState getPublicTrackerState() {
+     }
+   }
+ 
++  public static class RecoveredNMTokenState {
++    MasterKey currentMasterKey;
++    MasterKey previousMasterKey;
++    Map<ApplicationAttemptId, MasterKey> applicationMasterKeys;
++
++    public MasterKey getCurrentMasterKey() {
++      return currentMasterKey;
++    }
++
++    public MasterKey getPreviousMasterKey() {
++      return previousMasterKey;
++    }
++
++    public Map<ApplicationAttemptId, MasterKey> getApplicationMasterKeys() {
++      return applicationMasterKeys;
++    }
++  }
++
+   /** Initialize the state storage */
+   @Override
+   public void serviceInit(Configuration conf) throws IOException {
+@@ -173,6 +193,21 @@ public abstract void storeDeletionTask(int taskId,
+   public abstract void removeDeletionTask(int taskId) throws IOException;
+ 
+ 
++  public abstract RecoveredNMTokenState loadNMTokenState() throws IOException;
++
++  public abstract void storeNMTokenCurrentMasterKey(MasterKey key)
++      throws IOException;
++
++  public abstract void storeNMTokenPreviousMasterKey(MasterKey key)
++      throws IOException;
++
++  public abstract void storeNMTokenApplicationMasterKey(
++      ApplicationAttemptId attempt, MasterKey key) throws IOException;
++
++  public abstract void removeNMTokenApplicationMasterKey(
++      ApplicationAttemptId attempt) throws IOException;
++
++
+   protected abstract void initStorage(Configuration conf) throws IOException;
+ 
+   protected abstract void startStorage() throws IOException;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/security/NMTokenSecretManagerInNM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/security/NMTokenSecretManagerInNM.java
+index 9569fdc..a9b9b99 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/security/NMTokenSecretManagerInNM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/security/NMTokenSecretManagerInNM.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.server.nodemanager.security;
+ 
++import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -31,6 +32,9 @@
+ import org.apache.hadoop.yarn.api.records.NodeId;
+ import org.apache.hadoop.yarn.security.NMTokenIdentifier;
+ import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.nodemanager.recovery.NMNullStateStoreService;
++import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService;
++import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredNMTokenState;
+ import org.apache.hadoop.yarn.server.security.BaseNMTokenSecretManager;
+ import org.apache.hadoop.yarn.server.security.MasterKeyData;
+ 
+@@ -45,16 +49,78 @@
+   
+   private final Map<ApplicationAttemptId, MasterKeyData> oldMasterKeys;
+   private final Map<ApplicationId, List<ApplicationAttemptId>> appToAppAttemptMap;
++  private final NMStateStoreService stateStore;
+   private NodeId nodeId;                                                      
+   
+-  
+   public NMTokenSecretManagerInNM() {
++    this(new NMNullStateStoreService());
++  }
++
++  public NMTokenSecretManagerInNM(NMStateStoreService stateStore) {
+     this.oldMasterKeys =
+         new HashMap<ApplicationAttemptId, MasterKeyData>();
+     appToAppAttemptMap =         
+         new HashMap<ApplicationId, List<ApplicationAttemptId>>();
++    this.stateStore = stateStore;
+   }
+   
++  public synchronized void recover(RecoveredNMTokenState state)
++      throws IOException {
++    MasterKey key = state.getCurrentMasterKey();
++    if (key != null) {
++      super.currentMasterKey =
++          new MasterKeyData(key, createSecretKey(key.getBytes().array()));
++    }
++
++    key = state.getPreviousMasterKey();
++    if (key != null) {
++      previousMasterKey =
++          new MasterKeyData(key, createSecretKey(key.getBytes().array()));
++    }
++
++    // restore the serial number from the current master key
++    if (super.currentMasterKey != null) {
++      super.serialNo = super.currentMasterKey.getMasterKey().getKeyId() + 1;
++    }
++
++    for (Map.Entry<ApplicationAttemptId, MasterKey> entry :
++         state.getApplicationMasterKeys().entrySet()) {
++      key = entry.getValue();
++      oldMasterKeys.put(entry.getKey(),
++          new MasterKeyData(key, createSecretKey(key.getBytes().array())));
++    }
++
++    // reconstruct app to app attempts map
++    appToAppAttemptMap.clear();
++    for (ApplicationAttemptId attempt : oldMasterKeys.keySet()) {
++      ApplicationId app = attempt.getApplicationId();
++      List<ApplicationAttemptId> attempts = appToAppAttemptMap.get(app);
++      if (attempts == null) {
++        attempts = new ArrayList<ApplicationAttemptId>();
++        appToAppAttemptMap.put(app, attempts);
++      }
++      attempts.add(attempt);
++    }
++  }
++
++  private void updateCurrentMasterKey(MasterKeyData key) {
++    super.currentMasterKey = key;
++    try {
++      stateStore.storeNMTokenCurrentMasterKey(key.getMasterKey());
++    } catch (IOException e) {
++      LOG.error("Unable to update current master key in state store", e);
++    }
++  }
++
++  private void updatePreviousMasterKey(MasterKeyData key) {
++    previousMasterKey = key;
++    try {
++      stateStore.storeNMTokenPreviousMasterKey(key.getMasterKey());
++    } catch (IOException e) {
++      LOG.error("Unable to update previous master key in state store", e);
++    }
++  }
++
+   /**
+    * Used by NodeManagers to create a token-secret-manager with the key
+    * obtained from the RM. This can happen during registration or when the RM
+@@ -62,20 +128,16 @@ public NMTokenSecretManagerInNM() {
+    */
+   @Private
+   public synchronized void setMasterKey(MasterKey masterKey) {
+-    LOG.info("Rolling master-key for nm-tokens, got key with id :"
+-        + masterKey.getKeyId());
+-    if (super.currentMasterKey == null) {
+-      super.currentMasterKey =
+-          new MasterKeyData(masterKey, createSecretKey(masterKey.getBytes()
+-            .array()));
+-    } else {
+-      if (super.currentMasterKey.getMasterKey().getKeyId() != masterKey
+-        .getKeyId()) {
+-        this.previousMasterKey = super.currentMasterKey;
+-        super.currentMasterKey =
+-            new MasterKeyData(masterKey, createSecretKey(masterKey.getBytes()
+-              .array()));
++    // Update keys only if the key has changed.
++    if (super.currentMasterKey == null || super.currentMasterKey.getMasterKey()
++          .getKeyId() != masterKey.getKeyId()) {
++      LOG.info("Rolling master-key for container-tokens, got key with id "
++          + masterKey.getKeyId());
++      if (super.currentMasterKey != null) {
++        updatePreviousMasterKey(super.currentMasterKey);
+       }
++      updateCurrentMasterKey(new MasterKeyData(masterKey,
++          createSecretKey(masterKey.getBytes().array())));
+     }
+   }
+ 
+@@ -128,7 +190,7 @@ public synchronized void appFinished(ApplicationId appId) {
+       LOG.debug("Removing application attempts NMToken keys for application "
+           + appId);
+       for (ApplicationAttemptId appAttemptId : appAttemptList) {
+-        this.oldMasterKeys.remove(appAttemptId);
++        removeAppAttemptKey(appAttemptId);
+       }
+       appToAppAttemptMap.remove(appId);
+     } else {
+@@ -164,11 +226,11 @@ public synchronized void appAttemptStartContainer(
+           + identifier.getApplicationAttemptId().toString());
+       if (identifier.getKeyId() == currentMasterKey.getMasterKey()
+         .getKeyId()) {
+-        oldMasterKeys.put(appAttemptId, currentMasterKey);
++        updateAppAttemptKey(appAttemptId, currentMasterKey);
+       } else if (previousMasterKey != null
+           && identifier.getKeyId() == previousMasterKey.getMasterKey()
+             .getKeyId()) {
+-        oldMasterKeys.put(appAttemptId, previousMasterKey);
++        updateAppAttemptKey(appAttemptId, previousMasterKey);
+       } else {
+         throw new InvalidToken(
+           "Older NMToken should not be used while starting the container.");
+@@ -193,4 +255,24 @@ public synchronized void setNodeId(NodeId nodeId) {
+   public synchronized NodeId getNodeId() {
+     return this.nodeId;
+   }
++
++  private void updateAppAttemptKey(ApplicationAttemptId attempt,
++      MasterKeyData key) {
++    this.oldMasterKeys.put(attempt, key);
++    try {
++      stateStore.storeNMTokenApplicationMasterKey(attempt,
++          key.getMasterKey());
++    } catch (IOException e) {
++      LOG.error("Unable to store master key for application " + attempt, e);
++    }
++  }
++
++  private void removeAppAttemptKey(ApplicationAttemptId attempt) {
++    this.oldMasterKeys.remove(attempt);
++    try {
++      stateStore.removeNMTokenApplicationMasterKey(attempt);
++    } catch (IOException e) {
++      LOG.error("Unable to remove master key for application " + attempt, e);
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMMemoryStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMMemoryStateStoreService.java
+index 0c8a843..9909d9d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMMemoryStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMMemoryStateStoreService.java
+@@ -25,14 +25,18 @@
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
+ 
+ public class NMMemoryStateStoreService extends NMStateStoreService {
+   private Map<TrackerKey, TrackerState> trackerStates;
+   private Map<Integer, DeletionServiceDeleteTaskProto> deleteTasks;
++  private RecoveredNMTokenState nmTokenState;
+ 
+   public NMMemoryStateStoreService() {
+     super(NMMemoryStateStoreService.class.getName());
+@@ -113,8 +117,12 @@ public synchronized void removeLocalizedResource(String user,
+ 
+   @Override
+   protected void initStorage(Configuration conf) {
++    nmTokenState = new RecoveredNMTokenState();
++    nmTokenState.applicationMasterKeys =
++        new HashMap<ApplicationAttemptId, MasterKey>();
+     trackerStates = new HashMap<TrackerKey, TrackerState>();
+     deleteTasks = new HashMap<Integer, DeletionServiceDeleteTaskProto>();
++
+   }
+ 
+   @Override
+@@ -148,6 +156,47 @@ public synchronized void removeDeletionTask(int taskId) throws IOException {
+   }
+ 
+ 
++  @Override
++  public RecoveredNMTokenState loadNMTokenState() throws IOException {
++    // return a copy so caller can't modify our state
++    RecoveredNMTokenState result = new RecoveredNMTokenState();
++    result.currentMasterKey = nmTokenState.currentMasterKey;
++    result.previousMasterKey = nmTokenState.previousMasterKey;
++    result.applicationMasterKeys =
++        new HashMap<ApplicationAttemptId, MasterKey>(
++            nmTokenState.applicationMasterKeys);
++    return result;
++  }
++
++  @Override
++  public void storeNMTokenCurrentMasterKey(MasterKey key)
++      throws IOException {
++    MasterKeyPBImpl keypb = (MasterKeyPBImpl) key;
++    nmTokenState.currentMasterKey = new MasterKeyPBImpl(keypb.getProto());
++  }
++
++  @Override
++  public void storeNMTokenPreviousMasterKey(MasterKey key)
++      throws IOException {
++    MasterKeyPBImpl keypb = (MasterKeyPBImpl) key;
++    nmTokenState.previousMasterKey = new MasterKeyPBImpl(keypb.getProto());
++  }
++
++  @Override
++  public void storeNMTokenApplicationMasterKey(ApplicationAttemptId attempt,
++      MasterKey key) throws IOException {
++    MasterKeyPBImpl keypb = (MasterKeyPBImpl) key;
++    nmTokenState.applicationMasterKeys.put(attempt,
++        new MasterKeyPBImpl(keypb.getProto()));
++  }
++
++  @Override
++  public void removeNMTokenApplicationMasterKey(ApplicationAttemptId attempt)
++      throws IOException {
++    nmTokenState.applicationMasterKeys.remove(attempt);
++  }
++
++
+   private static class TrackerState {
+     Map<Path, LocalResourceProto> inProgressMap =
+         new HashMap<Path, LocalResourceProto>();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java
+index 494b27f..89d1c23 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java
+@@ -20,6 +20,7 @@
+ 
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertTrue;
+ 
+ import java.io.File;
+@@ -28,6 +29,7 @@
+ 
+ import org.apache.hadoop.fs.FileUtil;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.LocalResource;
+ import org.apache.hadoop.yarn.api.records.LocalResourceType;
+@@ -37,10 +39,13 @@
+ import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.LocalResourceTrackerState;
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredDeletionServiceState;
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredLocalizationState;
++import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredNMTokenState;
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredUserResources;
++import org.apache.hadoop.yarn.server.security.BaseNMTokenSecretManager;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.junit.After;
+ import org.junit.Before;
+@@ -460,4 +465,80 @@ public void testDeletionTaskStorage() throws IOException {
+     state = stateStore.loadDeletionServiceState();
+     assertTrue(state.getTasks().isEmpty());
+   }
++
++  @Test
++  public void testNMTokenStorage() throws IOException {
++    // test empty when no state
++    RecoveredNMTokenState state = stateStore.loadNMTokenState();
++    assertNull(state.getCurrentMasterKey());
++    assertNull(state.getPreviousMasterKey());
++    assertTrue(state.getApplicationMasterKeys().isEmpty());
++
++    // store a master key and verify recovered
++    NMTokenSecretManagerForTest secretMgr = new NMTokenSecretManagerForTest();
++    MasterKey currentKey = secretMgr.generateKey();
++    stateStore.storeNMTokenCurrentMasterKey(currentKey);
++    restartStateStore();
++    state = stateStore.loadNMTokenState();
++    assertEquals(currentKey, state.getCurrentMasterKey());
++    assertNull(state.getPreviousMasterKey());
++    assertTrue(state.getApplicationMasterKeys().isEmpty());
++
++    // store a previous key and verify recovered
++    MasterKey prevKey = secretMgr.generateKey();
++    stateStore.storeNMTokenPreviousMasterKey(prevKey);
++    restartStateStore();
++    state = stateStore.loadNMTokenState();
++    assertEquals(currentKey, state.getCurrentMasterKey());
++    assertEquals(prevKey, state.getPreviousMasterKey());
++    assertTrue(state.getApplicationMasterKeys().isEmpty());
++
++    // store a few application keys and verify recovered
++    ApplicationAttemptId attempt1 = ApplicationAttemptId.newInstance(
++        ApplicationId.newInstance(1, 1), 1);
++    MasterKey attemptKey1 = secretMgr.generateKey();
++    stateStore.storeNMTokenApplicationMasterKey(attempt1, attemptKey1);
++    ApplicationAttemptId attempt2 = ApplicationAttemptId.newInstance(
++        ApplicationId.newInstance(2, 3), 4);
++    MasterKey attemptKey2 = secretMgr.generateKey();
++    stateStore.storeNMTokenApplicationMasterKey(attempt2, attemptKey2);
++    restartStateStore();
++    state = stateStore.loadNMTokenState();
++    assertEquals(currentKey, state.getCurrentMasterKey());
++    assertEquals(prevKey, state.getPreviousMasterKey());
++    Map<ApplicationAttemptId, MasterKey> loadedAppKeys =
++        state.getApplicationMasterKeys();
++    assertEquals(2, loadedAppKeys.size());
++    assertEquals(attemptKey1, loadedAppKeys.get(attempt1));
++    assertEquals(attemptKey2, loadedAppKeys.get(attempt2));
++
++    // add/update/remove keys and verify recovered
++    ApplicationAttemptId attempt3 = ApplicationAttemptId.newInstance(
++        ApplicationId.newInstance(5, 6), 7);
++    MasterKey attemptKey3 = secretMgr.generateKey();
++    stateStore.storeNMTokenApplicationMasterKey(attempt3, attemptKey3);
++    stateStore.removeNMTokenApplicationMasterKey(attempt1);
++    attemptKey2 = prevKey;
++    stateStore.storeNMTokenApplicationMasterKey(attempt2, attemptKey2);
++    prevKey = currentKey;
++    stateStore.storeNMTokenPreviousMasterKey(prevKey);
++    currentKey = secretMgr.generateKey();
++    stateStore.storeNMTokenCurrentMasterKey(currentKey);
++    restartStateStore();
++    state = stateStore.loadNMTokenState();
++    assertEquals(currentKey, state.getCurrentMasterKey());
++    assertEquals(prevKey, state.getPreviousMasterKey());
++    loadedAppKeys = state.getApplicationMasterKeys();
++    assertEquals(2, loadedAppKeys.size());
++    assertNull(loadedAppKeys.get(attempt1));
++    assertEquals(attemptKey2, loadedAppKeys.get(attempt2));
++    assertEquals(attemptKey3, loadedAppKeys.get(attempt3));
++  }
++
++  private static class NMTokenSecretManagerForTest extends
++      BaseNMTokenSecretManager {
++    public MasterKey generateKey() {
++      return createNewMasterKey().getMasterKey();
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/security/TestNMTokenSecretManagerInNM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/security/TestNMTokenSecretManagerInNM.java
+new file mode 100644
+index 0000000..1f1fc51
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/security/TestNMTokenSecretManagerInNM.java
+@@ -0,0 +1,154 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.nodemanager.security;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.fail;
++
++import java.io.IOException;
++
++import org.apache.hadoop.io.Text;
++import org.apache.hadoop.security.token.SecretManager.InvalidToken;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
++import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.api.records.NodeId;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.security.NMTokenIdentifier;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.nodemanager.recovery.NMMemoryStateStoreService;
++import org.apache.hadoop.yarn.server.security.BaseNMTokenSecretManager;
++import org.apache.hadoop.yarn.util.ConverterUtils;
++import org.junit.Test;
++
++public class TestNMTokenSecretManagerInNM {
++
++  @Test
++  public void testRecovery() throws IOException {
++    YarnConfiguration conf = new YarnConfiguration();
++    conf.setBoolean(YarnConfiguration.NM_RECOVERY_ENABLED, true);
++    final NodeId nodeId = NodeId.newInstance("somehost", 1234);
++    final ApplicationAttemptId attempt1 =
++        ApplicationAttemptId.newInstance(ApplicationId.newInstance(1, 1), 1);
++    final ApplicationAttemptId attempt2 =
++        ApplicationAttemptId.newInstance(ApplicationId.newInstance(2, 2), 2);
++    NMTokenKeyGeneratorForTest keygen = new NMTokenKeyGeneratorForTest();
++    NMMemoryStateStoreService stateStore = new NMMemoryStateStoreService();
++    stateStore.init(conf);
++    stateStore.start();
++    NMTokenSecretManagerInNM secretMgr =
++        new NMTokenSecretManagerInNM(stateStore);
++    secretMgr.setNodeId(nodeId);
++    MasterKey currentKey = keygen.generateKey();
++    secretMgr.setMasterKey(currentKey);
++    NMTokenIdentifier attemptToken1 =
++        getNMTokenId(secretMgr.createNMToken(attempt1, nodeId, "user1"));
++    NMTokenIdentifier attemptToken2 =
++        getNMTokenId(secretMgr.createNMToken(attempt2, nodeId, "user2"));
++    secretMgr.appAttemptStartContainer(attemptToken1);
++    secretMgr.appAttemptStartContainer(attemptToken2);
++    assertTrue(secretMgr.isAppAttemptNMTokenKeyPresent(attempt1));
++    assertTrue(secretMgr.isAppAttemptNMTokenKeyPresent(attempt2));
++    assertNotNull(secretMgr.retrievePassword(attemptToken1));
++    assertNotNull(secretMgr.retrievePassword(attemptToken2));
++
++    // restart and verify key is still there and token still valid
++    secretMgr = new NMTokenSecretManagerInNM(stateStore);
++    secretMgr.recover(stateStore.loadNMTokenState());
++    secretMgr.setNodeId(nodeId);
++    assertEquals(currentKey, secretMgr.getCurrentKey());
++    assertTrue(secretMgr.isAppAttemptNMTokenKeyPresent(attempt1));
++    assertTrue(secretMgr.isAppAttemptNMTokenKeyPresent(attempt2));
++    assertNotNull(secretMgr.retrievePassword(attemptToken1));
++    assertNotNull(secretMgr.retrievePassword(attemptToken2));
++
++    // roll master key and remove an app
++    currentKey = keygen.generateKey();
++    secretMgr.setMasterKey(currentKey);
++    secretMgr.appFinished(attempt1.getApplicationId());
++
++    // restart and verify attempt1 key is still valid due to prev key persist
++    secretMgr = new NMTokenSecretManagerInNM(stateStore);
++    secretMgr.recover(stateStore.loadNMTokenState());
++    secretMgr.setNodeId(nodeId);
++    assertEquals(currentKey, secretMgr.getCurrentKey());
++    assertFalse(secretMgr.isAppAttemptNMTokenKeyPresent(attempt1));
++    assertTrue(secretMgr.isAppAttemptNMTokenKeyPresent(attempt2));
++    assertNotNull(secretMgr.retrievePassword(attemptToken1));
++    assertNotNull(secretMgr.retrievePassword(attemptToken2));
++
++    // roll master key again, restart, and verify attempt1 key is bad but
++    // attempt2 is still good due to app key persist
++    currentKey = keygen.generateKey();
++    secretMgr.setMasterKey(currentKey);
++    secretMgr = new NMTokenSecretManagerInNM(stateStore);
++    secretMgr.recover(stateStore.loadNMTokenState());
++    secretMgr.setNodeId(nodeId);
++    assertEquals(currentKey, secretMgr.getCurrentKey());
++    assertFalse(secretMgr.isAppAttemptNMTokenKeyPresent(attempt1));
++    assertTrue(secretMgr.isAppAttemptNMTokenKeyPresent(attempt2));
++    try {
++      secretMgr.retrievePassword(attemptToken1);
++      fail("attempt token should not still be valid");
++    } catch (InvalidToken e) {
++      // expected
++    }
++    assertNotNull(secretMgr.retrievePassword(attemptToken2));
++
++    // remove last attempt, restart, verify both tokens are now bad
++    secretMgr.appFinished(attempt2.getApplicationId());
++    secretMgr = new NMTokenSecretManagerInNM(stateStore);
++    secretMgr.recover(stateStore.loadNMTokenState());
++    secretMgr.setNodeId(nodeId);
++    assertEquals(currentKey, secretMgr.getCurrentKey());
++    assertFalse(secretMgr.isAppAttemptNMTokenKeyPresent(attempt1));
++    assertFalse(secretMgr.isAppAttemptNMTokenKeyPresent(attempt2));
++    try {
++      secretMgr.retrievePassword(attemptToken1);
++      fail("attempt token should not still be valid");
++    } catch (InvalidToken e) {
++      // expected
++    }
++    try {
++      secretMgr.retrievePassword(attemptToken2);
++      fail("attempt token should not still be valid");
++    } catch (InvalidToken e) {
++      // expected
++    }
++
++    stateStore.close();
++  }
++
++  private NMTokenIdentifier getNMTokenId(
++      org.apache.hadoop.yarn.api.records.Token token) throws IOException {
++    Token<NMTokenIdentifier> convertedToken =
++        ConverterUtils.convertFromYarn(token, (Text) null);
++    return convertedToken.decodeIdentifier();
++  }
++
++  private static class NMTokenKeyGeneratorForTest extends
++      BaseNMTokenSecretManager {
++    public MasterKey generateKey() {
++      return createNewMasterKey().getMasterKey();
++    }
++  }
++}
+-- 
+1.7.9.5
+

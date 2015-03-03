@@ -1,0 +1,33 @@
+From bb7e2a385da18d252b7103ef40676cdb6cf40e10 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 1 Aug 2014 17:13:37 +0000
+Subject: [PATCH 357/813] HADOOP-10902. Deletion of directories with snapshots
+ will not output reason for trash move failure.
+ Contributed by Stephen Chu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1615171 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0d66f1f19ce176885120de1666cce12801b1f9b7)
+---
+ .../java/org/apache/hadoop/fs/shell/Delete.java    |    6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Delete.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Delete.java
+index fcb0690..6798fbe 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Delete.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Delete.java
+@@ -118,7 +118,11 @@ private boolean moveToTrash(PathData item) throws IOException {
+         } catch(FileNotFoundException fnfe) {
+           throw fnfe;
+         } catch (IOException ioe) {
+-            throw new IOException(ioe.getMessage() + ". Consider using -skipTrash option", ioe);
++          String msg = ioe.getMessage();
++          if (ioe.getCause() != null) {
++            msg += ": " + ioe.getCause().getMessage();
++	  }
++          throw new IOException(msg + ". Consider using -skipTrash option", ioe);
+         }
+       }
+       return success;
+-- 
+1.7.9.5
+

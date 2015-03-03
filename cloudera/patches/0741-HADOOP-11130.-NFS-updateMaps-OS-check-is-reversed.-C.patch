@@ -1,0 +1,54 @@
+From c9d9917e6d88646a467f4df130e27337803cc21c Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Mon, 29 Sep 2014 15:05:43 -0700
+Subject: [PATCH 741/813] HADOOP-11130. NFS updateMaps OS check is reversed.
+ Contributed by Brandon Li
+
+(cherry picked from commit c88c6c57aa79e8a1f33d2e075491656f472c858b)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |   15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+index dd580cf..b037413 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+@@ -45,8 +45,8 @@
+   private final static String OS = System.getProperty("os.name");
+ 
+   /** Shell commands to get users and groups */
+-  static final String LINUX_GET_ALL_USERS_CMD = "getent passwd | cut -d: -f1,3";
+-  static final String LINUX_GET_ALL_GROUPS_CMD = "getent group | cut -d: -f1,3";
++  static final String GET_ALL_USERS_CMD = "getent passwd | cut -d: -f1,3";
++  static final String GET_ALL_GROUPS_CMD = "getent group | cut -d: -f1,3";
+   static final String MAC_GET_ALL_USERS_CMD = "dscl . -list /Users UniqueID";
+   static final String MAC_GET_ALL_GROUPS_CMD = "dscl . -list /Groups PrimaryGroupID";
+ 
+@@ -223,16 +223,15 @@ synchronized public void updateMaps() throws IOException {
+           + "' does not exist.");
+     }
+ 
+-    if (OS.startsWith("Linux")) {
+-      updateMapInternal(uMap, "user", LINUX_GET_ALL_USERS_CMD, ":",
++    if (OS.startsWith("Mac")) {
++      updateMapInternal(uMap, "user", MAC_GET_ALL_USERS_CMD, "\\s+",
+           staticMapping.uidMapping);
+-      updateMapInternal(gMap, "group", LINUX_GET_ALL_GROUPS_CMD, ":",
++      updateMapInternal(gMap, "group", MAC_GET_ALL_GROUPS_CMD, "\\s+",
+           staticMapping.gidMapping);
+     } else {
+-      // Mac
+-      updateMapInternal(uMap, "user", MAC_GET_ALL_USERS_CMD, "\\s+",
++      updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
+           staticMapping.uidMapping);
+-      updateMapInternal(gMap, "group", MAC_GET_ALL_GROUPS_CMD, "\\s+",
++      updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
+           staticMapping.gidMapping);
+     }
+ 
+-- 
+1.7.9.5
+

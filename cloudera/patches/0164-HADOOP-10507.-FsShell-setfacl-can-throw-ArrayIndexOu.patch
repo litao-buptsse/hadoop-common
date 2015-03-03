@@ -1,0 +1,60 @@
+From 81d4b9098698e41df12a88e8ee656b922930c78f Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 29 Jul 2014 09:26:09 -0700
+Subject: [PATCH 164/813] HADOOP-10507. FsShell setfacl can throw
+ ArrayIndexOutOfBoundsException when no perm is
+ specified. Contributed by Stephen Chu and Sathish
+ Gurram.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1609503 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f96a69d22d5e57b521dfb02c4fcd58881af63fe6)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+(cherry picked from commit 0bcf1f5b508d093c7dd7f8023fac554e33350db8)
+---
+ .../org/apache/hadoop/fs/permission/AclEntry.java  |    2 +-
+ .../apache/hadoop/fs/shell/TestAclCommands.java    |   13 +++++++++++++
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/AclEntry.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/AclEntry.java
+index 0ce7fbf..b65b7a0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/AclEntry.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/AclEntry.java
+@@ -278,7 +278,7 @@ public static AclEntry parseAclEntry(String aclStr,
+     }
+ 
+     if (includePermission) {
+-      if (split.length < index) {
++      if (split.length <= index) {
+         throw new HadoopIllegalArgumentException("Invalid <aclSpec> : "
+             + aclStr);
+       }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/shell/TestAclCommands.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/shell/TestAclCommands.java
+index b14cd37..cb6f560 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/shell/TestAclCommands.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/shell/TestAclCommands.java
+@@ -84,6 +84,19 @@ public void testSetfaclValidations() throws Exception {
+   }
+ 
+   @Test
++  public void testSetfaclValidationsWithoutPermissions() throws Exception {
++    List<AclEntry> parsedList = new ArrayList<AclEntry>();
++    try {
++      parsedList = AclEntry.parseAclSpec("user:user1:", true);
++    } catch (IllegalArgumentException e) {
++    }
++    assertTrue(parsedList.size() == 0);
++    assertFalse("setfacl should fail with less arguments",
++        0 == runCommand(new String[] { "-setfacl", "-m", "user:user1:",
++            "/path" }));
++  }
++
++  @Test
+   public void testMultipleAclSpecParsing() throws Exception {
+     List<AclEntry> parsedList = AclEntry.parseAclSpec(
+         "group::rwx,user:user1:rwx,user:user2:rw-,"
+-- 
+1.7.9.5
+

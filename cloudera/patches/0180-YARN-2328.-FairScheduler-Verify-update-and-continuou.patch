@@ -1,0 +1,171 @@
+From db2c3fd18ededc2a14511598f75e23cc179db2c2 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 29 Jul 2014 17:46:58 +0000
+Subject: [PATCH 180/813] YARN-2328. FairScheduler: Verify update and
+ continuous scheduling threads are stopped when the
+ scheduler is stopped. (kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1614435 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 835f682cc83f1456159caa45517f4fe4c8f8a8e6)
+---
+ .../scheduler/fair/FairScheduler.java              |   62 ++++++++++++--------
+ .../scheduler/fair/TestFairScheduler.java          |   25 ++++++++
+ 2 files changed, 62 insertions(+), 25 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 8d21ca7..5a2722b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -139,8 +139,11 @@
+   private final int UPDATE_DEBUG_FREQUENCY = 5;
+   private int updatesToSkipForDebug = UPDATE_DEBUG_FREQUENCY;
+ 
+-  private Thread updateThread;
+-  private Thread schedulingThread;
++  @VisibleForTesting
++  Thread updateThread;
++
++  @VisibleForTesting
++  Thread schedulingThread;
+   // timeout to join when we stop this service
+   protected final long THREAD_JOIN_TIMEOUT_MS = 1000;
+ 
+@@ -243,16 +246,21 @@ public QueueManager getQueueManager() {
+   }
+ 
+   /**
+-   * A runnable which calls {@link FairScheduler#update()} every
++   * Thread which calls {@link FairScheduler#update()} every
+    * <code>updateInterval</code> milliseconds.
+    */
+-  private class UpdateThread implements Runnable {
++  private class UpdateThread extends Thread {
++
++    @Override
+     public void run() {
+-      while (true) {
++      while (!Thread.currentThread().isInterrupted()) {
+         try {
+           Thread.sleep(updateInterval);
+           update();
+           preemptTasksIfNecessary();
++        } catch (InterruptedException ie) {
++          LOG.warn("Update thread interrupted. Exiting.");
++          return;
+         } catch (Exception e) {
+           LOG.error("Exception in fair scheduler UpdateThread", e);
+         }
+@@ -261,6 +269,26 @@ public void run() {
+   }
+ 
+   /**
++   * Thread which attempts scheduling resources continuously,
++   * asynchronous to the node heartbeats.
++   */
++  private class ContinuousSchedulingThread extends Thread {
++
++    @Override
++    public void run() {
++      while (!Thread.currentThread().isInterrupted()) {
++        try {
++          continuousSchedulingAttempt();
++          Thread.sleep(getContinuousSchedulingSleepMs());
++        } catch (InterruptedException e) {
++          LOG.warn("Continuous scheduling thread interrupted. Exiting.", e);
++          return;
++        }
++      }
++    }
++  }
++
++  /**
+    * Recompute the internal variables used by the scheduler - per-job weights,
+    * fair shares, deficits, minimum slot allocations, and amount of used and
+    * required resources per job.
+@@ -979,7 +1007,7 @@ private synchronized void nodeUpdate(RMNode nm) {
+     }
+   }
+ 
+-  void continuousSchedulingAttempt() {
++  void continuousSchedulingAttempt() throws InterruptedException {
+     List<NodeId> nodeIdList = new ArrayList<NodeId>(nodes.keySet());
+     // Sort the nodes by space available on them, so that we offer
+     // containers on emptier nodes first, facilitating an even spread. This
+@@ -1237,30 +1265,14 @@ private synchronized void initScheduler(Configuration conf)
+       throw new IOException("Failed to start FairScheduler", e);
+     }
+ 
+-    updateThread = new Thread(new UpdateThread());
++    updateThread = new UpdateThread();
+     updateThread.setName("FairSchedulerUpdateThread");
+     updateThread.setDaemon(true);
+ 
+     if (continuousSchedulingEnabled) {
+       // start continuous scheduling thread
+-      schedulingThread = new Thread(
+-          new Runnable() {
+-            @Override
+-            public void run() {
+-              while (!Thread.currentThread().isInterrupted()) {
+-                try {
+-                  continuousSchedulingAttempt();
+-                  Thread.sleep(getContinuousSchedulingSleepMs());
+-                } catch (InterruptedException e) {
+-                  LOG.error("Continuous scheduling thread interrupted. Exiting. ",
+-                      e);
+-                  return;
+-                }
+-              }
+-            }
+-          }
+-      );
+-      schedulingThread.setName("ContinuousScheduling");
++      schedulingThread = new ContinuousSchedulingThread();
++      schedulingThread.setName("FairSchedulerContinuousScheduling");
+       schedulingThread.setDaemon(true);
+     }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index abee738..8ff1537 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -20,6 +20,7 @@
+ 
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNotEquals;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertSame;
+@@ -3268,4 +3269,28 @@ public void testLowestCommonAncestorDeeperHierarchy() throws Exception {
+         scheduler.findLowestCommonAncestorQueue(a1Queue, b1Queue);
+     assertEquals(ancestorQueue, queue1);
+   }
++
++  @Test
++  public void testThreadLifeCycle() throws InterruptedException {
++    conf.setBoolean(
++        FairSchedulerConfiguration.CONTINUOUS_SCHEDULING_ENABLED, true);
++    scheduler.init(conf);
++    scheduler.start();
++
++    Thread updateThread = scheduler.updateThread;
++    Thread schedulingThread = scheduler.schedulingThread;
++
++    assertTrue(updateThread.isAlive());
++    assertTrue(schedulingThread.isAlive());
++
++    scheduler.stop();
++
++    int numRetries = 100;
++    while (numRetries-- > 0 &&
++        (updateThread.isAlive() || schedulingThread.isAlive())) {
++      Thread.sleep(50);
++    }
++
++    assertNotEquals("One of the threads is still alive", 0, numRetries);
++  }
+ }
+-- 
+1.7.9.5
+

@@ -1,0 +1,81 @@
+From 9441294d748b5c00c2f4883320447f45b188c5f8 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:45 +0000
+Subject: [PATCH 200/813] HADOOP-10534. KeyProvider getKeysMetadata should
+ take a list of names rather than returning all
+ keys. (omalley)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619517 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 509260e7028f1192fb58ccdf9fe243e16b0bfeda)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |   18 +++++++-----------
+ .../org/apache/hadoop/crypto/key/KeyShell.java     |   10 +++++-----
+ 2 files changed, 12 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index a8a303c..17ce33c 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -312,20 +312,16 @@ public abstract KeyVersion getKeyVersion(String versionName
+ 
+ 
+   /**
+-   * Get the key metadata for all keys.
+-   *
+-   * @return a Map with all the keys and their metadata
++   * Get key metadata in bulk.
++   * @param names the names of the keys to get
+    * @throws IOException
+    */
+-  public Map<String, Metadata> getKeysMetadata() throws IOException {
+-    Map<String, Metadata> keysMetadata = new LinkedHashMap<String, Metadata>();
+-    for (String key : getKeys()) {
+-      Metadata meta = getMetadata(key);
+-      if (meta != null) {
+-        keysMetadata.put(key, meta);
+-      }
++  public Metadata[] getKeysMetadata(String... names) throws IOException {
++    Metadata[] result = new Metadata[names.length];
++    for (int i=0; i < names.length; ++i) {
++      result[i] = getMetadata(names[i]);
+     }
+-    return keysMetadata;
++    return result;
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
+index aedcfc0..6bb982f 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
+@@ -230,16 +230,16 @@ public boolean validate() {
+     }
+ 
+     public void execute() throws IOException {
+-      List<String> keys;
+       try {
++        List<String> keys = provider.getKeys();
+         out.println("Listing keys for KeyProvider: " + provider.toString());
+         if (metadata) {
+-          Map<String, Metadata> keysMeta = provider.getKeysMetadata();
+-          for (Map.Entry<String, Metadata> entry : keysMeta.entrySet()) {
+-            out.println(entry.getKey() + " : " + entry.getValue());
++          Metadata[] meta =
++            provider.getKeysMetadata(keys.toArray(new String[keys.size()]));
++          for(int i=0; i < meta.length; ++i) {
++            out.println(keys.get(i) + " : " + meta[i]);
+           }
+         } else {
+-          keys = provider.getKeys();
+           for (String keyName : keys) {
+             out.println(keyName);
+           }
+-- 
+1.7.9.5
+

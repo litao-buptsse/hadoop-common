@@ -1,0 +1,30 @@
+From 84810ff961721f1daa3a7108c007ca3cb535af3c Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Wed, 24 Sep 2014 16:09:33 +0000
+Subject: [PATCH 530/813] MAPREDUCE-6104. TestJobHistoryParsing.testPartialJob
+ fails in branch-2. Contributed by Mit Desai
+
+(cherry picked from commit 7af4c3888bf7be0822dc880170e5e3d09e9280f1)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../mapreduce/v2/hs/TestJobHistoryParsing.java     |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryParsing.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryParsing.java
+index c2246b3..93538dc 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryParsing.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryParsing.java
+@@ -806,7 +806,7 @@ public void testJobHistoryMethods() throws Exception {
+   /**
+    * Simple test PartialJob
+    */
+-  @Test(timeout = 1000)
++  @Test(timeout = 3000)
+   public void testPartialJob() throws Exception {
+     JobId jobId = new JobIdPBImpl();
+     jobId.setId(0);
+-- 
+1.7.9.5
+

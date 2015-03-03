@@ -1,0 +1,287 @@
+From 23a72599e7529cb68d776d6ca7352315120f9e70 Mon Sep 17 00:00:00 2001
+From: Jian <jianhe@apache.org>
+Date: Thu, 28 Aug 2014 21:47:26 -0700
+Subject: [PATCH 486/813] YARN-2406. Move RM recovery related proto to
+ yarn_server_resourcemanager_recovery.proto.
+ Contributed by Tsuyoshi OZAWA
+
+(cherry picked from commit 7b3e27ab7393214e35a575bc9093100e94dd8c89)
+(cherry picked from commit 518ba11843f389205308409dd3a9054d27132b64)
+---
+ ...arn_server_resourcemanager_service_protos.proto |   58 -------------------
+ .../recovery/FileSystemRMStateStore.java           |    6 +-
+ .../resourcemanager/recovery/ZKRMStateStore.java   |    6 +-
+ .../records/ApplicationAttemptStateData.java       |    2 +-
+ .../recovery/records/ApplicationStateData.java     |    2 +-
+ .../resourcemanager/recovery/records/Epoch.java    |    2 +-
+ .../impl/pb/ApplicationAttemptStateDataPBImpl.java |    6 +-
+ .../impl/pb/ApplicationStateDataPBImpl.java        |    6 +-
+ .../recovery/records/impl/pb/EpochPBImpl.java      |    4 +-
+ .../yarn_server_resourcemanager_recovery.proto     |   60 ++++++++++++++++++++
+ 10 files changed, 77 insertions(+), 75 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto
+index 08c937f..4637f03 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto
+@@ -75,64 +75,6 @@ message UpdateNodeResourceRequestProto {
+ message UpdateNodeResourceResponseProto {
+ }
+ 
+-////////////////////////////////////////////////////////////////////////
+-////// RM recovery related records /////////////////////////////////////
+-////////////////////////////////////////////////////////////////////////
+-enum RMAppAttemptStateProto {
+-  RMATTEMPT_NEW = 1;
+-  RMATTEMPT_SUBMITTED = 2;
+-  RMATTEMPT_SCHEDULED = 3;
+-  RMATTEMPT_ALLOCATED = 4;
+-  RMATTEMPT_LAUNCHED = 5;
+-  RMATTEMPT_FAILED = 6;
+-  RMATTEMPT_RUNNING = 7;
+-  RMATTEMPT_FINISHING = 8;
+-  RMATTEMPT_FINISHED = 9;
+-  RMATTEMPT_KILLED = 10;
+-  RMATTEMPT_ALLOCATED_SAVING = 11;
+-  RMATTEMPT_LAUNCHED_UNMANAGED_SAVING = 12;
+-  RMATTEMPT_RECOVERED = 13;
+-  RMATTEMPT_FINAL_SAVING = 14;
+-}
+-
+-enum RMAppStateProto {
+-  RMAPP_NEW = 1;
+-  RMAPP_NEW_SAVING = 2;
+-  RMAPP_SUBMITTED = 3;
+-  RMAPP_ACCEPTED = 4;
+-  RMAPP_RUNNING = 5;
+-  RMAPP_FINAL_SAVING = 6;
+-  RMAPP_FINISHING = 7;
+-  RMAPP_FINISHED = 8;
+-  RMAPP_FAILED = 9;
+-  RMAPP_KILLED = 10;
+-}
+-
+-message ApplicationStateDataProto {
+-  optional int64 submit_time = 1;
+-  optional ApplicationSubmissionContextProto application_submission_context = 2;
+-  optional string user = 3;
+-  optional int64 start_time = 4;
+-  optional RMAppStateProto application_state = 5;
+-  optional string diagnostics = 6 [default = "N/A"];
+-  optional int64 finish_time = 7;
+-}
+-
+-message ApplicationAttemptStateDataProto {
+-  optional ApplicationAttemptIdProto attemptId = 1;
+-  optional ContainerProto master_container = 2;
+-  optional bytes app_attempt_tokens = 3;
+-  optional RMAppAttemptStateProto app_attempt_state = 4;
+-  optional string final_tracking_url = 5;
+-  optional string diagnostics = 6 [default = "N/A"];
+-  optional int64 start_time = 7;
+-  optional FinalApplicationStatusProto final_application_status = 8;
+-  optional int32 am_container_exit_status = 9 [default = -1000];
+-}
+-
+-message EpochProto {
+-  optional int64 epoch = 1;
+-}
+ 
+ //////////////////////////////////////////////////////////////////
+ ///////////// RM Failover related records ////////////////////////
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+index d57669c..162b484 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+@@ -46,9 +46,9 @@
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 1544dcc..b3100d1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -46,9 +46,9 @@
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+ import org.apache.hadoop.yarn.server.records.Version;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationAttemptStateData.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationAttemptStateData.java
+index 90fb3ec..5cb9787 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationAttemptStateData.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationAttemptStateData.java
+@@ -28,7 +28,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.ApplicationAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+ import org.apache.hadoop.yarn.util.Records;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationStateData.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationStateData.java
+index 55b726f..eff0445 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationStateData.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/ApplicationStateData.java
+@@ -24,7 +24,7 @@
+ import org.apache.hadoop.classification.InterfaceStability.Unstable;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.ApplicationState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+ import org.apache.hadoop.yarn.util.Records;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/Epoch.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/Epoch.java
+index 0668789..80ec48c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/Epoch.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/Epoch.java
+@@ -20,7 +20,7 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceStability.Unstable;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
+ import org.apache.hadoop.yarn.util.Records;
+ 
+ /**
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationAttemptStateDataPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationAttemptStateDataPBImpl.java
+index a90bda4..5c62d63 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationAttemptStateDataPBImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationAttemptStateDataPBImpl.java
+@@ -27,9 +27,9 @@
+ import org.apache.hadoop.yarn.api.records.impl.pb.ContainerPBImpl;
+ import org.apache.hadoop.yarn.api.records.impl.pb.ProtoUtils;
+ import org.apache.hadoop.yarn.proto.YarnProtos.FinalApplicationStatusProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProtoOrBuilder;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMAppAttemptStateProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationAttemptStateDataProtoOrBuilder;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.RMAppAttemptStateProto;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationStateDataPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationStateDataPBImpl.java
+index 8aaf1a4..d8cbd23 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationStateDataPBImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/ApplicationStateDataPBImpl.java
+@@ -20,9 +20,9 @@
+ 
+ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+ import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationSubmissionContextPBImpl;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProtoOrBuilder;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMAppStateProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProtoOrBuilder;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.RMAppStateProto;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/EpochPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/EpochPBImpl.java
+index 4430672..a6ddead 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/EpochPBImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/EpochPBImpl.java
+@@ -18,8 +18,8 @@
+ 
+ package org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb;
+ 
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProtoOrBuilder;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.EpochProtoOrBuilder;
+ 
+ 
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Epoch;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto
+index ae56b9f..eab6af1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto
+@@ -23,6 +23,66 @@ option java_generate_equals_and_hash = true;
+ package hadoop.yarn;
+ 
+ import "yarn_server_common_protos.proto";
++import "yarn_protos.proto";
++
++////////////////////////////////////////////////////////////////////////
++////// RM recovery related records /////////////////////////////////////
++////////////////////////////////////////////////////////////////////////
++enum RMAppAttemptStateProto {
++    RMATTEMPT_NEW = 1;
++    RMATTEMPT_SUBMITTED = 2;
++    RMATTEMPT_SCHEDULED = 3;
++    RMATTEMPT_ALLOCATED = 4;
++    RMATTEMPT_LAUNCHED = 5;
++    RMATTEMPT_FAILED = 6;
++    RMATTEMPT_RUNNING = 7;
++    RMATTEMPT_FINISHING = 8;
++    RMATTEMPT_FINISHED = 9;
++    RMATTEMPT_KILLED = 10;
++    RMATTEMPT_ALLOCATED_SAVING = 11;
++    RMATTEMPT_LAUNCHED_UNMANAGED_SAVING = 12;
++    RMATTEMPT_RECOVERED = 13;
++    RMATTEMPT_FINAL_SAVING = 14;
++}
++
++enum RMAppStateProto {
++    RMAPP_NEW = 1;
++    RMAPP_NEW_SAVING = 2;
++    RMAPP_SUBMITTED = 3;
++    RMAPP_ACCEPTED = 4;
++    RMAPP_RUNNING = 5;
++    RMAPP_FINAL_SAVING = 6;
++    RMAPP_FINISHING = 7;
++    RMAPP_FINISHED = 8;
++    RMAPP_FAILED = 9;
++    RMAPP_KILLED = 10;
++}
++
++message ApplicationStateDataProto {
++    optional int64 submit_time = 1;
++    optional ApplicationSubmissionContextProto application_submission_context = 2;
++    optional string user = 3;
++    optional int64 start_time = 4;
++    optional RMAppStateProto application_state = 5;
++    optional string diagnostics = 6 [default = "N/A"];
++    optional int64 finish_time = 7;
++}
++
++message ApplicationAttemptStateDataProto {
++    optional ApplicationAttemptIdProto attemptId = 1;
++    optional ContainerProto master_container = 2;
++    optional bytes app_attempt_tokens = 3;
++    optional RMAppAttemptStateProto app_attempt_state = 4;
++    optional string final_tracking_url = 5;
++    optional string diagnostics = 6 [default = "N/A"];
++    optional int64 start_time = 7;
++    optional FinalApplicationStatusProto final_application_status = 8;
++    optional int32 am_container_exit_status = 9 [default = -1000];
++}
++
++message EpochProto {
++    optional int64 epoch = 1;
++}
+ 
+ message AMRMTokenSecretManagerStateProto {
+   optional MasterKeyProto current_master_key = 1;
+-- 
+1.7.9.5
+

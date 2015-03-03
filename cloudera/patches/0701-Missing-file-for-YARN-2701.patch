@@ -1,0 +1,61 @@
+From 242b05ace8510d46af7c1df355171e2685bca6ad Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Mon, 20 Oct 2014 19:57:45 -0700
+Subject: [PATCH 701/813] Missing file for YARN-2701
+
+(cherry picked from commit 4fa1fb3193bf39fcb1bd7f8f8391a78f69c3c302)
+---
+ .../server/nodemanager/MockContainerLocalizer.java |   41 ++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/MockContainerLocalizer.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/MockContainerLocalizer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/MockContainerLocalizer.java
+new file mode 100644
+index 0000000..0ff8bf6
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/MockContainerLocalizer.java
+@@ -0,0 +1,41 @@
++/**
++* Licensed to the Apache Software Foundation (ASF) under one
++* or more contributor license agreements.  See the NOTICE file
++* distributed with this work for additional information
++* regarding copyright ownership.  The ASF licenses this file
++* to you under the Apache License, Version 2.0 (the
++* "License"); you may not use this file except in compliance
++* with the License.  You may obtain a copy of the License at
++*
++*     http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*/
++package org.apache.hadoop.yarn.server.nodemanager;
++
++import java.net.InetSocketAddress;
++import java.util.List;
++
++public class MockContainerLocalizer {
++  public static void buildMainArgs(List<String> command,
++      String user, String appId, String locId,
++      InetSocketAddress nmAddr, List<String> localDirs) {
++    command.add(MockContainerLocalizer.class.getName());
++    command.add(user);
++    command.add(appId);
++    command.add(locId);
++    command.add(nmAddr.getHostName());
++    command.add(Integer.toString(nmAddr.getPort()));
++    for(String dir : localDirs) {
++      command.add(dir);
++    }
++  }
++  
++  public static void main(String[] argv) throws Throwable {
++    //DO Nothing
++  }
++}
+-- 
+1.7.9.5
+

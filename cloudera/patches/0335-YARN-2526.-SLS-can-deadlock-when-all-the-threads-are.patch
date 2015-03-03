@@ -1,0 +1,82 @@
+From ecdd8223887c1417e42d305dae6ab5afd8cdd6d6 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 9 Sep 2014 15:13:07 -0700
+Subject: [PATCH 335/813] YARN-2526. SLS can deadlock when all the threads are
+ taken by AMSimulators. (Wei Yan via kasha)
+
+(cherry picked from commit 28d99db99236ff2a6e4a605802820e2b512225f9)
+---
+ .../hadoop/yarn/sls/appmaster/MRAMSimulator.java   |   43 +++++++++++---------
+ 1 file changed, 23 insertions(+), 20 deletions(-)
+
+diff --git a/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/appmaster/MRAMSimulator.java b/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/appmaster/MRAMSimulator.java
+index fb70205..da267a1 100644
+--- a/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/appmaster/MRAMSimulator.java
++++ b/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/appmaster/MRAMSimulator.java
+@@ -179,26 +179,8 @@ public AllocateResponse run() throws Exception {
+         return rm.getApplicationMasterService().allocate(request);
+       }
+     });
+-
+-    // waiting until the AM container is allocated
+-    while (true) {
+-      if (response != null && ! response.getAllocatedContainers().isEmpty()) {
+-        // get AM container
+-        Container container = response.getAllocatedContainers().get(0);
+-        se.getNmMap().get(container.getNodeId())
+-                .addNewContainer(container, -1L);
+-        // start AM container
+-        amContainer = container;
+-        LOG.debug(MessageFormat.format("Application {0} starts its " +
+-                "AM container ({1}).", appId, amContainer.getId()));
+-        isAMContainerRunning = true;
+-        break;
+-      }
+-      // this sleep time is different from HeartBeat
+-      Thread.sleep(1000);
+-      // send out empty request
+-      sendContainerRequest();
+-      response = responseQueue.take();
++    if (response != null) {
++      responseQueue.put(response);
+     }
+   }
+ 
+@@ -206,6 +188,26 @@ public AllocateResponse run() throws Exception {
+   @SuppressWarnings("unchecked")
+   protected void processResponseQueue()
+           throws InterruptedException, YarnException, IOException {
++    // Check whether receive the am container
++    if (!isAMContainerRunning) {
++      if (!responseQueue.isEmpty()) {
++        AllocateResponse response = responseQueue.take();
++        if (response != null
++            && !response.getAllocatedContainers().isEmpty()) {
++          // Get AM container
++          Container container = response.getAllocatedContainers().get(0);
++          se.getNmMap().get(container.getNodeId())
++              .addNewContainer(container, -1L);
++          // Start AM container
++          amContainer = container;
++          LOG.debug(MessageFormat.format("Application {0} starts its " +
++              "AM container ({1}).", appId, amContainer.getId()));
++          isAMContainerRunning = true;
++        }
++      }
++      return;
++    }
++
+     while (! responseQueue.isEmpty()) {
+       AllocateResponse response = responseQueue.take();
+ 
+@@ -262,6 +264,7 @@ protected void processResponseQueue()
+         LOG.debug(MessageFormat.format("Application {0} sends out event " +
+                 "to clean up its AM container.", appId));
+         isFinished = true;
++        break;
+       }
+ 
+       // check allocated containers
+-- 
+1.7.9.5
+

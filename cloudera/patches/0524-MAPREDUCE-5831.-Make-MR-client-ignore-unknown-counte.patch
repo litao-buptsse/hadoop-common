@@ -1,0 +1,230 @@
+From 90ea3f0bf7d2e47a9bca627e6485704688a49047 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Thu, 25 Sep 2014 23:45:07 -0700
+Subject: [PATCH 524/813] MAPREDUCE-5831. Make MR client ignore unknown
+ counters received from AM. Contributed by Junping
+ Du.
+
+(cherry picked from commit 662fc11ae7ccea9d05dfe54b2a794bb08cfd70a4)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../org/apache/hadoop/mapreduce/TypeConverter.java |    5 +-
+ .../mapreduce/counters/FileSystemCounterGroup.java |   15 ++++--
+ .../mapreduce/counters/FrameworkCounterGroup.java  |   28 +++++++---
+ .../org/apache/hadoop/mapred/TestCounters.java     |   54 ++++++++++++++++++++
+ 4 files changed, 92 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/TypeConverter.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/TypeConverter.java
+index 6b4aa4e..553ba70 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/TypeConverter.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/TypeConverter.java
+@@ -241,7 +241,10 @@ public static TaskAttemptId toYarn(
+         org.apache.hadoop.mapreduce.Counter c =
+           counters.findCounter(yGrp.getName(),
+               yCntr.getName());
+-        c.setValue(yCntr.getValue());
++        // if c can be found, or it will be skipped.
++        if (c != null) {
++          c.setValue(yCntr.getValue());
++        }
+       }
+     }
+     return counters;
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FileSystemCounterGroup.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FileSystemCounterGroup.java
+index b1b6796..a53b76a 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FileSystemCounterGroup.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FileSystemCounterGroup.java
+@@ -34,6 +34,8 @@
+ import com.google.common.collect.Iterators;
+ import com.google.common.collect.Maps;
+ 
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.io.WritableUtils;
+@@ -53,6 +55,8 @@
+ 
+   static final int MAX_NUM_SCHEMES = 100; // intern/sanity check
+   static final ConcurrentMap<String, String> schemes = Maps.newConcurrentMap();
++  
++  private static final Log LOG = LogFactory.getLog(FileSystemCounterGroup.class);
+ 
+   // C[] would need Array.newInstance which requires a Class<C> reference.
+   // Just a few local casts probably worth not having to carry it around.
+@@ -159,13 +163,17 @@ public void addCounter(C counter) {
+     else {
+       ours = findCounter(counter.getName());
+     }
+-    ours.setValue(counter.getValue());
++    if (ours != null) {
++      ours.setValue(counter.getValue());
++    }
+   }
+ 
+   @Override
+   public C addCounter(String name, String displayName, long value) {
+     C counter = findCounter(name);
+-    counter.setValue(value);
++    if (counter != null) {
++      counter.setValue(value);
++    }
+     return counter;
+   }
+ 
+@@ -192,13 +200,14 @@ public C findCounter(String counterName, boolean create) {
+     }
+     catch (Exception e) {
+       if (create) throw new IllegalArgumentException(e);
++      LOG.warn(counterName + " is not a recognized counter.");
+       return null;
+     }
+   }
+ 
+   @Override
+   public C findCounter(String counterName) {
+-    return findCounter(counterName, true);
++    return findCounter(counterName, false);
+   }
+ 
+   @SuppressWarnings("unchecked")
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FrameworkCounterGroup.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FrameworkCounterGroup.java
+index 5ebed5a..e78fe2e 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FrameworkCounterGroup.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/counters/FrameworkCounterGroup.java
+@@ -151,13 +151,21 @@ private T valueOf(String name) {
+   @Override
+   public void addCounter(C counter) {
+     C ours = findCounter(counter.getName());
+-    ours.setValue(counter.getValue());
++    if (ours != null) {
++      ours.setValue(counter.getValue());
++    } else {
++      LOG.warn(counter.getName() + "is not a known counter.");
++    }
+   }
+ 
+   @Override
+   public C addCounter(String name, String displayName, long value) {
+     C counter = findCounter(name);
+-    counter.setValue(value);
++    if (counter != null) {
++      counter.setValue(value);
++    } else {
++      LOG.warn(name + "is not a known counter.");
++    }
+     return counter;
+   }
+ 
+@@ -179,7 +187,13 @@ public C findCounter(String counterName, boolean create) {
+ 
+   @Override
+   public C findCounter(String counterName) {
+-    return findCounter(valueOf(counterName));
++    try {
++      T enumValue = valueOf(counterName);
++      return findCounter(enumValue);
++    } catch (IllegalArgumentException e) {
++      LOG.warn(counterName + " is not a recognized counter.");
++      return null;
++    }
+   }
+ 
+   @SuppressWarnings("unchecked")
+@@ -208,13 +222,15 @@ public int size() {
+   }
+ 
+   @Override
+-  @SuppressWarnings("unchecked")
++  @SuppressWarnings("rawtypes")
+   public void incrAllCounters(CounterGroupBase<C> other) {
+     if (checkNotNull(other, "other counter group")
+         instanceof FrameworkCounterGroup<?, ?>) {
+       for (Counter counter : other) {
+-        findCounter(((FrameworkCounter) counter).key.name())
+-            .increment(counter.getValue());
++        C c = findCounter(((FrameworkCounter) counter).key.name());
++        if (c != null) {
++          c.increment(counter.getValue());
++        }
+       }
+     }
+   }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapred/TestCounters.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapred/TestCounters.java
+index c23e48e..46e7221 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapred/TestCounters.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapred/TestCounters.java
+@@ -33,9 +33,12 @@
+ import org.apache.hadoop.mapred.Counters.Counter;
+ import org.apache.hadoop.mapred.Counters.CountersExceededException;
+ import org.apache.hadoop.mapred.Counters.Group;
++import org.apache.hadoop.mapred.Counters.GroupFactory;
+ import org.apache.hadoop.mapreduce.FileSystemCounter;
+ import org.apache.hadoop.mapreduce.JobCounter;
+ import org.apache.hadoop.mapreduce.TaskCounter;
++import org.apache.hadoop.mapreduce.counters.FrameworkCounterGroup;
++import org.apache.hadoop.mapreduce.counters.CounterGroupFactory.FrameworkGroupFactory;
+ import org.junit.Test;
+ 
+ /**
+@@ -321,4 +324,55 @@ private void shouldThrow(Class<? extends Exception> ecls, Runnable runnable) {
+   public static void main(String[] args) throws IOException {
+     new TestCounters().testCounters();
+   }
++  
++  @SuppressWarnings("rawtypes")
++  @Test
++  public void testFrameworkCounter() {
++    GroupFactory groupFactory = new GroupFactoryForTest();
++    FrameworkGroupFactory frameworkGroupFactory = 
++        groupFactory.newFrameworkGroupFactory(JobCounter.class);
++    Group group = (Group) frameworkGroupFactory.newGroup("JobCounter");
++    
++    FrameworkCounterGroup counterGroup = 
++        (FrameworkCounterGroup) group.getUnderlyingGroup();
++  
++    org.apache.hadoop.mapreduce.Counter count1 = 
++        counterGroup.findCounter(JobCounter.NUM_FAILED_MAPS.toString());
++    Assert.assertNotNull(count1);
++    
++    // Verify no exception get thrown when finding an unknown counter
++    org.apache.hadoop.mapreduce.Counter count2 = 
++        counterGroup.findCounter("Unknown");
++    Assert.assertNull(count2);
++  }
++  
++  @Test
++  public void testFilesystemCounter() {
++    GroupFactory groupFactory = new GroupFactoryForTest();
++    Group fsGroup = groupFactory.newFileSystemGroup();
++  
++    org.apache.hadoop.mapreduce.Counter count1 = 
++        fsGroup.findCounter("ANY_BYTES_READ");
++    Assert.assertNotNull(count1);
++    
++    // Verify no exception get thrown when finding an unknown counter
++    org.apache.hadoop.mapreduce.Counter count2 = 
++        fsGroup.findCounter("Unknown");
++    Assert.assertNull(count2);
++  }
++  
+ }
++
++  class GroupFactoryForTest extends GroupFactory {
++    public <T extends Enum<T>>
++        FrameworkGroupFactory<Group> newFrameworkGroupFactory(final Class<T> cls) {
++      return super.newFrameworkGroupFactory(cls);
++    }
++    
++    public Group newFileSystemGroup() {
++      return super.newFileSystemGroup();
++    }
++    
++  }
++
++
+-- 
+1.7.9.5
+

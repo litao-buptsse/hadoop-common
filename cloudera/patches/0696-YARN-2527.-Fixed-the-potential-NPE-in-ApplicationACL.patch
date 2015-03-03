@@ -1,0 +1,253 @@
+From f2660faffa5c075b2c32341331e16a867602cd30 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Thu, 2 Oct 2014 14:55:37 -0700
+Subject: [PATCH 696/813] YARN-2527. Fixed the potential NPE in
+ ApplicationACLsManager and added test cases for it.
+ Contributed by Benoy Antony.
+
+(cherry picked from commit 1c93025a1b370db46e345161dbc15e03f829823f)
+(cherry picked from commit ecaae67ab32f842627c0bee06bba7b4773972a67)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/security/ApplicationACLsManager.java    |   22 ++-
+ .../security/TestApplicationACLsManager.java       |  180 ++++++++++++++++++++
+ 2 files changed, 196 insertions(+), 6 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/server/security/TestApplicationACLsManager.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/server/security/ApplicationACLsManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/server/security/ApplicationACLsManager.java
+index 75c8478..e8e3cb5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/server/security/ApplicationACLsManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/server/security/ApplicationACLsManager.java
+@@ -41,6 +41,8 @@
+   private static final Log LOG = LogFactory
+       .getLog(ApplicationACLsManager.class);
+ 
++  private static AccessControlList DEFAULT_YARN_APP_ACL 
++    = new AccessControlList(YarnConfiguration.DEFAULT_YARN_APP_ACL);
+   private final Configuration conf;
+   private final AdminACLsManager adminAclsManager;
+   private final ConcurrentMap<ApplicationId, Map<ApplicationAccessType, AccessControlList>> applicationACLS
+@@ -100,18 +102,26 @@ public boolean checkAccess(UserGroupInformation callerUGI,
+     if (!areACLsEnabled()) {
+       return true;
+     }
+-
+-    AccessControlList applicationACL = this.applicationACLS
+-        .get(applicationId).get(applicationAccessType);
+-    if (applicationACL == null) {
++    AccessControlList applicationACL = DEFAULT_YARN_APP_ACL;
++    Map<ApplicationAccessType, AccessControlList> acls = this.applicationACLS
++        .get(applicationId);
++    if (acls == null) {
+       if (LOG.isDebugEnabled()) {
++        LOG.debug("ACL not found for application "
++            + applicationId + " owned by "
++            + applicationOwner + ". Using default ["
++            + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
++      }
++    } else {
++      AccessControlList applicationACLInMap = acls.get(applicationAccessType);
++      if (applicationACLInMap != null) {
++        applicationACL = applicationACLInMap;
++      } else if (LOG.isDebugEnabled()) {
+         LOG.debug("ACL not found for access-type " + applicationAccessType
+             + " for application " + applicationId + " owned by "
+             + applicationOwner + ". Using default ["
+             + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
+       }
+-      applicationACL =
+-          new AccessControlList(YarnConfiguration.DEFAULT_YARN_APP_ACL);
+     }
+ 
+     // Allow application-owner for any type of access on the application
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/server/security/TestApplicationACLsManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/server/security/TestApplicationACLsManager.java
+new file mode 100644
+index 0000000..2db1da9
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/server/security/TestApplicationACLsManager.java
+@@ -0,0 +1,180 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.yarn.server.security;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++import java.util.HashMap;
++import java.util.Map;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
++import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.junit.Test;
++
++public class TestApplicationACLsManager {
++
++  private static final String ADMIN_USER = "adminuser";
++  private static final String APP_OWNER = "appuser";
++  private static final String TESTUSER1 = "testuser1";
++  private static final String TESTUSER2 = "testuser2";
++  private static final String TESTUSER3 = "testuser3";
++
++  @Test
++  public void testCheckAccess() {
++    Configuration conf = new Configuration();
++    conf.setBoolean(YarnConfiguration.YARN_ACL_ENABLE,
++        true);
++    conf.set(YarnConfiguration.YARN_ADMIN_ACL,
++        ADMIN_USER);
++    ApplicationACLsManager aclManager = new ApplicationACLsManager(conf);
++    Map<ApplicationAccessType, String> aclMap = 
++        new HashMap<ApplicationAccessType, String>();
++    aclMap.put(ApplicationAccessType.VIEW_APP, TESTUSER1 + "," + TESTUSER3);
++    aclMap.put(ApplicationAccessType.MODIFY_APP, TESTUSER1);
++    ApplicationId appId = ApplicationId.newInstance(1, 1);
++    aclManager.addApplication(appId, aclMap);
++
++    //User in ACL, should be allowed access
++    UserGroupInformation testUser1 = UserGroupInformation
++        .createRemoteUser(TESTUSER1);
++    assertTrue(aclManager.checkAccess(testUser1, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(testUser1, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++
++    //User NOT in ACL, should not be allowed access
++    UserGroupInformation testUser2 = UserGroupInformation
++        .createRemoteUser(TESTUSER2);
++    assertFalse(aclManager.checkAccess(testUser2, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertFalse(aclManager.checkAccess(testUser2, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++
++    //User has View access, but not modify access
++    UserGroupInformation testUser3 = UserGroupInformation
++        .createRemoteUser(TESTUSER3);
++    assertTrue(aclManager.checkAccess(testUser3, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertFalse(aclManager.checkAccess(testUser3, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++
++    //Application Owner should have all access
++    UserGroupInformation appOwner = UserGroupInformation
++        .createRemoteUser(APP_OWNER);
++    assertTrue(aclManager.checkAccess(appOwner, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(appOwner, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++
++    //Admin should have all access
++    UserGroupInformation adminUser = UserGroupInformation
++        .createRemoteUser(ADMIN_USER);
++    assertTrue(aclManager.checkAccess(adminUser, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(adminUser, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++  }
++
++  @Test
++  public void testCheckAccessWithNullACLS() {
++    Configuration conf = new Configuration();
++    conf.setBoolean(YarnConfiguration.YARN_ACL_ENABLE,
++        true);
++    conf.set(YarnConfiguration.YARN_ADMIN_ACL,
++        ADMIN_USER);
++    ApplicationACLsManager aclManager = new ApplicationACLsManager(conf);
++    UserGroupInformation appOwner = UserGroupInformation
++        .createRemoteUser(APP_OWNER);
++    ApplicationId appId = ApplicationId.newInstance(1, 1);
++    //Application ACL is not added
++
++    //Application Owner should have all access even if Application ACL is not added
++    assertTrue(aclManager.checkAccess(appOwner, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(appOwner, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++
++    //Admin should have all access
++    UserGroupInformation adminUser = UserGroupInformation
++        .createRemoteUser(ADMIN_USER);
++    assertTrue(aclManager.checkAccess(adminUser, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(adminUser, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++
++    // A regular user should Not have access
++    UserGroupInformation testUser1 = UserGroupInformation
++        .createRemoteUser(TESTUSER1);
++    assertFalse(aclManager.checkAccess(testUser1, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertFalse(aclManager.checkAccess(testUser1, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++  }
++  
++  @Test
++  public void testCheckAccessWithPartialACLS() {
++    Configuration conf = new Configuration();
++    conf.setBoolean(YarnConfiguration.YARN_ACL_ENABLE,
++        true);
++    conf.set(YarnConfiguration.YARN_ADMIN_ACL,
++        ADMIN_USER);
++    ApplicationACLsManager aclManager = new ApplicationACLsManager(conf);
++    UserGroupInformation appOwner = UserGroupInformation
++        .createRemoteUser(APP_OWNER);
++    // Add only the VIEW ACLS
++    Map<ApplicationAccessType, String> aclMap = 
++        new HashMap<ApplicationAccessType, String>();
++    aclMap.put(ApplicationAccessType.VIEW_APP, TESTUSER1 );
++    ApplicationId appId = ApplicationId.newInstance(1, 1);
++    aclManager.addApplication(appId, aclMap);
++
++    //Application Owner should have all access even if Application ACL is not added
++    assertTrue(aclManager.checkAccess(appOwner, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(appOwner, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++
++    //Admin should have all access
++    UserGroupInformation adminUser = UserGroupInformation
++        .createRemoteUser(ADMIN_USER);
++    assertTrue(aclManager.checkAccess(adminUser, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertTrue(aclManager.checkAccess(adminUser, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++
++    // testuser1 should  have view access only
++    UserGroupInformation testUser1 = UserGroupInformation
++        .createRemoteUser(TESTUSER1);
++    assertTrue(aclManager.checkAccess(testUser1, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertFalse(aclManager.checkAccess(testUser1, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++    
++    // A testuser2 should Not have access
++    UserGroupInformation testUser2 = UserGroupInformation
++        .createRemoteUser(TESTUSER2);
++    assertFalse(aclManager.checkAccess(testUser2, ApplicationAccessType.VIEW_APP, 
++        APP_OWNER, appId));
++    assertFalse(aclManager.checkAccess(testUser2, ApplicationAccessType.MODIFY_APP, 
++        APP_OWNER, appId));
++  }
++}
+-- 
+1.7.9.5
+

@@ -1,0 +1,137 @@
+From df061c073c4334423aff165ed4a5232a01021b14 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 4 Sep 2014 21:11:27 +0000
+Subject: [PATCH 376/813] YARN-2431. NM restart: cgroup is not removed for
+ reacquired containers. Contributed by Jason Lowe
+ (cherry picked from commit
+ 3fa5f728c4d6944302621965d6a0376827af5b51)
+
+(cherry picked from commit 04d325afffd3696fd1d932b1aee47856164b916f)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/nodemanager/LinuxContainerExecutor.java |   11 ++++
+ .../nodemanager/TestLinuxContainerExecutor.java    |   60 ++++++++++++++++++++
+ 2 files changed, 71 insertions(+)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
+index 5a8598c..51e8f1b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.nodemanager;
+ 
+ import com.google.common.base.Optional;
++
+ import java.io.File;
+ import java.io.IOException;
+ import java.net.InetSocketAddress;
+@@ -331,6 +332,16 @@ public int launchContainer(Container container,
+   }
+ 
+   @Override
++  public int reacquireContainer(String user, ContainerId containerId)
++      throws IOException {
++    try {
++      return super.reacquireContainer(user, containerId);
++    } finally {
++      resourcesHandler.postExecute(containerId);
++    }
++  }
++
++  @Override
+   public boolean signalContainer(String user, String pid, Signal signal)
+       throws IOException {
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutor.java
+index f840730..af090cd 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutor.java
+@@ -30,6 +30,8 @@
+ import java.io.IOException;
+ import java.io.PrintWriter;
+ import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Set;
+ 
+ import org.junit.Assert;
+ import org.apache.commons.logging.Log;
+@@ -42,11 +44,15 @@
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
++import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
++import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor.Signal;
+ import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
++import org.apache.hadoop.yarn.server.nodemanager.util.LCEResourcesHandler;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -346,4 +352,58 @@ public void testNonsecureUsernamePattern() throws Exception {
+     }
+   }
+ 
++  @Test(timeout=10000)
++  public void testPostExecuteAfterReacquisition() throws Exception {
++    // make up some bogus container ID
++    ApplicationId appId = ApplicationId.newInstance(12345, 67890);
++    ApplicationAttemptId attemptId =
++        ApplicationAttemptId.newInstance(appId, 54321);
++    ContainerId cid = ContainerId.newInstance(attemptId, 9876);
++
++    Configuration conf = new YarnConfiguration();
++    conf.setClass(YarnConfiguration.NM_LINUX_CONTAINER_RESOURCES_HANDLER,
++        TestResourceHandler.class, LCEResourcesHandler.class);
++    LinuxContainerExecutor lce = new LinuxContainerExecutor();
++    lce.setConf(conf);
++    try {
++      lce.init();
++    } catch (IOException e) {
++      // expected if LCE isn't setup right, but not necessary for this test
++    }
++    lce.reacquireContainer("foouser", cid);
++    Assert.assertTrue("postExec not called after reacquisition",
++        TestResourceHandler.postExecContainers.contains(cid));
++  }
++
++  private static class TestResourceHandler implements LCEResourcesHandler {
++    static Set<ContainerId> postExecContainers = new HashSet<ContainerId>();
++
++    @Override
++    public void setConf(Configuration conf) {
++    }
++
++    @Override
++    public Configuration getConf() {
++      return null;
++    }
++
++    @Override
++    public void init(LinuxContainerExecutor lce) throws IOException {
++    }
++
++    @Override
++    public void preExecute(ContainerId containerId, Resource containerResource)
++        throws IOException {
++    }
++
++    @Override
++    public void postExecute(ContainerId containerId) {
++      postExecContainers.add(containerId);
++    }
++
++    @Override
++    public String getResourcesOption(ContainerId containerId) {
++      return null;
++    }
++  }
+ }
+-- 
+1.7.9.5
+

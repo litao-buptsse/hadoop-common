@@ -1,0 +1,47 @@
+From 90136a26f7cae2082a98763f10da51072ff6d4ca Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 11 Jul 2014 01:28:47 +0000
+Subject: [PATCH 296/813] HDFS-6640. Syntax for MKDIRS, CREATESYMLINK, and
+ SETXATTR are given wrongly in WebHdfs document
+ (missed webhdfs/v1). Contributed by Stephen Chu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1609603 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b90dfe0b499e9ff25b3beeb4c79d6f068e80baa9)
+---
+ .../hadoop-hdfs/src/site/apt/WebHDFS.apt.vm        |    6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm
+index bab2af9..c3f6a6b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm
+@@ -397,7 +397,7 @@ Hello, webhdfs user!
+   * Submit a HTTP PUT request.
+ 
+ +---------------------------------
+-curl -i -X PUT "http://<HOST>:<PORT>/<PATH>?op=MKDIRS[&permission=<OCTAL>]"
++curl -i -X PUT "http://<HOST>:<PORT>/webhdfs/v1/<PATH>?op=MKDIRS[&permission=<OCTAL>]"
+ +---------------------------------
+ 
+   The client receives a response with a {{{Boolean JSON Schema}<<<boolean>>> JSON object}}:
+@@ -422,7 +422,7 @@ Transfer-Encoding: chunked
+   * Submit a HTTP PUT request.
+ 
+ +---------------------------------
+-curl -i -X PUT "http://<HOST>:<PORT>/<PATH>?op=CREATESYMLINK
++curl -i -X PUT "http://<HOST>:<PORT>/webhdfs/v1/<PATH>?op=CREATESYMLINK
+                               &destination=<PATH>[&createParent=<true|false>]"
+ +---------------------------------
+ 
+@@ -959,7 +959,7 @@ Content-Length: 0
+   * Submit a HTTP PUT request.
+ 
+ +---------------------------------
+-curl -i -X PUT "http://<HOST>:<PORT>/webhdfs/v1/<PATH>?op=op=SETXATTR
++curl -i -X PUT "http://<HOST>:<PORT>/webhdfs/v1/<PATH>?op=SETXATTR
+                               &xattr.name=<XATTRNAME>&xattr.value=<XATTRVALUE>
+                               &flag=<FLAG>"
+ +---------------------------------
+-- 
+1.7.9.5
+

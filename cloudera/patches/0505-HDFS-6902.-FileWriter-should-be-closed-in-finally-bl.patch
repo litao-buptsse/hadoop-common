@@ -1,0 +1,40 @@
+From 0d64db1e2756b3a03fa1ae546884c09d822ddbf0 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Wed, 27 Aug 2014 13:49:31 -0700
+Subject: [PATCH 505/813] HDFS-6902. FileWriter should be closed in finally
+ block in BlockReceiver#receiveBlock() (Tsuyoshi
+ OZAWA via Colin Patrick McCabe)
+
+(cherry picked from commit b6b95ff66700e4db1d8d59a31c3048cb10504262)
+(cherry picked from commit 01b2c9b15f812872f2797aec0fe38cc2e1e488fe)
+---
+ .../hadoop/hdfs/server/datanode/BlockReceiver.java |    6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
+index 8ad0d0f..820d3fe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
+@@ -795,15 +795,17 @@ void receiveBlock(
+               LOG.warn("Failed to delete restart meta file: " +
+                   restartMeta.getPath());
+             }
++            FileWriter out = null;
+             try {
+-              FileWriter out = new FileWriter(restartMeta);
++              out = new FileWriter(restartMeta);
+               // write out the current time.
+               out.write(Long.toString(Time.now() + restartBudget));
+               out.flush();
+-              out.close();
+             } catch (IOException ioe) {
+               // The worst case is not recovering this RBW replica. 
+               // Client will fall back to regular pipeline recovery.
++            } finally {
++              IOUtils.cleanup(LOG, out);
+             }
+             try {              
+               // Even if the connection is closed after the ack packet is
+-- 
+1.7.9.5
+

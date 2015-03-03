@@ -1,0 +1,480 @@
+From 7810204db6d38c3d3c5a74442c0420038e67f50e Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:13 +0000
+Subject: [PATCH 211/813] HADOOP-10719. Add generateEncryptedKey and
+ decryptEncryptedKey methods to KeyProvider.
+ (asuresh via tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619527 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 870d09857c4aac7afd27d96479e7483fc23f1852)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../crypto/key/KeyProviderCryptoExtension.java     |  246 ++++++++++++++++++++
+ .../hadoop/crypto/key/KeyProviderExtension.java    |  123 ++++++++++
+ .../crypto/key/TestKeyProviderCryptoExtension.java |   66 ++++++
+ 3 files changed, 435 insertions(+)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderCryptoExtension.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+new file mode 100644
+index 0000000..af3400d
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+@@ -0,0 +1,246 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.crypto.key;
++
++import java.io.IOException;
++import java.security.GeneralSecurityException;
++import java.security.SecureRandom;
++
++import javax.crypto.Cipher;
++import javax.crypto.spec.IvParameterSpec;
++import javax.crypto.spec.SecretKeySpec;
++
++import com.google.common.base.Preconditions;
++
++/**
++ * A KeyProvider with Cytographic Extensions specifically for generating
++ * Encrypted Keys as well as decrypting them
++ *
++ */
++public class KeyProviderCryptoExtension extends
++    KeyProviderExtension<KeyProviderCryptoExtension.CryptoExtension> {
++
++  protected static final String EEK = "EEK";
++  protected static final String EK = "EK";
++
++  /**
++   * This is a holder class whose instance contains the keyVersionName, iv
++   * used to generate the encrypted Key and the encrypted KeyVersion
++   */
++  public static class EncryptedKeyVersion {
++    private String keyVersionName;
++    private byte[] iv;
++    private KeyVersion encryptedKey;
++
++    protected EncryptedKeyVersion(String keyVersionName, byte[] iv,
++        KeyVersion encryptedKey) {
++      this.keyVersionName = keyVersionName;
++      this.iv = iv;
++      this.encryptedKey = encryptedKey;
++    }
++
++    public String getKeyVersionName() {
++      return keyVersionName;
++    }
++
++    public byte[] getIv() {
++      return iv;
++    }
++
++    public KeyVersion getEncryptedKey() {
++      return encryptedKey;
++    }
++
++  }
++
++  /**
++   * CryptoExtension is a type of Extension that exposes methods to generate
++   * EncryptedKeys and to decrypt the same.
++   */
++  public interface CryptoExtension extends KeyProviderExtension.Extension {
++
++    /**
++     * Generates a key material and encrypts it using the given key version name
++     * and initialization vector. The generated key material is of the same
++     * length as the <code>KeyVersion</code> material and is encrypted using the
++     * same cipher.
++     * <p/>
++     * NOTE: The generated key is not stored by the <code>KeyProvider</code>
++     *
++     * @param encryptionKeyVersion
++     *          a KeyVersion object containing the keyVersion name and material
++     *          to encrypt.
++     * @return EncryptedKeyVersion with the generated key material, the version
++     *         name is 'EEK' (for Encrypted Encryption Key)
++     * @throws IOException
++     *           thrown if the key material could not be generated
++     * @throws GeneralSecurityException
++     *           thrown if the key material could not be encrypted because of a
++     *           cryptographic issue.
++     */
++    public EncryptedKeyVersion generateEncryptedKey(
++        KeyVersion encryptionKeyVersion) throws IOException,
++        GeneralSecurityException;
++
++    /**
++     * Decrypts an encrypted byte[] key material using the given a key version
++     * name and initialization vector.
++     *
++     * @param encryptedKeyVersion
++     *          contains keyVersionName and IV to decrypt the encrypted key
++     *          material
++     * @return a KeyVersion with the decrypted key material, the version name is
++     *         'EK' (For Encryption Key)
++     * @throws IOException
++     *           thrown if the key material could not be decrypted
++     * @throws GeneralSecurityException
++     *           thrown if the key material could not be decrypted because of a
++     *           cryptographic issue.
++     */
++    public KeyVersion decryptEncryptedKey(
++        EncryptedKeyVersion encryptedKeyVersion) throws IOException,
++        GeneralSecurityException;
++  }
++
++  private static class DefaultCryptoExtension implements CryptoExtension {
++
++    private final KeyProvider keyProvider;
++
++    private DefaultCryptoExtension(KeyProvider keyProvider) {
++      this.keyProvider = keyProvider;
++    }
++
++    // the IV used to encrypt a EK typically will be the same IV used to
++    // encrypt data with the EK. To avoid any chance of weakening the
++    // encryption because the same IV is used, we simply XOR the IV thus we
++    // are not using the same IV for 2 different encryptions (even if they
++    // are done using different keys)
++    private byte[] flipIV(byte[] iv) {
++      byte[] rIv = new byte[iv.length];
++      for (int i = 0; i < iv.length; i++) {
++        rIv[i] = (byte) (iv[i] ^ 0xff);
++      }
++      return rIv;
++    }
++
++    @Override
++    public EncryptedKeyVersion generateEncryptedKey(KeyVersion keyVersion)
++        throws IOException, GeneralSecurityException {
++      KeyVersion keyVer =
++          keyProvider.getKeyVersion(keyVersion.getVersionName());
++      Preconditions.checkNotNull(keyVer, "KeyVersion name '%s' does not exist",
++          keyVersion.getVersionName());
++      byte[] newKey = new byte[keyVer.getMaterial().length];
++      SecureRandom.getInstance("SHA1PRNG").nextBytes(newKey);
++      Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
++      byte[] iv = SecureRandom.getSeed(cipher.getBlockSize());
++      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(keyVer.getMaterial(),
++          "AES"), new IvParameterSpec(flipIV(iv)));
++      byte[] ek = cipher.doFinal(newKey);
++      return new EncryptedKeyVersion(keyVersion.getVersionName(), iv,
++          new KeyVersion(keyVer.getName(), EEK, ek));
++    }
++
++    @Override
++    public KeyVersion decryptEncryptedKey(
++        EncryptedKeyVersion encryptedKeyVersion) throws IOException,
++        GeneralSecurityException {
++      KeyVersion keyVer =
++          keyProvider.getKeyVersion(encryptedKeyVersion.getKeyVersionName());
++      Preconditions.checkNotNull(keyVer, "KeyVersion name '%s' does not exist",
++          encryptedKeyVersion.getKeyVersionName());
++      KeyVersion keyVersion = encryptedKeyVersion.getEncryptedKey();
++      Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
++      cipher.init(Cipher.DECRYPT_MODE,
++          new SecretKeySpec(keyVersion.getMaterial(), "AES"),
++          new IvParameterSpec(flipIV(encryptedKeyVersion.getIv())));
++      byte[] ek =
++          cipher.doFinal(encryptedKeyVersion.getEncryptedKey().getMaterial());
++      return new KeyVersion(keyVer.getName(), EK, ek);
++    }
++
++  }
++
++  private KeyProviderCryptoExtension(KeyProvider keyProvider,
++      CryptoExtension extension) {
++    super(keyProvider, extension);
++  }
++
++  /**
++   * Generates a key material and encrypts it using the given key version name
++   * and initialization vector. The generated key material is of the same
++   * length as the <code>KeyVersion</code> material and is encrypted using the
++   * same cipher.
++   * <p/>
++   * NOTE: The generated key is not stored by the <code>KeyProvider</code>
++   *
++   * @param encryptionKey a KeyVersion object containing the keyVersion name and
++   * material to encrypt.
++   * @return EncryptedKeyVersion with the generated key material, the version
++   * name is 'EEK' (for Encrypted Encryption Key)
++   * @throws IOException thrown if the key material could not be generated
++   * @throws GeneralSecurityException thrown if the key material could not be
++   * encrypted because of a cryptographic issue.
++   */
++  public EncryptedKeyVersion generateEncryptedKey(KeyVersion encryptionKey)
++      throws IOException,
++                                           GeneralSecurityException {
++    return getExtension().generateEncryptedKey(encryptionKey);
++  }
++
++  /**
++   * Decrypts an encrypted byte[] key material using the given a key version
++   * name and initialization vector.
++   *
++   * @param encryptedKey contains keyVersionName and IV to decrypt the encrypted
++   * key material
++   * @return a KeyVersion with the decrypted key material, the version name is
++   * 'EK' (For Encryption Key)
++   * @throws IOException thrown if the key material could not be decrypted
++   * @throws GeneralSecurityException thrown if the key material could not be
++   * decrypted because of a cryptographic issue.
++   */
++  public KeyVersion decryptEncryptedKey(EncryptedKeyVersion encryptedKey)
++      throws IOException, GeneralSecurityException {
++    return getExtension().decryptEncryptedKey(encryptedKey);
++  }
++
++  /**
++   * Creates a <code>KeyProviderCryptoExtension</code> using a given
++   * {@link KeyProvider}.
++   * <p/>
++   * If the given <code>KeyProvider</code> implements the
++   * {@link CryptoExtension} interface the <code>KeyProvider</code> itself
++   * will provide the extension functionality, otherwise a default extension
++   * implementation will be used.
++   *
++   * @param keyProvider <code>KeyProvider</code> to use to create the
++   * <code>KeyProviderCryptoExtension</code> extension.
++   * @return a <code>KeyProviderCryptoExtension</code> instance using the
++   * given <code>KeyProvider</code>.
++   */
++  public static KeyProviderCryptoExtension createKeyProviderCryptoExtension(
++      KeyProvider keyProvider) {
++    CryptoExtension cryptoExtension = (keyProvider instanceof CryptoExtension)
++                         ? (CryptoExtension) keyProvider
++                         : new DefaultCryptoExtension(keyProvider);
++    return new KeyProviderCryptoExtension(keyProvider, cryptoExtension);
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+new file mode 100644
+index 0000000..d5ba8ba
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+@@ -0,0 +1,123 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.crypto.key;
++
++import java.io.IOException;
++import java.security.NoSuchAlgorithmException;
++import java.util.List;
++
++/**
++ * This is a utility class used to extend the functionality of KeyProvider, that
++ * takes a KeyProvider and an Extension. It implements all the required methods
++ * of the KeyProvider by delegating it to the provided KeyProvider.
++ */
++public abstract class KeyProviderExtension
++<E extends KeyProviderExtension.Extension> extends KeyProvider {
++
++  /**
++   * A marker interface for the KeyProviderExtension subclass implement.
++   */
++  public static interface Extension {
++  }
++
++  private KeyProvider keyProvider;
++  private E extension;
++
++  public KeyProviderExtension(KeyProvider keyProvider, E extensions) {
++    this.keyProvider = keyProvider;
++    this.extension = extensions;
++  }
++
++  protected E getExtension() {
++    return extension;
++  }
++
++  protected KeyProvider getKeyProvider() {
++    return keyProvider;
++  }
++
++  @Override
++  public boolean isTransient() {
++    return keyProvider.isTransient();
++  }
++
++  @Override
++  public Metadata[] getKeysMetadata(String... names) throws IOException {
++    return keyProvider.getKeysMetadata(names);
++  }
++
++  @Override
++  public KeyVersion getCurrentKey(String name) throws IOException {
++    return keyProvider.getCurrentKey(name);
++  }
++
++  @Override
++  public KeyVersion createKey(String name, Options options)
++      throws NoSuchAlgorithmException, IOException {
++    return keyProvider.createKey(name, options);
++  }
++
++  @Override
++  public KeyVersion rollNewVersion(String name)
++      throws NoSuchAlgorithmException, IOException {
++    return keyProvider.rollNewVersion(name);
++  }
++
++  @Override
++  public KeyVersion getKeyVersion(String versionName) throws IOException {
++    return keyProvider.getKeyVersion(versionName);
++  }
++
++  @Override
++  public List<String> getKeys() throws IOException {
++    return keyProvider.getKeys();
++  }
++
++  @Override
++  public List<KeyVersion> getKeyVersions(String name) throws IOException {
++    return keyProvider.getKeyVersions(name);
++  }
++
++  @Override
++  public Metadata getMetadata(String name) throws IOException {
++    return keyProvider.getMetadata(name);
++  }
++
++  @Override
++  public KeyVersion createKey(String name, byte[] material, Options options)
++      throws IOException {
++    return keyProvider.createKey(name, material, options);
++  }
++
++  @Override
++  public void deleteKey(String name) throws IOException {
++    keyProvider.deleteKey(name);
++  }
++
++  @Override
++  public KeyVersion rollNewVersion(String name, byte[] material)
++      throws IOException {
++    return keyProvider.rollNewVersion(name, material);
++  }
++
++  @Override
++  public void flush() throws IOException {
++    keyProvider.flush();
++  }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderCryptoExtension.java
+new file mode 100644
+index 0000000..f14487f
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderCryptoExtension.java
+@@ -0,0 +1,66 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.crypto.key;
++
++import org.apache.hadoop.conf.Configuration;
++import org.junit.Assert;
++import org.junit.Test;
++
++import java.net.URI;
++import java.security.SecureRandom;
++
++public class TestKeyProviderCryptoExtension {
++
++  private static final String CIPHER = "AES";
++
++  @Test
++  public void testGenerateEncryptedKey() throws Exception {
++    Configuration conf = new Configuration();
++    KeyProvider kp =
++        new UserProvider.Factory().createProvider(new URI("user:///"), conf);
++    KeyProvider.Options options = new KeyProvider.Options(conf);
++    options.setCipher(CIPHER);
++    options.setBitLength(128);
++    KeyProvider.KeyVersion kv = kp.createKey("foo", SecureRandom.getSeed(16),
++        options);
++    KeyProviderCryptoExtension kpExt =
++        KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
++
++    KeyProviderCryptoExtension.EncryptedKeyVersion ek1 =
++        kpExt.generateEncryptedKey(kv);
++    Assert.assertEquals(KeyProviderCryptoExtension.EEK,
++        ek1.getEncryptedKey().getVersionName());
++    Assert.assertNotNull(ek1.getEncryptedKey().getMaterial());
++    Assert.assertEquals(kv.getMaterial().length,
++        ek1.getEncryptedKey().getMaterial().length);
++    KeyProvider.KeyVersion k1 = kpExt.decryptEncryptedKey(ek1);
++    Assert.assertEquals(KeyProviderCryptoExtension.EK, k1.getVersionName());
++    KeyProvider.KeyVersion k1a = kpExt.decryptEncryptedKey(ek1);
++    Assert.assertArrayEquals(k1.getMaterial(), k1a.getMaterial());
++    Assert.assertEquals(kv.getMaterial().length, k1.getMaterial().length);
++
++    KeyProviderCryptoExtension.EncryptedKeyVersion ek2 =
++        kpExt.generateEncryptedKey(kv);
++    KeyProvider.KeyVersion k2 = kpExt.decryptEncryptedKey(ek2);
++    boolean eq = true;
++    for (int i = 0; eq && i < ek2.getEncryptedKey().getMaterial().length; i++) {
++      eq = k2.getMaterial()[i] == k1.getMaterial()[i];
++    }
++    Assert.assertFalse(eq);
++  }
++}
+-- 
+1.7.9.5
+

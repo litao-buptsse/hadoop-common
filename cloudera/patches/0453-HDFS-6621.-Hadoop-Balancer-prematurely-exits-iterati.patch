@@ -1,0 +1,31 @@
+From 39e3f0ffc13573570e1f7e44856e2f58c6795b68 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 11 Sep 2014 10:32:20 -0700
+Subject: [PATCH 453/813] HDFS-6621. Hadoop Balancer prematurely exits
+ iterations. Contributed by Rafal Wodjdyla and
+ Benjamin Bowman.
+
+(cherry picked from commit d1dab6cc63abf5d44533ad9b39e32c582327627b)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/balancer/Dispatcher.java    |    2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Dispatcher.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Dispatcher.java
+index 4a6f96b..10f6675 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Dispatcher.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Dispatcher.java
+@@ -659,6 +659,8 @@ private void dispatchBlocks() {
+           && (!srcBlocks.isEmpty() || blocksToReceive > 0)) {
+         final PendingMove p = chooseNextMove();
+         if (p != null) {
++          // Reset no pending move counter
++          noPendingMoveIteration=0;
+           // move the block
+           moveExecutor.execute(new Runnable() {
+             @Override
+-- 
+1.7.9.5
+

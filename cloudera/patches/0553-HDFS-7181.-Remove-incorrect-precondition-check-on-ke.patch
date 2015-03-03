@@ -1,0 +1,50 @@
+From fa3c0d71ebb9bc7307d6bf7e6d1d7a91b8ce241c Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 2 Oct 2014 13:51:08 -0700
+Subject: [PATCH 553/813] HDFS-7181. Remove incorrect precondition check on
+ key length in FileEncryptionInfo. (wang)
+
+(cherry picked from commit 6ac10516e7fa28384b6d3c2670f6621e2666ffdb)
+(cherry picked from commit 6dbba19469d698891e9c6a8513cbe58992a736b1)
+---
+ .../java/org/apache/hadoop/crypto/CipherSuite.java |   10 ----------
+ .../org/apache/hadoop/fs/FileEncryptionInfo.java   |    2 --
+ 2 files changed, 12 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CipherSuite.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CipherSuite.java
+index 9962b38..c9355d7 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CipherSuite.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CipherSuite.java
+@@ -73,16 +73,6 @@ public String toString() {
+     return builder.toString();
+   }
+   
+-  public static void checkName(String name) {
+-    CipherSuite[] suites = CipherSuite.values();
+-    for (CipherSuite suite : suites) {
+-      if (suite.getName().equals(name)) {
+-        return;
+-      }
+-    }
+-    throw new IllegalArgumentException("Invalid cipher suite name: " + name);
+-  }
+-  
+   /**
+    * Convert to CipherSuite from name, {@link #algoBlockSize} is fixed for
+    * certain cipher suite, just need to compare the name.
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
+index 27e0c85..00ddfe8 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
+@@ -58,8 +58,6 @@ public FileEncryptionInfo(final CipherSuite suite,
+     checkNotNull(iv);
+     checkNotNull(keyName);
+     checkNotNull(ezKeyVersionName);
+-    checkArgument(edek.length == suite.getAlgorithmBlockSize(),
+-        "Unexpected key length");
+     checkArgument(iv.length == suite.getAlgorithmBlockSize(),
+         "Unexpected IV length");
+     this.cipherSuite = suite;
+-- 
+1.7.9.5
+

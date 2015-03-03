@@ -1,0 +1,37 @@
+From db2fc9cea2ee89faa57d7b87a288ba34730b87f8 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 22 Aug 2014 04:05:56 +0000
+Subject: [PATCH 520/813] HADOOP-10989. Merging change r1619659 from trunk to
+ branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619660 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a6f5f71a126fdf131a0673a99799c23348813361)
+---
+ .../org/apache/hadoop/security/hadoop_user_info.c  |   10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c b/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c
+index ca288ec..e2438b1 100644
+--- a/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c
++++ b/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c
+@@ -193,7 +193,17 @@ int hadoop_user_info_getgroups(struct hadoop_user_info *uinfo)
+   ngroups = uinfo->gids_size;
+   ret = getgrouplist(uinfo->pwd.pw_name, uinfo->pwd.pw_gid, 
+                          uinfo->gids, &ngroups);
++  // Return value is different on Linux vs. FreeBSD.  Linux: the number of groups
++  // or -1 on error.  FreeBSD: 0 on success or -1 on error.  Unfortunately, we
++  // can't accept a 0 return on Linux, because buggy implementations have been
++  // observed to return 0 but leave the other out parameters in an indeterminate
++  // state.  This deviates from the man page, but it has been observed in
++  // practice.  See issue HADOOP-10989 for details.
++#ifdef __linux__
++  if (ret > 0) {
++#else
+   if (ret >= 0) {
++#endif
+     uinfo->num_gids = ngroups;
+     ret = put_primary_gid_first(uinfo);
+     if (ret) {
+-- 
+1.7.9.5
+

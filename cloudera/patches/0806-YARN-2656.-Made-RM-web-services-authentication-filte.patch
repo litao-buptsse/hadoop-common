@@ -1,0 +1,556 @@
+From 4140b3976393bd5351d0007db6266beb8e467f15 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Tue, 14 Oct 2014 21:50:46 -0700
+Subject: [PATCH 806/813] YARN-2656. Made RM web services authentication
+ filter support proxy user. Contributed by Varun
+ Vasudev and Zhijie Shen.
+
+(cherry picked from commit 1220bb72d452521c6f09cebe1dd77341054ee9dd)
+(cherry picked from commit bec165e163e827f1a1a8f39fe5491c26faa9409e)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../web/DelegationTokenAuthenticationHandler.java  |    2 +-
+ .../security/http/RMAuthenticationFilter.java      |   70 ++++++---
+ .../http/RMAuthenticationFilterInitializer.java    |   20 ++-
+ .../server/resourcemanager/ResourceManager.java    |    2 +
+ .../resourcemanager/webapp/RMWebServices.java      |   13 +-
+ .../server/resourcemanager/TestRMAdminService.java |    1 +
+ ...RMWebServicesDelegationTokenAuthentication.java |  151 +++++++++++++++++---
+ .../src/site/apt/ResourceManagerRest.apt.vm        |    2 +-
+ 8 files changed, 215 insertions(+), 46 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+index 856b411..b2bfc11 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+@@ -84,7 +84,7 @@
+ 
+   private static final Set<String> DELEGATION_TOKEN_OPS = new HashSet<String>();
+ 
+-  static final String DELEGATION_TOKEN_UGI_ATTRIBUTE =
++  public static final String DELEGATION_TOKEN_UGI_ATTRIBUTE =
+       "hadoop.security.delegation-token.ugi";
+ 
+   static {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilter.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilter.java
+index 651b5b0..3eeb620 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilter.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilter.java
+@@ -18,46 +18,74 @@
+ 
+ package org.apache.hadoop.yarn.server.security.http;
+ 
+-import java.util.Properties;
++import java.io.IOException;
+ 
++import javax.servlet.FilterChain;
+ import javax.servlet.FilterConfig;
+ import javax.servlet.ServletException;
++import javax.servlet.ServletRequest;
++import javax.servlet.ServletResponse;
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletRequestWrapper;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceStability.Unstable;
+-import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
++import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationFilter;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticator;
+ 
+ @Private
+ @Unstable
+-public class RMAuthenticationFilter extends AuthenticationFilter {
++public class RMAuthenticationFilter extends
++    DelegationTokenAuthenticationFilter {
+ 
++  static private AbstractDelegationTokenSecretManager<?> manager;
+   public static final String AUTH_HANDLER_PROPERTY =
+       "yarn.resourcemanager.authentication-handler";
++  private static final String OLD_HEADER = "Hadoop-YARN-Auth-Delegation-Token";
+ 
+   public RMAuthenticationFilter() {
+   }
+ 
+   @Override
+-  protected Properties getConfiguration(String configPrefix,
+-      FilterConfig filterConfig) throws ServletException {
+-
+-    // In yarn-site.xml, we can simply set type to "kerberos". However, we need
+-    // to replace the name here to use the customized Kerberos + DT service
+-    // instead of the standard Kerberos handler.
+-
+-    Properties properties = super.getConfiguration(configPrefix, filterConfig);
+-    String yarnAuthHandler = properties.getProperty(AUTH_HANDLER_PROPERTY);
+-    if (yarnAuthHandler == null || yarnAuthHandler.isEmpty()) {
+-      // if http auth type is simple, the default authentication filter
+-      // will handle it, else throw an exception
+-      if (!properties.getProperty(AUTH_TYPE).equals("simple")) {
+-        throw new ServletException("Authentication handler class is empty");
++  public void init(FilterConfig filterConfig) throws ServletException {
++    filterConfig.getServletContext().setAttribute(
++      DelegationTokenAuthenticationFilter.DELEGATION_TOKEN_SECRET_MANAGER_ATTR,
++      manager);
++    super.init(filterConfig);
++  }
++
++  /**
++   * {@inheritDoc}
++   */
++  @Override
++  public void doFilter(ServletRequest request, ServletResponse response,
++      FilterChain filterChain) throws IOException, ServletException {
++    HttpServletRequest req = (HttpServletRequest) request;
++    String newHeader =
++        req.getHeader(DelegationTokenAuthenticator.DELEGATION_TOKEN_HEADER);
++    if (newHeader == null || newHeader.isEmpty()) {
++      // For backward compatibility, allow use of the old header field
++      // only when the new header doesn't exist
++      final String oldHeader = req.getHeader(OLD_HEADER);
++      if (oldHeader != null && !oldHeader.isEmpty()) {
++        request = new HttpServletRequestWrapper(req) {
++          @Override
++          public String getHeader(String name) {
++            if (name
++                .equals(DelegationTokenAuthenticator.DELEGATION_TOKEN_HEADER)) {
++              return oldHeader;
++            }
++            return super.getHeader(name);
++          }
++        };
+       }
+     }
+-    if (properties.getProperty(AUTH_TYPE).equalsIgnoreCase("kerberos")) {
+-      properties.setProperty(AUTH_TYPE, yarnAuthHandler);
+-    }
+-    return properties;
++    super.doFilter(request, response, filterChain);
+   }
+ 
++  public static void setDelegationTokenSecretManager(
++      AbstractDelegationTokenSecretManager<?> manager) {
++    RMAuthenticationFilter.manager = manager;
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
+index 128794e..f0baf2b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
+@@ -35,17 +35,21 @@
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
+ import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationHandler;
++import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ 
+ @Unstable
+ public class RMAuthenticationFilterInitializer extends FilterInitializer {
+ 
+   String configPrefix;
++  String proxyPrefix;
+   String signatureSecretFileProperty;
+   String kerberosPrincipalProperty;
+   String cookiePath;
+ 
+   public RMAuthenticationFilterInitializer() {
+     this.configPrefix = "hadoop.http.authentication.";
++    this.proxyPrefix = "yarn.resourcemanager.webapp.proxyuser.";
+     this.signatureSecretFileProperty =
+         AuthenticationFilter.SIGNATURE_SECRET + ".file";
+     this.kerberosPrincipalProperty = KerberosAuthenticationHandler.PRINCIPAL;
+@@ -59,10 +63,14 @@ public RMAuthenticationFilterInitializer() {
+     filterConfig.put(AuthenticationFilter.COOKIE_PATH, cookiePath);
+ 
+     for (Map.Entry<String, String> entry : conf) {
+-      String name = entry.getKey();
+-      if (name.startsWith(configPrefix)) {
+-        String value = conf.get(name);
+-        name = name.substring(configPrefix.length());
++      String propName = entry.getKey();
++      if (propName.startsWith(configPrefix)) {
++        String value = conf.get(propName);
++        String name = propName.substring(configPrefix.length());
++        filterConfig.put(name, value);
++      } else if (propName.startsWith(proxyPrefix)) {
++        String value = conf.get(propName);
++        String name = propName.substring("yarn.resourcemanager.webapp.".length());
+         filterConfig.put(name, value);
+       }
+     }
+@@ -107,6 +115,10 @@ public RMAuthenticationFilterInitializer() {
+       }
+       filterConfig.put(KerberosAuthenticationHandler.PRINCIPAL, principal);
+     }
++
++    filterConfig.put(DelegationTokenAuthenticationHandler.TOKEN_KIND,
++        RMDelegationTokenIdentifier.KIND_NAME.toString());
++
+     return filterConfig;
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index f35e449..5864469 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -849,6 +849,8 @@ protected void startWepApp() {
+             + " for RM webapp authentication");
+         RMAuthenticationHandler
+           .setSecretManager(getClientRMService().rmDTSecretManager);
++        RMAuthenticationFilter
++          .setDelegationTokenSecretManager(getClientRMService().rmDTSecretManager);
+         String yarnAuthKey =
+             authPrefix + RMAuthenticationFilter.AUTH_HANDLER_PROPERTY;
+         conf.setStrings(yarnAuthKey, RMAuthenticationHandler.class.getName());
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java
+index 24a90bd..87c895a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java
+@@ -65,6 +65,7 @@
+ import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.security.token.TokenIdentifier;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationHandler;
+ import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
+@@ -1085,10 +1086,18 @@ private UserGroupInformation createKerberosUserGroupInformation(
+     }
+ 
+     String authType = hsr.getAuthType();
+-    if (!KerberosAuthenticationHandler.TYPE.equals(authType)) {
++    if (!KerberosAuthenticationHandler.TYPE.equalsIgnoreCase(authType)) {
+       String msg =
+           "Delegation token operations can only be carried out on a "
+-              + "Kerberos authenticated channel";
++              + "Kerberos authenticated channel. Expected auth type is "
++              + KerberosAuthenticationHandler.TYPE + ", got type " + authType;
++      throw new YarnException(msg);
++    }
++    if (hsr
++      .getAttribute(DelegationTokenAuthenticationHandler.DELEGATION_TOKEN_UGI_ATTRIBUTE) != null) {
++      String msg =
++          "Delegation token operations cannot be carried out using delegation"
++              + " token authentication.";
+       throw new YarnException(msg);
+     }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 554f57c..7161d0c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -708,6 +708,7 @@ public void testRMInitialsWithFileSystemBasedConfigurationProvider()
+           aclsString);
+ 
+       // verify ProxyUsers and ProxyHosts
++      ProxyUsers.refreshSuperUserGroupsConfiguration(configuration);
+       Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyGroups()
+           .get("hadoop.proxyuser.test.groups").size() == 1);
+       Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyGroups()
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
+index 239d592..a9ae0b9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
+@@ -31,6 +31,8 @@
+ import java.io.StringWriter;
+ import java.net.HttpURLConnection;
+ import java.net.URL;
++import java.util.Arrays;
++import java.util.Collection;
+ import java.util.concurrent.Callable;
+ 
+ import javax.ws.rs.core.MediaType;
+@@ -46,7 +48,10 @@
+ import org.apache.hadoop.security.authentication.KerberosTestUtils;
+ import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
+ import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticator;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
+@@ -55,11 +60,15 @@
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.codehaus.jettison.json.JSONObject;
+ import org.junit.AfterClass;
++import org.junit.Assert;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+ 
+ import com.sun.jersey.api.client.ClientResponse.Status;
++import org.junit.runner.RunWith;
++import org.junit.runners.Parameterized;
+ 
++@RunWith(Parameterized.class)
+ public class TestRMWebServicesDelegationTokenAuthentication {
+ 
+   private static final File testRootDir = new File("target",
+@@ -74,10 +83,17 @@
+   private static MiniKdc testMiniKDC;
+   private static MockRM rm;
+ 
++
++  String delegationTokenHeader;
++
+   // use published header name
+-  final static String DelegationTokenHeader =
++  final static String OldDelegationTokenHeader =
+       "Hadoop-YARN-Auth-Delegation-Token";
+ 
++  // alternate header name
++  final static String NewDelegationTokenHeader =
++      DelegationTokenAuthenticator.DELEGATION_TOKEN_HEADER;
++
+   @BeforeClass
+   public static void setUp() {
+     try {
+@@ -99,8 +115,14 @@ public static void tearDown() {
+     }
+   }
+ 
+-  public TestRMWebServicesDelegationTokenAuthentication() throws Exception {
++  @Parameterized.Parameters
++  public static Collection<Object[]> headers() {
++    return Arrays.asList(new Object[][] { {OldDelegationTokenHeader}, {NewDelegationTokenHeader}});
++  }
++
++  public TestRMWebServicesDelegationTokenAuthentication(String header) throws Exception {
+     super();
++    this.delegationTokenHeader = header;
+   }
+ 
+   private static void setupAndStartRM() throws Exception {
+@@ -136,6 +158,8 @@ private static void setupAndStartRM() throws Exception {
+     rmconf.set(YarnConfiguration.NM_WEBAPP_SPNEGO_KEYTAB_FILE_KEY,
+       httpSpnegoKeytabFile.getAbsolutePath());
+     rmconf.setBoolean("mockrm.webapp.enabled", true);
++    rmconf.set("yarn.resourcemanager.webapp.proxyuser.client.hosts", "*");
++    rmconf.set("yarn.resourcemanager.webapp.proxyuser.client.groups", "*");
+     UserGroupInformation.setConfiguration(rmconf);
+     rm = new MockRM(rmconf);
+     rm.start();
+@@ -143,10 +167,11 @@ private static void setupAndStartRM() throws Exception {
+   }
+ 
+   private static void setupKDC() throws Exception {
+-    if (miniKDCStarted == false) {
++    if (!miniKDCStarted) {
+       testMiniKDC.start();
+       getKdc().createPrincipal(httpSpnegoKeytabFile, "HTTP/localhost",
+-        "client", UserGroupInformation.getLoginUser().getShortUserName());
++        "client", UserGroupInformation.getLoginUser().getShortUserName(),
++        "client2");
+       miniKDCStarted = true;
+     }
+   }
+@@ -189,11 +214,26 @@ public void testDelegationTokenAuth() throws Exception {
+     }
+ 
+     conn = (HttpURLConnection) url.openConnection();
+-    conn.setRequestProperty(DelegationTokenHeader, token);
++    conn.setRequestProperty(delegationTokenHeader, token);
+     setupConn(conn, "POST", MediaType.APPLICATION_XML, requestBody);
+ 
+     // this should not fail
+-    conn.getInputStream();
++    try {
++      conn.getInputStream();
++    }
++    catch(IOException ie) {
++      InputStream errorStream = conn.getErrorStream();
++      String error = "";
++      BufferedReader reader = null;
++      reader = new BufferedReader(new InputStreamReader(errorStream, "UTF8"));
++      for (String line; (line = reader.readLine()) != null;) {
++        error += line;
++      }
++      reader.close();
++      errorStream.close();
++      fail("Response " + conn.getResponseCode() + "; " + error);
++    }
++
+     boolean appExists =
+         rm.getRMContext().getRMApps()
+           .containsKey(ConverterUtils.toApplicationId(appid));
+@@ -203,8 +243,6 @@ public void testDelegationTokenAuth() throws Exception {
+           .get(ConverterUtils.toApplicationId(appid));
+     String owner = actualApp.getUser();
+     assertEquals("client", owner);
+-
+-    return;
+   }
+ 
+   // Test to make sure that cancelled delegation tokens
+@@ -221,7 +259,7 @@ public void testCancelledDelegationToken() throws Exception {
+ 
+     URL url = new URL("http://localhost:8088/ws/v1/cluster/apps");
+     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+-    conn.setRequestProperty(DelegationTokenHeader, token);
++    conn.setRequestProperty(delegationTokenHeader, token);
+     setupConn(conn, "POST", MediaType.APPLICATION_XML, requestBody);
+ 
+     // this should fail with unauthorized because only
+@@ -232,7 +270,6 @@ public void testCancelledDelegationToken() throws Exception {
+     } catch (IOException e) {
+       assertEquals(Status.FORBIDDEN.getStatusCode(), conn.getResponseCode());
+     }
+-    return;
+   }
+ 
+   // Test to make sure that we can't do delegation token
+@@ -248,7 +285,7 @@ public void testDelegationTokenOps() throws Exception {
+     for (String requestBody : requests) {
+       URL url = new URL("http://localhost:8088/ws/v1/cluster/delegation-token");
+       HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+-      conn.setRequestProperty(DelegationTokenHeader, token);
++      conn.setRequestProperty(delegationTokenHeader, token);
+       setupConn(conn, "POST", MediaType.APPLICATION_JSON, requestBody);
+       try {
+         conn.getInputStream();
+@@ -262,7 +299,7 @@ public void testDelegationTokenOps() throws Exception {
+     // test cancel
+     URL url = new URL("http://localhost:8088/ws/v1/cluster/delegation-token");
+     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+-    conn.setRequestProperty(DelegationTokenHeader, token);
++    conn.setRequestProperty(delegationTokenHeader, token);
+     conn.setRequestProperty(RMWebServices.DELEGATION_TOKEN_HEADER, token);
+     setupConn(conn, "DELETE", null, null);
+     try {
+@@ -271,11 +308,94 @@ public void testDelegationTokenOps() throws Exception {
+     } catch (IOException e) {
+       assertEquals(Status.FORBIDDEN.getStatusCode(), conn.getResponseCode());
+     }
+-    return;
++  }
++
++  // Superuser "client" should be able to get a delegation token
++  // for user "client2" when authenticated using Kerberos
++  // The request shouldn't work when authenticated using DelegationTokens
++  @Test
++  public void testDoAs() throws Exception {
++
++    KerberosTestUtils.doAsClient(new Callable<Void>() {
++      @Override
++      public Void call() throws Exception {
++        String token = "";
++        String owner = "";
++        String renewer = "renewer";
++        String body = "{\"renewer\":\"" + renewer + "\"}";
++        URL url =
++            new URL("http://localhost:8088/ws/v1/cluster/delegation-token?doAs=client2");
++        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
++        setupConn(conn, "POST", MediaType.APPLICATION_JSON, body);
++        InputStream response = conn.getInputStream();
++        assertEquals(Status.OK.getStatusCode(), conn.getResponseCode());
++        BufferedReader reader = null;
++        try {
++          reader = new BufferedReader(new InputStreamReader(response, "UTF8"));
++          for (String line; (line = reader.readLine()) != null;) {
++            JSONObject obj = new JSONObject(line);
++            if (obj.has("token")) {
++              token = obj.getString("token");
++            }
++            if(obj.has("owner")) {
++              owner = obj.getString("owner");
++            }
++          }
++        } finally {
++          IOUtils.closeQuietly(reader);
++          IOUtils.closeQuietly(response);
++        }
++        Assert.assertEquals("client2", owner);
++        Token<RMDelegationTokenIdentifier> realToken = new Token<RMDelegationTokenIdentifier>();
++        realToken.decodeFromUrlString(token);
++        Assert.assertEquals("client2", realToken.decodeIdentifier().getOwner().toString());
++        return null;
++      }
++    });
++
++    // this should not work
++    final String token = getDelegationToken("client");
++    String renewer = "renewer";
++    String body = "{\"renewer\":\"" + renewer + "\"}";
++    URL url =
++        new URL("http://localhost:8088/ws/v1/cluster/delegation-token?doAs=client2");
++    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
++    conn.setRequestProperty(delegationTokenHeader, token);
++    setupConn(conn, "POST", MediaType.APPLICATION_JSON, body);
++    try {
++      conn.getInputStream();
++      fail("Client should not be allowed to impersonate using delegation tokens");
++    }
++    catch(IOException ie) {
++      assertEquals(Status.FORBIDDEN.getStatusCode(), conn.getResponseCode());
++    }
++
++    // this should also fail due to client2 not being a super user
++    KerberosTestUtils.doAs("client2@EXAMPLE.COM", new Callable<Void>() {
++      @Override
++      public Void call() throws Exception {
++        String renewer = "renewer";
++        String body = "{\"renewer\":\"" + renewer + "\"}";
++        URL url =
++            new URL(
++                "http://localhost:8088/ws/v1/cluster/delegation-token?doAs=client");
++        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
++        setupConn(conn, "POST", MediaType.APPLICATION_JSON, body);
++        try {
++          conn.getInputStream();
++          fail("Non superuser client should not be allowed to carry out doAs");
++        }
++        catch (IOException ie) {
++          assertEquals(Status.FORBIDDEN.getStatusCode(), conn.getResponseCode());
++        }
++        return null;
++      }
++    });
++
+   }
+ 
+   private String getDelegationToken(final String renewer) throws Exception {
+-    String token = KerberosTestUtils.doAsClient(new Callable<String>() {
++    return KerberosTestUtils.doAsClient(new Callable<String>() {
+       @Override
+       public String call() throws Exception {
+         String ret = null;
+@@ -305,7 +425,6 @@ public String call() throws Exception {
+         return ret;
+       }
+     });
+-    return token;
+   }
+ 
+   private void cancelDelegationToken(final String tokenString) throws Exception {
+@@ -325,7 +444,6 @@ public Void call() throws Exception {
+         return null;
+       }
+     });
+-    return;
+   }
+ 
+   static String getMarshalledAppInfo(ApplicationSubmissionContextInfo appInfo)
+@@ -353,5 +471,4 @@ static void setupConn(HttpURLConnection conn, String method,
+       }
+     }
+   }
+-
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
+index c819f16..4c27e86 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
+@@ -2943,7 +2943,7 @@ Accept: application/xml
+ 
+ +---+
+   PUT http://<rm http address:port>/ws/v1/cluster/apps/application_1399397633663_0003/state
+-  Hadoop-YARN-Auth-Delegation-Token: MgASY2xpZW50QEVYQU1QTEUuQ09NDHRlc3QtcmVuZXdlcgCKAUbjqcHHigFHB7ZFxwQCFKWD3znCkDSy6SQIjRCLDydxbxvgE1JNX0RFTEVHQVRJT05fVE9LRU4A
++  X-Hadoop-Delegation-Token: MgASY2xpZW50QEVYQU1QTEUuQ09NDHRlc3QtcmVuZXdlcgCKAUbjqcHHigFHB7ZFxwQCFKWD3znCkDSy6SQIjRCLDydxbxvgE1JNX0RFTEVHQVRJT05fVE9LRU4A
+   Content-Type: application/json; charset=UTF8
+   {
+     "state":"KILLED"
+-- 
+1.7.9.5
+

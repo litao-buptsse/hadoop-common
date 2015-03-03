@@ -1,0 +1,41 @@
+From 7ea90b5fee78a64bff85006776941bb7475af04c Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Tue, 12 Aug 2014 21:49:48 +0000
+Subject: [PATCH 581/813] HDFS-6836. HDFS INFO logging is verbose & uses file
+ appenders. (Contributed by Xiaoyu Yao) (cherry
+ picked from
+ a72fba5853d0537bcdbd7851181129173e440dbb)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1617603 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hadoop/hdfs/server/datanode/BlockSender.java   |    6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java
+index 86d88c2..febf2de 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java
+@@ -687,7 +687,7 @@ long sendBlock(DataOutputStream out, OutputStream baseStream,
+     // Trigger readahead of beginning of file if configured.
+     manageOsCache();
+ 
+-    final long startTime = ClientTraceLog.isInfoEnabled() ? System.nanoTime() : 0;
++    final long startTime = ClientTraceLog.isDebugEnabled() ? System.nanoTime() : 0;
+     try {
+       int maxChunksPerPacket;
+       int pktBufSize = PacketHeader.PKT_MAX_HEADER_LEN;
+@@ -733,9 +733,9 @@ long sendBlock(DataOutputStream out, OutputStream baseStream,
+         sentEntireByteRange = true;
+       }
+     } finally {
+-      if (clientTraceFmt != null) {
++      if ((clientTraceFmt != null) && ClientTraceLog.isDebugEnabled()) {
+         final long endTime = System.nanoTime();
+-        ClientTraceLog.info(String.format(clientTraceFmt, totalRead,
++        ClientTraceLog.debug(String.format(clientTraceFmt, totalRead,
+             initialOffset, endTime - startTime));
+       }
+       close();
+-- 
+1.7.9.5
+

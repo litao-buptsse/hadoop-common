@@ -1,0 +1,74 @@
+From d99b3ec0c37274cb2f93d7d497c099f3632f3b92 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 18 Sep 2014 16:03:38 -0700
+Subject: [PATCH 415/813] KMS: Support for multiple Kerberos principals.
+ (tucu)
+
+(cherry picked from commit fad4cd85b313a1d2378adcf03cad67e946a12cd5)
+(cherry picked from commit 22f4ef4fa9c3820797eed050d48a2780ddfa659a)
+---
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    3 +++
+ .../hadoop-kms/src/site/apt/index.apt.vm           |   26 +++++++++++++++++++-
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index ea191fc..e3aa1dc 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -45,6 +45,7 @@
+ import java.io.OutputStream;
+ import java.io.OutputStreamWriter;
+ import java.io.Writer;
++import java.lang.reflect.UndeclaredThrowableException;
+ import java.net.HttpURLConnection;
+ import java.net.SocketTimeoutException;
+ import java.net.URI;
+@@ -400,6 +401,8 @@ public HttpURLConnection run() throws Exception {
+       });
+     } catch (IOException ex) {
+       throw ex;
++    } catch (UndeclaredThrowableException ex) {
++      throw new IOException(ex.getUndeclaredThrowable());
+     } catch (Exception ex) {
+       throw new IOException(ex);
+     }
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index 8570adf..5ab0bbe 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -602,7 +602,31 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+ 
+ *** HTTP Kerberos Principals Configuration
+ 
+-  TBD
++  When KMS instances are behind a load-balancer or VIP, clients will use the
++  hostname of the VIP. For Kerberos SPNEGO authentication, the hostname of the
++  URL is used to construct the Kerberos service name of the server,
++  <<<HTTP/#HOSTNAME#>>>. This means that all KMS instances must have a Kerberos
++  service name with the load-balancer or VIP hostname.
++
++  In order to be able to access directly a specific KMS instance, the KMS
++  instance must also have Keberos service name with its own hostname. This is
++  required for monitoring and admin purposes.
++
++  Both Kerberos service principal credentials (for the load-balancer/VIP
++  hostname and for the actual KMS instance hostname) must be in the keytab file
++  configured for authentication. And the principal name specified in the
++  configuration must be '*'. For example:
++
+++---+
++  <property>
++    <name>hadoop.kms.authentication.kerberos.principal</name>
++    <value>*</value>
++  </property>
+++---+
++
++  <<NOTE:>> If using HTTPS, the SSL certificate used by the KMS instance must
++  be configured to support multiple hostnames (see Java 7
++  <<<keytool>> SAN extension support for details on how to do this).
+ 
+ *** HTTP Authentication Signature
+ 
+-- 
+1.7.9.5
+

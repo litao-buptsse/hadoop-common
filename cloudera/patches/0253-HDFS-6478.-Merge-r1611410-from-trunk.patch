@@ -1,0 +1,322 @@
+From 1387a1c1c22408dfc1a9ddd872ab25aa91d96a1c Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Thu, 17 Jul 2014 17:39:54 +0000
+Subject: [PATCH 253/813] HDFS-6478. Merge r1611410 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611412 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 27e2008484d6b77215cb982919ad5630fe26af2a)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/hdfs/NameNodeProxies.java    |   51 +++++++++-----------
+ .../DatanodeProtocolClientSideTranslatorPB.java    |   29 +----------
+ .../protocolPB/NamenodeProtocolTranslatorPB.java   |    8 ++-
+ .../org/apache/hadoop/hdfs/TestFileCreation.java   |   17 +++++--
+ .../apache/hadoop/hdfs/TestIsMethodSupported.java  |   34 ++++++++-----
+ 5 files changed, 68 insertions(+), 71 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/NameNodeProxies.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/NameNodeProxies.java
+index 12b203f..d41d0f5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/NameNodeProxies.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/NameNodeProxies.java
+@@ -333,19 +333,18 @@ private static NamenodeProtocol createNNProxyWithNamenodeProtocol(
+         address, conf, ugi, NamenodeProtocolPB.class);
+     if (withRetries) { // create the proxy with retries
+       RetryPolicy timeoutPolicy = RetryPolicies.exponentialBackoffRetry(5, 200,
+-          TimeUnit.MILLISECONDS);
+-      Map<Class<? extends Exception>, RetryPolicy> exceptionToPolicyMap 
+-                     = new HashMap<Class<? extends Exception>, RetryPolicy>();
+-      RetryPolicy methodPolicy = RetryPolicies.retryByException(timeoutPolicy,
+-          exceptionToPolicyMap);
+-      Map<String, RetryPolicy> methodNameToPolicyMap 
+-                     = new HashMap<String, RetryPolicy>();
+-      methodNameToPolicyMap.put("getBlocks", methodPolicy);
+-      methodNameToPolicyMap.put("getAccessKeys", methodPolicy);
+-      proxy = (NamenodeProtocolPB) RetryProxy.create(NamenodeProtocolPB.class,
+-          proxy, methodNameToPolicyMap);
++              TimeUnit.MILLISECONDS);
++      Map<String, RetryPolicy> methodNameToPolicyMap
++           = new HashMap<String, RetryPolicy>();
++      methodNameToPolicyMap.put("getBlocks", timeoutPolicy);
++      methodNameToPolicyMap.put("getAccessKeys", timeoutPolicy);
++      NamenodeProtocol translatorProxy =
++          new NamenodeProtocolTranslatorPB(proxy);
++      return (NamenodeProtocol) RetryProxy.create(
++          NamenodeProtocol.class, translatorProxy, methodNameToPolicyMap);
++    } else {
++      return new NamenodeProtocolTranslatorPB(proxy);
+     }
+-    return new NamenodeProtocolTranslatorPB(proxy);
+   }
+   
+   private static ClientProtocol createNNProxyWithClientProtocol(
+@@ -379,29 +378,27 @@ private static ClientProtocol createNNProxyWithClientProtocol(
+                  = new HashMap<Class<? extends Exception>, RetryPolicy>();
+       remoteExceptionToPolicyMap.put(AlreadyBeingCreatedException.class,
+           createPolicy);
+-    
+-      Map<Class<? extends Exception>, RetryPolicy> exceptionToPolicyMap
+-                 = new HashMap<Class<? extends Exception>, RetryPolicy>();
+-      exceptionToPolicyMap.put(RemoteException.class, RetryPolicies
+-          .retryByRemoteException(defaultPolicy,
+-              remoteExceptionToPolicyMap));
+-      RetryPolicy methodPolicy = RetryPolicies.retryByException(
+-          defaultPolicy, exceptionToPolicyMap);
++
++      RetryPolicy methodPolicy = RetryPolicies.retryByRemoteException(
++          defaultPolicy, remoteExceptionToPolicyMap);
+       Map<String, RetryPolicy> methodNameToPolicyMap 
+                  = new HashMap<String, RetryPolicy>();
+     
+       methodNameToPolicyMap.put("create", methodPolicy);
+-    
+-      proxy = (ClientNamenodeProtocolPB) RetryProxy.create(
+-          ClientNamenodeProtocolPB.class,
+-          new DefaultFailoverProxyProvider<ClientNamenodeProtocolPB>(
+-              ClientNamenodeProtocolPB.class, proxy),
++
++      ClientProtocol translatorProxy =
++        new ClientNamenodeProtocolTranslatorPB(proxy);
++      return (ClientProtocol) RetryProxy.create(
++          ClientProtocol.class,
++          new DefaultFailoverProxyProvider<ClientProtocol>(
++              ClientProtocol.class, translatorProxy),
+           methodNameToPolicyMap,
+           defaultPolicy);
++    } else {
++      return new ClientNamenodeProtocolTranslatorPB(proxy);
+     }
+-    return new ClientNamenodeProtocolTranslatorPB(proxy);
+   }
+-  
++
+   private static Object createNameNodeProxy(InetSocketAddress address,
+       Configuration conf, UserGroupInformation ugi, Class<?> xface)
+       throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolClientSideTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolClientSideTranslatorPB.java
+index 2c039ae..5775d6e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolClientSideTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolClientSideTranslatorPB.java
+@@ -97,7 +97,7 @@ public DatanodeProtocolClientSideTranslatorPB(InetSocketAddress nameNodeAddr,
+     RPC.setProtocolEngine(conf, DatanodeProtocolPB.class,
+         ProtobufRpcEngine.class);
+     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+-    rpcProxy = createNamenodeWithRetry(createNamenode(nameNodeAddr, conf, ugi));
++    rpcProxy = createNamenode(nameNodeAddr, conf, ugi);
+   }
+ 
+   private static DatanodeProtocolPB createNamenode(
+@@ -109,33 +109,6 @@ private static DatanodeProtocolPB createNamenode(
+         org.apache.hadoop.ipc.Client.getPingInterval(conf), null).getProxy();
+   }
+ 
+-  /** Create a {@link NameNode} proxy */
+-  static DatanodeProtocolPB createNamenodeWithRetry(
+-      DatanodeProtocolPB rpcNamenode) {
+-    RetryPolicy createPolicy = RetryPolicies
+-        .retryUpToMaximumCountWithFixedSleep(5,
+-            HdfsConstants.LEASE_SOFTLIMIT_PERIOD, TimeUnit.MILLISECONDS);
+-
+-    Map<Class<? extends Exception>, RetryPolicy> remoteExceptionToPolicyMap = 
+-        new HashMap<Class<? extends Exception>, RetryPolicy>();
+-    remoteExceptionToPolicyMap.put(AlreadyBeingCreatedException.class,
+-        createPolicy);
+-
+-    Map<Class<? extends Exception>, RetryPolicy> exceptionToPolicyMap =
+-        new HashMap<Class<? extends Exception>, RetryPolicy>();
+-    exceptionToPolicyMap.put(RemoteException.class, RetryPolicies
+-        .retryByRemoteException(RetryPolicies.TRY_ONCE_THEN_FAIL,
+-            remoteExceptionToPolicyMap));
+-    RetryPolicy methodPolicy = RetryPolicies.retryByException(
+-        RetryPolicies.TRY_ONCE_THEN_FAIL, exceptionToPolicyMap);
+-    Map<String, RetryPolicy> methodNameToPolicyMap = new HashMap<String, RetryPolicy>();
+-
+-    methodNameToPolicyMap.put("create", methodPolicy);
+-
+-    return (DatanodeProtocolPB) RetryProxy.create(DatanodeProtocolPB.class,
+-        rpcNamenode, methodNameToPolicyMap);
+-  }
+-
+   @Override
+   public void close() throws IOException {
+     RPC.stopProxy(rpcProxy);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolTranslatorPB.java
+index 87f105c..98e99f0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolTranslatorPB.java
+@@ -47,6 +47,7 @@
+ import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
+ import org.apache.hadoop.ipc.ProtobufHelper;
+ import org.apache.hadoop.ipc.ProtocolMetaInterface;
++import org.apache.hadoop.ipc.ProtocolTranslator;
+ import org.apache.hadoop.ipc.RPC;
+ import org.apache.hadoop.ipc.RpcClientUtil;
+ 
+@@ -61,7 +62,7 @@
+ @InterfaceAudience.Private
+ @InterfaceStability.Stable
+ public class NamenodeProtocolTranslatorPB implements NamenodeProtocol,
+-    ProtocolMetaInterface, Closeable {
++    ProtocolMetaInterface, Closeable, ProtocolTranslator {
+   /** RpcController is not used and hence is set to null */
+   private final static RpcController NULL_CONTROLLER = null;
+   
+@@ -89,6 +90,11 @@ public void close() {
+   }
+ 
+   @Override
++  public Object getUnderlyingProxyObject() {
++    return rpcProxy;
++  }
++
++  @Override
+   public BlocksWithLocations getBlocks(DatanodeInfo datanode, long size)
+       throws IOException {
+     GetBlocksRequestProto req = GetBlocksRequestProto.newBuilder()
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java
+index 64697bf..809e592 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java
+@@ -30,6 +30,8 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_REPLICATION_MIN_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_DEFAULT;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_KEY;
++import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
++import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+@@ -79,6 +81,7 @@
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+ import org.apache.hadoop.io.EnumSetWritable;
+ import org.apache.hadoop.io.IOUtils;
++import org.apache.hadoop.metrics2.MetricsRecordBuilder;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.apache.hadoop.util.Time;
+@@ -97,6 +100,8 @@
+     ((Log4JLogger)LogFactory.getLog(FSNamesystem.class)).getLogger().setLevel(Level.ALL);
+     ((Log4JLogger)DFSClient.LOG).getLogger().setLevel(Level.ALL);
+   }
++  private static final String RPC_DETAILED_METRICS =
++      "RpcDetailedActivityForPort";
+ 
+   static final long seed = 0xDEADBEEFL;
+   static final int blockSize = 8192;
+@@ -371,7 +376,7 @@ public void testOverwriteOpenForWrite() throws Exception {
+     conf.setBoolean(DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY, false);
+     final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+     FileSystem fs = cluster.getFileSystem();
+-    
++
+     UserGroupInformation otherUgi = UserGroupInformation.createUserForTesting(
+         "testuser", new String[]{"testgroup"});
+     FileSystem fs2 = otherUgi.doAs(new PrivilegedExceptionAction<FileSystem>() {
+@@ -380,12 +385,16 @@ public FileSystem run() throws Exception {
+         return FileSystem.get(cluster.getConfiguration(0));
+       }
+     });
+-    
++
++    String metricsName = RPC_DETAILED_METRICS + cluster.getNameNodePort();
++
+     try {
+       Path p = new Path("/testfile");
+       FSDataOutputStream stm1 = fs.create(p);
+       stm1.write(1);
+ 
++      assertCounter("CreateNumOps", 1L, getMetrics(metricsName));
++
+       // Create file again without overwrite
+       try {
+         fs2.create(p, false);
+@@ -394,7 +403,9 @@ public FileSystem run() throws Exception {
+         GenericTestUtils.assertExceptionContains("already being created by",
+             abce);
+       }
+-      
++      // NameNodeProxies' createNNProxyWithClientProtocol has 5 retries.
++      assertCounter("AlreadyBeingCreatedExceptionNumOps",
++          6L, getMetrics(metricsName));
+       FSDataOutputStream stm2 = fs2.create(p, true);
+       stm2.write(2);
+       stm2.close();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestIsMethodSupported.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestIsMethodSupported.java
+index c6bd7ba..2e4a08b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestIsMethodSupported.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestIsMethodSupported.java
+@@ -25,14 +25,16 @@
+ 
+ import org.apache.hadoop.hdfs.protocol.ClientProtocol;
+ import org.apache.hadoop.hdfs.protocolPB.ClientDatanodeProtocolTranslatorPB;
+-import org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolTranslatorPB;
++import org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolPB;
+ import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
+ import org.apache.hadoop.hdfs.protocolPB.InterDatanodeProtocolTranslatorPB;
+ import org.apache.hadoop.hdfs.protocolPB.JournalProtocolTranslatorPB;
+-import org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolTranslatorPB;
++import org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolPB;
+ import org.apache.hadoop.hdfs.server.datanode.DataNode;
+ import org.apache.hadoop.hdfs.server.protocol.JournalProtocol;
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
++import org.apache.hadoop.ipc.RPC;
++import org.apache.hadoop.ipc.RpcClientUtil;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.security.RefreshUserMappingsProtocol;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -76,16 +78,22 @@ public static void tearDown() throws Exception {
+ 
+   @Test
+   public void testNamenodeProtocol() throws IOException {
+-    NamenodeProtocolTranslatorPB translator =
+-        (NamenodeProtocolTranslatorPB) NameNodeProxies.createNonHAProxy(conf,
++    NamenodeProtocol np =
++        NameNodeProxies.createNonHAProxy(conf,
+             nnAddress, NamenodeProtocol.class, UserGroupInformation.getCurrentUser(),
+             true).getProxy();
+-    boolean exists = translator.isMethodSupported("rollEditLog");
++
++    boolean exists = RpcClientUtil.isMethodSupported(np,
++        NamenodeProtocolPB.class, RPC.RpcKind.RPC_PROTOCOL_BUFFER,
++        RPC.getProtocolVersion(NamenodeProtocolPB.class), "rollEditLog");
++
+     assertTrue(exists);
+-    exists = translator.isMethodSupported("bogusMethod");
++    exists = RpcClientUtil.isMethodSupported(np,
++        NamenodeProtocolPB.class, RPC.RpcKind.RPC_PROTOCOL_BUFFER,
++        RPC.getProtocolVersion(NamenodeProtocolPB.class), "bogusMethod");
+     assertFalse(exists);
+   }
+-  
++
+   @Test
+   public void testDatanodeProtocol() throws IOException {
+     DatanodeProtocolClientSideTranslatorPB translator = 
+@@ -107,16 +115,18 @@ public void testClientDatanodeProtocol() throws IOException {
+         NetUtils.getDefaultSocketFactory(conf));
+     assertTrue(translator.isMethodSupported("refreshNamenodes"));
+   }
+-  
++
+   @Test
+   public void testClientNamenodeProtocol() throws IOException {
+-    ClientNamenodeProtocolTranslatorPB translator = 
+-        (ClientNamenodeProtocolTranslatorPB) NameNodeProxies.createNonHAProxy(
++    ClientProtocol cp =
++        NameNodeProxies.createNonHAProxy(
+             conf, nnAddress, ClientProtocol.class,
+             UserGroupInformation.getCurrentUser(), true).getProxy();
+-    assertTrue(translator.isMethodSupported("mkdirs"));
++    RpcClientUtil.isMethodSupported(cp,
++        ClientNamenodeProtocolPB.class, RPC.RpcKind.RPC_PROTOCOL_BUFFER,
++        RPC.getProtocolVersion(ClientNamenodeProtocolPB.class), "mkdirs");
+   }
+-  
++
+   @Test
+   public void tesJournalProtocol() throws IOException {
+     JournalProtocolTranslatorPB translator = (JournalProtocolTranslatorPB)
+-- 
+1.7.9.5
+

@@ -1,0 +1,103 @@
+From 211bfb5b34fe52e599b1fc030d432340b515eb8c Mon Sep 17 00:00:00 2001
+From: XuanGong <xgong@apache.org>
+Date: Fri, 12 Sep 2014 15:24:02 -0700
+Subject: [PATCH 491/813] YARN-2456. Possible livelock in CapacityScheduler
+ when RM is recovering apps. Contributed by Jian He
+
+(cherry picked from commit add5ac6a73aa29712ec935d47e22158f96789aab)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../resourcemanager/recovery/RMStateStore.java     |    3 +-
+ .../yarn/server/resourcemanager/TestRMRestart.java |   43 ++++++++++++++++++++
+ 2 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index e590d4f..5494036 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -22,6 +22,7 @@
+ import java.util.HashSet;
+ import java.util.Map;
+ import java.util.Set;
++import java.util.TreeMap;
+ 
+ import javax.crypto.SecretKey;
+ 
+@@ -417,7 +418,7 @@ public int getDTSequenceNumber() {
+    */
+   public static class RMState {
+     Map<ApplicationId, ApplicationState> appState =
+-        new HashMap<ApplicationId, ApplicationState>();
++        new TreeMap<ApplicationId, ApplicationState>();
+ 
+     RMDTSecretManagerState rmSecretManagerState = new RMDTSecretManagerState();
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index 7d511db..caa5647 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -19,9 +19,11 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import static org.mockito.Matchers.isA;
++import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.spy;
+ import static org.mockito.Mockito.times;
+ import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
+ 
+ import java.io.File;
+ import java.io.FileOutputStream;
+@@ -1656,6 +1658,47 @@ protected Credentials parseCredentials(
+     rm2.waitForState(app1.getApplicationId(), RMAppState.FAILED);
+   }
+ 
++  @Test (timeout = 20000)
++  public void testAppRecoveredInOrderOnRMRestart() throws Exception {
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++
++    for (int i = 10; i > 0; i--) {
++      ApplicationState appState = mock(ApplicationState.class);
++      when(appState.getAppId()).thenReturn(ApplicationId.newInstance(1234, i));
++      memStore.getState().getApplicationState()
++        .put(appState.getAppId(), appState);
++    }
++
++    MockRM rm1 = new MockRM(conf, memStore) {
++      @Override
++      protected RMAppManager createRMAppManager() {
++        return new TestRMAppManager(this.rmContext, this.scheduler,
++          this.masterService, this.applicationACLsManager, conf);
++      }
++
++      class TestRMAppManager extends RMAppManager {
++        ApplicationId prevId = ApplicationId.newInstance(1234, 0);
++
++        public TestRMAppManager(RMContext context, YarnScheduler scheduler,
++            ApplicationMasterService masterService,
++            ApplicationACLsManager applicationACLsManager, Configuration conf) {
++          super(context, scheduler, masterService, applicationACLsManager, conf);
++        }
++
++        @Override
++        protected void recoverApplication(ApplicationState appState,
++            RMState rmState) throws Exception {
++          // check application is recovered in order.
++          Assert.assertTrue(rmState.getApplicationState().size() > 0);
++          Assert.assertTrue(appState.getAppId().compareTo(prevId) > 0);
++          prevId = appState.getAppId();
++        }
++      }
++    };
++    rm1.start();
++  }
++
+   @SuppressWarnings("resource")
+   @Test (timeout = 60000)
+   public void testQueueMetricsOnRMRestart() throws Exception {
+-- 
+1.7.9.5
+

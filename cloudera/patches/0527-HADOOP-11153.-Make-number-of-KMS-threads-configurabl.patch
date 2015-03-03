@@ -1,0 +1,103 @@
+From 37071088c8e44d6179a36b9ee1fbbc3e94d04aa0 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 29 Sep 2014 15:02:29 -0700
+Subject: [PATCH 527/813] HADOOP-11153. Make number of KMS threads
+ configurable. (wang)
+
+(cherry picked from commit 64aef189656919327b11fe5e90ea680ca7ba83df)
+(cherry picked from commit 758fb8465a1348cc0ac9ee412eaf09c888244aec)
+---
+ .../hadoop-kms/src/main/conf/kms-env.sh            |    4 ++++
+ .../hadoop-kms/src/main/libexec/kms-config.sh      |    7 +++++++
+ .../hadoop-kms/src/main/sbin/kms.sh                |    1 +
+ .../hadoop-kms/src/main/tomcat/server.xml          |    1 +
+ .../hadoop-kms/src/main/tomcat/ssl-server.xml      |    2 +-
+ .../hadoop-kms/src/site/apt/index.apt.vm           |    2 ++
+ 6 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/main/conf/kms-env.sh b/hadoop-common-project/hadoop-kms/src/main/conf/kms-env.sh
+index 1bbec7f..88a2b86 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/conf/kms-env.sh
++++ b/hadoop-common-project/hadoop-kms/src/main/conf/kms-env.sh
+@@ -36,6 +36,10 @@
+ #
+ # export KMS_ADMIN_PORT=`expr ${KMS_HTTP_PORT} + 1`
+ 
++# The maximum number of Tomcat handler threads
++#
++# export KMS_MAX_THREADS=1000
++
+ # The location of the SSL keystore if using SSL
+ #
+ # export KMS_SSL_KEYSTORE_FILE=${HOME}/.keystore
+diff --git a/hadoop-common-project/hadoop-kms/src/main/libexec/kms-config.sh b/hadoop-common-project/hadoop-kms/src/main/libexec/kms-config.sh
+index 3e20399..dc603d4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/libexec/kms-config.sh
++++ b/hadoop-common-project/hadoop-kms/src/main/libexec/kms-config.sh
+@@ -136,6 +136,13 @@ else
+   print "Using   KMS_ADMIN_PORT:     ${KMS_ADMIN_PORT}"
+ fi
+ 
++if [ "${KMS_MAX_THREADS}" = "" ]; then
++  export KMS_MAX_THREADS=1000
++  print "Setting KMS_MAX_THREADS:     ${KMS_MAX_THREADS}"
++else
++  print "Using   KMS_MAX_THREADS:     ${KMS_MAX_THREADS}"
++fi
++
+ if [ "${KMS_SSL_KEYSTORE_FILE}" = "" ]; then
+   export KMS_SSL_KEYSTORE_FILE=${HOME}/.keystore
+   print "Setting KMS_SSL_KEYSTORE_FILE:     ${KMS_SSL_KEYSTORE_FILE}"
+diff --git a/hadoop-common-project/hadoop-kms/src/main/sbin/kms.sh b/hadoop-common-project/hadoop-kms/src/main/sbin/kms.sh
+index 588c2c8..b43225f 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/sbin/kms.sh
++++ b/hadoop-common-project/hadoop-kms/src/main/sbin/kms.sh
+@@ -44,6 +44,7 @@ catalina_opts="${catalina_opts} -Dkms.log.dir=${KMS_LOG}";
+ catalina_opts="${catalina_opts} -Dkms.temp.dir=${KMS_TEMP}";
+ catalina_opts="${catalina_opts} -Dkms.admin.port=${KMS_ADMIN_PORT}";
+ catalina_opts="${catalina_opts} -Dkms.http.port=${KMS_HTTP_PORT}";
++catalina_opts="${catalina_opts} -Dkms.max.threads=${KMS_MAX_THREADS}";
+ catalina_opts="${catalina_opts} -Dkms.ssl.keystore.file=${KMS_SSL_KEYSTORE_FILE}";
+ catalina_opts="${catalina_opts} -Dkms.ssl.keystore.pass=${KMS_SSL_KEYSTORE_PASS}";
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/tomcat/server.xml b/hadoop-common-project/hadoop-kms/src/main/tomcat/server.xml
+index d070b58..516a6a9 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/tomcat/server.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/tomcat/server.xml
+@@ -73,6 +73,7 @@
+          Define a non-SSL HTTP/1.1 Connector on port ${kms.http.port}
+     -->
+     <Connector port="${kms.http.port}" protocol="HTTP/1.1"
++               maxThreads="${kms.max.threads}"
+                connectionTimeout="20000"
+                redirectPort="8443"/>
+     <!-- A "Connector" using the shared thread pool-->
+diff --git a/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml b/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
+index 3a464ca..6235b8b 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
+@@ -69,7 +69,7 @@
+          connector should be using the OpenSSL style configuration
+          described in the APR documentation -->
+     <Connector port="${kms.http.port}" protocol="HTTP/1.1" SSLEnabled="true"
+-               maxThreads="150" scheme="https" secure="true"
++               maxThreads="${kms.max.threads}" scheme="https" secure="true"
+                clientAuth="false" sslProtocol="TLS"
+                keystoreFile="${kms.ssl.keystore.file}"
+                keystorePass="${kms.ssl.keystore.pass}"/>
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index 2e8405f..76eb1a6 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -152,6 +152,8 @@ hadoop-${project.version} $ sbin/kms.sh start
+ 
+   * KMS_ADMIN_PORT
+ 
++  * KMS_MAX_THREADS
++
+   * KMS_LOG
+ 
+   NOTE: You need to restart the KMS for the configuration changes to take
+-- 
+1.7.9.5
+

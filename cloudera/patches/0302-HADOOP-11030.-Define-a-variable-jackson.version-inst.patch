@@ -1,0 +1,59 @@
+From ff79b5c5944be970c2f0e397ce7e060b9c469c5d Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Fri, 29 Aug 2014 15:55:25 -0700
+Subject: [PATCH 302/813] HADOOP-11030. Define a variable jackson.version
+ instead of using constant at multiple places. (Juan
+ Yu via kasha)
+
+(cherry picked from commit 9ad413b19d98352e4ae848a945ab1f72ababa576)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ hadoop-project/pom.xml |   11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-project/pom.xml b/hadoop-project/pom.xml
+index c0a622d..0f8e51b 100644
+--- a/hadoop-project/pom.xml
++++ b/hadoop-project/pom.xml
+@@ -61,6 +61,9 @@
+     <!-- jersey version -->
+     <jersey.version>1.9</jersey.version>
+ 
++    <!-- jackson version -->
++    <jackson.version>1.9.13</jackson.version>
++
+     <!-- ProtocolBuffer version, used to verify the protoc version and -->
+     <!-- define the protobuf JAR version                               -->
+     <protobuf.version>${cdh.protobuf.version}</protobuf.version>
+@@ -658,22 +661,22 @@
+       <dependency>
+         <groupId>org.codehaus.jackson</groupId>
+         <artifactId>jackson-mapper-asl</artifactId>
+-        <version>1.9.13</version>
++        <version>${jackson.version}</version>
+       </dependency>
+       <dependency>
+         <groupId>org.codehaus.jackson</groupId>
+         <artifactId>jackson-core-asl</artifactId>
+-        <version>1.9.13</version>
++        <version>${jackson.version}</version>
+       </dependency>
+       <dependency>
+         <groupId>org.codehaus.jackson</groupId>
+         <artifactId>jackson-jaxrs</artifactId>
+-        <version>1.9.13</version>
++        <version>${jackson.version}</version>
+       </dependency>
+       <dependency>
+         <groupId>org.codehaus.jackson</groupId>
+         <artifactId>jackson-xc</artifactId>
+-        <version>1.9.13</version>
++        <version>${jackson.version}</version>
+       </dependency>
+       <dependency>
+         <groupId>org.mockito</groupId>
+-- 
+1.7.9.5
+

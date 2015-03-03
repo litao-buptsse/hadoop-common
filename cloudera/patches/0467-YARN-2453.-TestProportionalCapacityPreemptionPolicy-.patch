@@ -1,0 +1,47 @@
+From 92ec359ff54cc3e5223e7d138afda14a76029e48 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sun, 21 Sep 2014 23:13:45 -0700
+Subject: [PATCH 467/813] YARN-2453. TestProportionalCapacityPreemptionPolicy
+ fails with FairScheduler. (Zhihai Xu via kasha)
+
+(cherry picked from commit 9721e2c1feb5aecea3a6dab5bda96af1cd0f8de3)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../TestProportionalCapacityPreemptionPolicy.java  |   12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/monitor/capacity/TestProportionalCapacityPreemptionPolicy.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/monitor/capacity/TestProportionalCapacityPreemptionPolicy.java
+index 8a2840e..a0c2b01 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/monitor/capacity/TestProportionalCapacityPreemptionPolicy.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/monitor/capacity/TestProportionalCapacityPreemptionPolicy.java
+@@ -112,6 +112,13 @@ public void setup() {
+     // report "ideal" preempt
+     conf.setFloat(TOTAL_PREEMPTION_PER_ROUND, (float) 1.0);
+     conf.setFloat(NATURAL_TERMINATION_FACTOR, (float) 1.0);
++    conf.set(YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
++        ProportionalCapacityPreemptionPolicy.class.getCanonicalName());
++    conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
++    // FairScheduler doesn't support this test,
++    // Set CapacityScheduler as the scheduler for this test.
++    conf.set("yarn.resourcemanager.scheduler.class",
++        CapacityScheduler.class.getName());
+ 
+     mClock = mock(Clock.class);
+     mCS = mock(CapacityScheduler.class);
+@@ -441,11 +448,6 @@ public void testContainerOrdering(){
+   
+   @Test
+   public void testPolicyInitializeAfterSchedulerInitialized() {
+-    Configuration conf = new Configuration();
+-    conf.set(YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
+-        ProportionalCapacityPreemptionPolicy.class.getCanonicalName());
+-    conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
+-    
+     @SuppressWarnings("resource")
+     MockRM rm = new MockRM(conf);
+     rm.init(conf);
+-- 
+1.7.9.5
+

@@ -1,0 +1,891 @@
+From 6de9d4d45583b70e21742e7b7f7baae58e4f37cf Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 24 Sep 2014 12:04:22 -0700
+Subject: [PATCH 475/813] HDFS-6987. Move CipherSuite xattr information up to
+ the encryption zone root. (Zhe Zhang via wang)
+
+(cherry picked from commit 3cf28210ecf3ff550d1c4ded8a71bac80d919175)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/fs/FileEncryptionInfo.java   |   12 +-
+ .../hadoop/crypto/key/kms/server/MiniKMS.java      |    1 -
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    3 +-
+ .../hadoop/hdfs/protocol/EncryptionZone.java       |   35 +++--
+ .../apache/hadoop/hdfs/protocolPB/PBHelper.java    |   47 +++++-
+ .../server/namenode/EncryptionZoneManager.java     |   51 ++++---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |  150 ++++++++++++++------
+ .../hdfs/server/namenode/FSEditLogLoader.java      |    8 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   28 ++--
+ .../hadoop/hdfs/server/namenode/INodesInPath.java  |    3 +-
+ .../hadoop-hdfs/src/main/proto/encryption.proto    |    7 +-
+ .../hadoop-hdfs/src/main/proto/hdfs.proto          |   22 ++-
+ 12 files changed, 266 insertions(+), 101 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
+index f960233..641709d 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
+@@ -34,6 +34,7 @@
+   private final CipherSuite cipherSuite;
+   private final byte[] edek;
+   private final byte[] iv;
++  private final String keyName;
+   private final String ezKeyVersionName;
+ 
+   /**
+@@ -42,14 +43,16 @@
+    * @param suite CipherSuite used to encrypt the file
+    * @param edek encrypted data encryption key (EDEK) of the file
+    * @param iv initialization vector (IV) used to encrypt the file
++   * @param keyName name of the key used for the encryption zone
+    * @param ezKeyVersionName name of the KeyVersion used to encrypt the
+    *                         encrypted data encryption key.
+    */
+   public FileEncryptionInfo(final CipherSuite suite, final byte[] edek,
+-      final byte[] iv, final String ezKeyVersionName) {
++      final byte[] iv, final String keyName, final String ezKeyVersionName) {
+     checkNotNull(suite);
+     checkNotNull(edek);
+     checkNotNull(iv);
++    checkNotNull(keyName);
+     checkNotNull(ezKeyVersionName);
+     checkArgument(edek.length == suite.getAlgorithmBlockSize(),
+         "Unexpected key length");
+@@ -58,6 +61,7 @@ public FileEncryptionInfo(final CipherSuite suite, final byte[] edek,
+     this.cipherSuite = suite;
+     this.edek = edek;
+     this.iv = iv;
++    this.keyName = keyName;
+     this.ezKeyVersionName = ezKeyVersionName;
+   }
+ 
+@@ -84,6 +88,11 @@ public CipherSuite getCipherSuite() {
+   }
+ 
+   /**
++   * @return name of the encryption zone key.
++   */
++  public String getKeyName() { return keyName; }
++
++  /**
+    * @return name of the encryption zone KeyVersion used to encrypt the
+    * encrypted data encryption key (EDEK).
+    */
+@@ -95,6 +104,7 @@ public String toString() {
+     builder.append("cipherSuite: " + cipherSuite);
+     builder.append(", edek: " + Hex.encodeHexString(edek));
+     builder.append(", iv: " + Hex.encodeHexString(iv));
++    builder.append(", keyName: " + keyName);
+     builder.append(", ezKeyVersionName: " + ezKeyVersionName);
+     builder.append("}");
+     return builder.toString();
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java
+index 16e78ce..697d7ec 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java
+@@ -169,7 +169,6 @@ public void start() throws Exception {
+       kms.set(KMSConfiguration.KEY_PROVIDER_URI,
+           "jceks://file@" + new Path(kmsConfDir, "kms.keystore").toUri());
+       kms.set("hadoop.kms.authentication.type", "simple");
+-      kms.setBoolean(KMSConfiguration.KEY_AUTHORIZATION_ENABLE, false);
+       Writer writer = new FileWriter(kmsFile);
+       kms.writeXml(writer);
+       writer.close();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index 9018e8f..90af0dd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -1310,8 +1310,7 @@ private KeyVersion decryptEncryptedDataEncryptionKey(FileEncryptionInfo
+           " an encrypted file");
+     }
+     EncryptedKeyVersion ekv = EncryptedKeyVersion.createForDecryption(
+-        //TODO: here we have to put the keyName to be provided by HDFS-6987
+-        null, feInfo.getEzKeyVersionName(), feInfo.getIV(),
++        feInfo.getKeyName(), feInfo.getEzKeyVersionName(), feInfo.getIV(),
+         feInfo.getEncryptedDataEncryptionKey());
+     try {
+       return provider.decryptEncryptedKey(ekv);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
+index a20513a..58e9eba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
+@@ -21,6 +21,7 @@
+ import org.apache.commons.lang.builder.HashCodeBuilder;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
++import org.apache.hadoop.crypto.CipherSuite;
+ 
+ /**
+  * A simple class for representing an encryption zone. Presently an encryption
+@@ -31,32 +32,40 @@
+ @InterfaceStability.Evolving
+ public class EncryptionZone {
+ 
++  private final long id;
+   private final String path;
++  private final CipherSuite suite;
+   private final String keyName;
+-  private final long id;
+ 
+-  public EncryptionZone(String path, String keyName, long id) {
++  public EncryptionZone(long id, String path,
++      CipherSuite suite, String keyName) {
++    this.id = id;
+     this.path = path;
++    this.suite = suite;
+     this.keyName = keyName;
+-    this.id = id;
++  }
++
++  public long getId() {
++    return id;
+   }
+ 
+   public String getPath() {
+     return path;
+   }
+ 
+-  public String getKeyName() {
+-    return keyName;
++  public CipherSuite getSuite() {
++    return suite;
+   }
+ 
+-  public long getId() {
+-    return id;
++  public String getKeyName() {
++    return keyName;
+   }
+ 
+   @Override
+   public int hashCode() {
+     return new HashCodeBuilder(13, 31).
+-      append(path).append(keyName).append(id).
++      append(id).append(path).
++      append(suite).append(keyName).
+       toHashCode();
+   }
+ 
+@@ -74,16 +83,18 @@ public boolean equals(Object obj) {
+ 
+     EncryptionZone rhs = (EncryptionZone) obj;
+     return new EqualsBuilder().
++      append(id, rhs.id).
+       append(path, rhs.path).
++      append(suite, rhs.suite).
+       append(keyName, rhs.keyName).
+-      append(id, rhs.id).
+       isEquals();
+   }
+ 
+   @Override
+   public String toString() {
+-    return "EncryptionZone [path=" + path +
+-        ", keyName=" + keyName +
+-        ", id=" + id + "]";
++    return "EncryptionZone [id=" + id +
++        ", path=" + path +
++        ", suite=" + suite +
++        ", keyName=" + keyName + "]";
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index 691b5a2..dab2466 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -2306,12 +2306,14 @@ public static EncryptionZoneProto convert(EncryptionZone zone) {
+     return EncryptionZoneProto.newBuilder()
+         .setId(zone.getId())
+         .setKeyName(zone.getKeyName())
+-        .setPath(zone.getPath()).build();
++        .setPath(zone.getPath())
++        .setSuite(convert(zone.getSuite()))
++        .build();
+   }
+ 
+   public static EncryptionZone convert(EncryptionZoneProto proto) {
+-    return new EncryptionZone(proto.getPath(), proto.getKeyName(),
+-        proto.getId());
++      return new EncryptionZone(proto.getId(), proto.getPath(),
++              convert(proto.getSuite()), proto.getKeyName());
+   }
+ 
+   public static ShortCircuitShmSlotProto convert(SlotId slotId) {
+@@ -2636,6 +2638,30 @@ public static CipherSuite convert(HdfsProtos.CipherSuite proto) {
+         .setKey(getByteString(info.getEncryptedDataEncryptionKey()))
+         .setIv(getByteString(info.getIV()))
+         .setEzKeyVersionName(info.getEzKeyVersionName())
++        .setKeyName(info.getKeyName())
++        .build();
++  }
++
++  public static HdfsProtos.PerFileEncryptionInfoProto convertPerFileEncInfo(
++      FileEncryptionInfo info) {
++    if (info == null) {
++      return null;
++    }
++    return HdfsProtos.PerFileEncryptionInfoProto.newBuilder()
++        .setKey(getByteString(info.getEncryptedDataEncryptionKey()))
++        .setIv(getByteString(info.getIV()))
++        .setEzKeyVersionName(info.getEzKeyVersionName())
++        .build();
++  }
++
++  public static HdfsProtos.ZoneEncryptionInfoProto convert(
++      CipherSuite suite, String keyName) {
++    if (suite == null || keyName == null) {
++      return null;
++    }
++    return HdfsProtos.ZoneEncryptionInfoProto.newBuilder()
++        .setSuite(convert(suite))
++        .setKeyName(keyName)
+         .build();
+   }
+ 
+@@ -2648,7 +2674,20 @@ public static FileEncryptionInfo convert(
+     byte[] key = proto.getKey().toByteArray();
+     byte[] iv = proto.getIv().toByteArray();
+     String ezKeyVersionName = proto.getEzKeyVersionName();
+-    return new FileEncryptionInfo(suite, key, iv, ezKeyVersionName);
++    String keyName = proto.getKeyName();
++    return new FileEncryptionInfo(suite, key, iv, keyName, ezKeyVersionName);
++  }
++
++  public static FileEncryptionInfo convert(
++      HdfsProtos.PerFileEncryptionInfoProto fileProto,
++      CipherSuite suite, String keyName) {
++    if (fileProto == null || suite == null || keyName == null) {
++      return null;
++    }
++    byte[] key = fileProto.getKey().toByteArray();
++    byte[] iv = fileProto.getIv().toByteArray();
++    String ezKeyVersionName = fileProto.getEzKeyVersionName();
++    return new FileEncryptionInfo(suite, key, iv, keyName, ezKeyVersionName);
+   }
+ 
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+index c428690..e22f8b9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+@@ -26,6 +26,7 @@
+ import com.google.common.base.Preconditions;
+ import com.google.common.collect.Lists;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.CipherSuite;
+ import org.apache.hadoop.fs.UnresolvedLinkException;
+ import org.apache.hadoop.fs.XAttr;
+ import org.apache.hadoop.fs.XAttrSetFlag;
+@@ -33,6 +34,8 @@
+ import org.apache.hadoop.hdfs.XAttrHelper;
+ import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
++import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
++import org.apache.hadoop.hdfs.protocolPB.PBHelper;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -53,8 +56,8 @@
+   public static Logger LOG = LoggerFactory.getLogger(EncryptionZoneManager
+       .class);
+ 
+-  private static final EncryptionZone NULL_EZ =
+-      new EncryptionZone("", "", -1);
++  public static final EncryptionZone NULL_EZ =
++      new EncryptionZone(-1, "", CipherSuite.UNKNOWN, "");
+ 
+   /**
+    * EncryptionZoneInt is the internal representation of an encryption zone. The
+@@ -62,21 +65,27 @@
+    * contains the EZ's pathname.
+    */
+   private static class EncryptionZoneInt {
+-    private final String keyName;
+     private final long inodeId;
++    private final CipherSuite suite;
++    private final String keyName;
+ 
+-    EncryptionZoneInt(long inodeId, String keyName) {
+-      this.keyName = keyName;
++    EncryptionZoneInt(long inodeId, CipherSuite suite, String keyName) {
+       this.inodeId = inodeId;
+-    }
+-
+-    String getKeyName() {
+-      return keyName;
++      this.suite = suite;
++      this.keyName = keyName;
+     }
+ 
+     long getINodeId() {
+       return inodeId;
+     }
++
++    CipherSuite getSuite() {
++      return suite;
++    }
++
++    String getKeyName() {
++      return keyName;
++    }
+   }
+ 
+   private final TreeMap<Long, EncryptionZoneInt> encryptionZones;
+@@ -109,9 +118,9 @@ public EncryptionZoneManager(FSDirectory dir, Configuration conf) {
+    * @param inodeId of the encryption zone
+    * @param keyName encryption zone key name
+    */
+-  void addEncryptionZone(Long inodeId, String keyName) {
++  void addEncryptionZone(Long inodeId, CipherSuite suite, String keyName) {
+     assert dir.hasWriteLock();
+-    unprotectedAddEncryptionZone(inodeId, keyName);
++    unprotectedAddEncryptionZone(inodeId, suite, keyName);
+   }
+ 
+   /**
+@@ -122,8 +131,10 @@ void addEncryptionZone(Long inodeId, String keyName) {
+    * @param inodeId of the encryption zone
+    * @param keyName encryption zone key name
+    */
+-  void unprotectedAddEncryptionZone(Long inodeId, String keyName) {
+-    final EncryptionZoneInt ez = new EncryptionZoneInt(inodeId, keyName);
++  void unprotectedAddEncryptionZone(Long inodeId,
++      CipherSuite suite, String keyName) {
++    final EncryptionZoneInt ez = new EncryptionZoneInt(
++        inodeId, suite, keyName);
+     encryptionZones.put(inodeId, ez);
+   }
+ 
+@@ -207,8 +218,8 @@ EncryptionZone getEZINodeForPath(INodesInPath iip) {
+     if (ezi == null) {
+       return NULL_EZ;
+     } else {
+-      return new EncryptionZone(getFullPathName(ezi), ezi.getKeyName(),
+-          ezi.getINodeId());
++      return new EncryptionZone(ezi.getINodeId(), getFullPathName(ezi),
++          ezi.getSuite(), ezi.getKeyName());
+     }
+   }
+ 
+@@ -264,7 +275,7 @@ void checkMoveValidity(INodesInPath srcIIP, INodesInPath dstIIP, String src)
+    * <p/>
+    * Called while holding the FSDirectory lock.
+    */
+-  XAttr createEncryptionZone(String src, String keyName)
++  XAttr createEncryptionZone(String src, CipherSuite suite, String keyName)
+       throws IOException {
+     assert dir.hasWriteLock();
+     if (dir.isNonEmptyDirectory(src)) {
+@@ -284,8 +295,10 @@ XAttr createEncryptionZone(String src, String keyName)
+           "encryption zone. (" + getFullPathName(ezi) + ")");
+     }
+ 
++    final HdfsProtos.ZoneEncryptionInfoProto proto =
++        PBHelper.convert(suite, keyName);
+     final XAttr ezXAttr = XAttrHelper
+-        .buildXAttr(CRYPTO_XATTR_ENCRYPTION_ZONE, keyName.getBytes());
++        .buildXAttr(CRYPTO_XATTR_ENCRYPTION_ZONE, proto.toByteArray());
+ 
+     final List<XAttr> xattrs = Lists.newArrayListWithCapacity(1);
+     xattrs.add(ezXAttr);
+@@ -327,8 +340,8 @@ XAttr createEncryptionZone(String src, String keyName)
+         continue;
+       }
+       // Add the EZ to the result list
+-      zones.add(new EncryptionZone(pathName,
+-          ezi.getKeyName(), ezi.getINodeId()));
++      zones.add(new EncryptionZone(ezi.getINodeId(), pathName,
++          ezi.getSuite(), ezi.getKeyName()));
+       count++;
+       if (count >= numResponses) {
+         break;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 426d90e..37997fe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -37,6 +37,7 @@
+ import org.apache.hadoop.HadoopIllegalArgumentException;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.CipherSuite;
+ import org.apache.hadoop.fs.ContentSummary;
+ import org.apache.hadoop.fs.FileAlreadyExistsException;
+ import org.apache.hadoop.fs.FileEncryptionInfo;
+@@ -1358,16 +1359,18 @@ DirectoryListing getListing(String src, byte[] startAfter,
+       if (srcs.endsWith(HdfsConstants.SEPARATOR_DOT_SNAPSHOT_DIR)) {
+         return getSnapshotsListing(srcs, startAfter);
+       }
+-      final INodesInPath inodesInPath = getLastINodeInPath(srcs, true);
++      final INodesInPath inodesInPath = getINodesInPath(srcs, true);
++      final INode[] inodes = inodesInPath.getINodes();
+       final int snapshot = inodesInPath.getPathSnapshotId();
+-      final INode targetNode = inodesInPath.getINode(0);
++      final INode targetNode = inodes[inodes.length - 1];
+       if (targetNode == null)
+         return null;
+       
+       if (!targetNode.isDirectory()) {
+         return new DirectoryListing(
+             new HdfsFileStatus[]{createFileStatus(HdfsFileStatus.EMPTY_NAME,
+-                targetNode, needLocation, snapshot, isRawPath)}, 0);
++                targetNode, needLocation, snapshot, isRawPath,
++                inodesInPath)}, 0);
+       }
+ 
+       final INodeDirectory dirInode = targetNode.asDirectory();
+@@ -1381,7 +1384,7 @@ DirectoryListing getListing(String src, byte[] startAfter,
+       for (int i=0; i<numOfListing && locationBudget>0; i++) {
+         INode cur = contents.get(startChild+i);
+         listing[i] = createFileStatus(cur.getLocalNameBytes(), cur,
+-            needLocation, snapshot, isRawPath);
++            needLocation, snapshot, isRawPath, inodesInPath);
+         listingCnt++;
+         if (needLocation) {
+             // Once we  hit lsLimit locations, stop.
+@@ -1428,7 +1431,7 @@ private DirectoryListing getSnapshotsListing(String src, byte[] startAfter)
+     for (int i = 0; i < numOfListing; i++) {
+       Root sRoot = snapshots.get(i + skipSize).getRoot();
+       listing[i] = createFileStatus(sRoot.getLocalNameBytes(), sRoot,
+-          Snapshot.CURRENT_STATE_ID, false);
++          Snapshot.CURRENT_STATE_ID, false, null);
+     }
+     return new DirectoryListing(
+         listing, snapshots.size() - skipSize - numOfListing);
+@@ -1449,11 +1452,12 @@ HdfsFileStatus getFileInfo(String src, boolean resolveLink, boolean isRawPath)
+       if (srcs.endsWith(HdfsConstants.SEPARATOR_DOT_SNAPSHOT_DIR)) {
+         return getFileInfo4DotSnapshot(srcs);
+       }
+-      final INodesInPath inodesInPath = getLastINodeInPath(srcs, resolveLink);
+-      final INode i = inodesInPath.getINode(0);
++      final INodesInPath inodesInPath = getINodesInPath(srcs, resolveLink);
++      final INode[] inodes = inodesInPath.getINodes();
++      final INode i = inodes[inodes.length - 1];
+ 
+       return i == null? null: createFileStatus(HdfsFileStatus.EMPTY_NAME, i,
+-          inodesInPath.getPathSnapshotId(), isRawPath);
++          inodesInPath.getPathSnapshotId(), isRawPath, inodesInPath);
+     } finally {
+       readUnlock();
+     }
+@@ -2106,8 +2110,17 @@ public final void addToInodeMap(INode inode) {
+           for (XAttr xattr : xattrs) {
+             final String xaName = XAttrHelper.getPrefixName(xattr);
+             if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
+-              ezManager.unprotectedAddEncryptionZone(inode.getId(),
+-                  new String(xattr.getValue()));
++              try {
++                final HdfsProtos.ZoneEncryptionInfoProto ezProto =
++                    HdfsProtos.ZoneEncryptionInfoProto.parseFrom(
++                        xattr.getValue());
++                ezManager.unprotectedAddEncryptionZone(inode.getId(),
++                    PBHelper.convert(ezProto.getSuite()),
++                    ezProto.getKeyName());
++              } catch (InvalidProtocolBufferException e) {
++                NameNode.LOG.warn("Error parsing protocol buffer of " +
++                    "EZ XAttr " + xattr.getName());
++              }
+             }
+           }
+         }
+@@ -2296,30 +2309,32 @@ void reset() {
+    * @param needLocation if block locations need to be included or not
+    * @param isRawPath true if this is being called on behalf of a path in
+    *                  /.reserved/raw
++   * @param iip
+    * @return a file status
+    * @throws IOException if any error occurs
+    */
+   private HdfsFileStatus createFileStatus(byte[] path, INode node,
+-      boolean needLocation, int snapshot, boolean isRawPath)
++      boolean needLocation, int snapshot, boolean isRawPath,
++      INodesInPath iip)
+       throws IOException {
+     if (needLocation) {
+-      return createLocatedFileStatus(path, node, snapshot, isRawPath);
++      return createLocatedFileStatus(path, node, snapshot, isRawPath, iip);
+     } else {
+-      return createFileStatus(path, node, snapshot, isRawPath);
++      return createFileStatus(path, node, snapshot, isRawPath, iip);
+     }
+   }
+   /**
+    * Create FileStatus by file INode 
+    */
+    HdfsFileStatus createFileStatus(byte[] path, INode node,
+-       int snapshot, boolean isRawPath) throws IOException {
++      int snapshot, boolean isRawPath, INodesInPath iip) throws IOException {
+      long size = 0;     // length is zero for directories
+      short replication = 0;
+      long blocksize = 0;
+      final boolean isEncrypted;
+ 
+      final FileEncryptionInfo feInfo = isRawPath ? null :
+-         getFileEncryptionInfo(node, snapshot);
++         getFileEncryptionInfo(node, snapshot, iip);
+ 
+      if (node.isFile()) {
+        final INodeFile fileNode = node.asFile();
+@@ -2356,7 +2371,8 @@ HdfsFileStatus createFileStatus(byte[] path, INode node,
+    * Create FileStatus with location info by file INode
+    */
+   private HdfsLocatedFileStatus createLocatedFileStatus(byte[] path,
+-      INode node, int snapshot, boolean isRawPath) throws IOException {
++      INode node, int snapshot, boolean isRawPath,
++      INodesInPath iip) throws IOException {
+     assert hasReadLock();
+     long size = 0; // length is zero for directories
+     short replication = 0;
+@@ -2364,7 +2380,7 @@ private HdfsLocatedFileStatus createLocatedFileStatus(byte[] path,
+     LocatedBlocks loc = null;
+     final boolean isEncrypted;
+     final FileEncryptionInfo feInfo = isRawPath ? null :
+-        getFileEncryptionInfo(node, snapshot);
++        getFileEncryptionInfo(node, snapshot, iip);
+     if (node.isFile()) {
+       final INodeFile fileNode = node.asFile();
+       size = fileNode.computeFileSize(snapshot);
+@@ -2689,11 +2705,11 @@ String getKeyName(INodesInPath iip) {
+     }
+   }
+ 
+-  XAttr createEncryptionZone(String src, String keyName)
++  XAttr createEncryptionZone(String src, CipherSuite suite, String keyName)
+     throws IOException {
+     writeLock();
+     try {
+-      return ezManager.createEncryptionZone(src, keyName);
++      return ezManager.createEncryptionZone(src, suite, keyName);
+     } finally {
+       writeUnlock();
+     }
+@@ -2724,7 +2740,8 @@ EncryptionZone getEZForPath(INodesInPath iip) {
+   void setFileEncryptionInfo(String src, FileEncryptionInfo info)
+       throws IOException {
+     // Make the PB for the xattr
+-    final HdfsProtos.FileEncryptionInfoProto proto = PBHelper.convert(info);
++    final HdfsProtos.PerFileEncryptionInfoProto proto =
++        PBHelper.convertPerFileEncInfo(info);
+     final byte[] protoBytes = proto.toByteArray();
+     final XAttr fileEncryptionAttr =
+         XAttrHelper.buildXAttr(CRYPTO_XATTR_FILE_ENCRYPTION_INFO, protoBytes);
+@@ -2740,35 +2757,64 @@ void setFileEncryptionInfo(String src, FileEncryptionInfo info)
+   }
+ 
+   /**
+-   * Return the FileEncryptionInfo for an INode, or null if the INode is not
+-   * an encrypted file.
+-   */
+-  FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId)
+-      throws IOException {
++   * This function combines the per-file encryption info (obtained
++   * from the inode's XAttrs), and the encryption info from its zone, and
++   * returns a consolidated FileEncryptionInfo instance. Null is returned
++   * for non-encrypted files.
++   *
++   * @param inode inode of the file
++   * @param snapshotId ID of the snapshot that
++   *                   we want to get encryption info from
++   * @param iip inodes in the path containing the file, passed in to
++   *            avoid obtaining the list of inodes again; if iip is
++   *            null then the list of inodes will be obtained again
++   * @return consolidated file encryption info; null for non-encrypted files
++   */
++  FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId,
++                                           INodesInPath iip) throws IOException {
+     if (!inode.isFile()) {
+       return null;
+     }
+     readLock();
+     try {
+-      List<XAttr> xAttrs = XAttrStorage.readINodeXAttrs(inode, snapshotId);
+-      if (xAttrs == null) {
+-        return null;
++      if (iip == null) {
++        iip = getINodesInPath(inode.getFullPathName(), true);
+       }
+-      for (XAttr x : xAttrs) {
+-        if (XAttrHelper.getPrefixName(x)
+-            .equals(CRYPTO_XATTR_FILE_ENCRYPTION_INFO)) {
+-          try {
+-            HdfsProtos.FileEncryptionInfoProto proto =
+-                HdfsProtos.FileEncryptionInfoProto.parseFrom(x.getValue());
+-            FileEncryptionInfo feInfo = PBHelper.convert(proto);
+-            return feInfo;
+-          } catch (InvalidProtocolBufferException e) {
+-            throw new IOException("Could not parse file encryption info for " +
+-                "inode " + inode, e);
+-          }
++      EncryptionZone encryptionZone = getEZForPath(iip);
++      if (encryptionZone == null ||
++          encryptionZone.equals(EncryptionZoneManager.NULL_EZ)) {
++        // not an encrypted file
++        return null;
++      } else if(encryptionZone.getPath() == null
++          || encryptionZone.getPath().isEmpty()) {
++        if (NameNode.LOG.isDebugEnabled()) {
++          NameNode.LOG.debug("Encryption zone " +
++              encryptionZone.getPath() + " does not have a valid path.");
+         }
+       }
+-      return null;
++
++      CipherSuite suite = encryptionZone.getSuite();
++      String keyName = encryptionZone.getKeyName();
++
++      XAttr fileXAttr = unprotectedGetXAttrByName(inode, snapshotId,
++          CRYPTO_XATTR_FILE_ENCRYPTION_INFO);
++
++      if (fileXAttr == null) {
++        NameNode.LOG.warn("Could not find encryption XAttr for file " +
++            inode.getFullPathName() + " in encryption zone " +
++            encryptionZone.getPath());
++        return null;
++      }
++
++      try {
++        HdfsProtos.PerFileEncryptionInfoProto fileProto =
++            HdfsProtos.PerFileEncryptionInfoProto.parseFrom(
++                fileXAttr.getValue());
++        return PBHelper.convert(fileProto, suite, keyName);
++      } catch (InvalidProtocolBufferException e) {
++        throw new IOException("Could not parse file encryption info for " +
++            "inode " + inode, e);
++      }
+     } finally {
+       readUnlock();
+     }
+@@ -2803,7 +2849,11 @@ INode unprotectedSetXAttrs(final String src, final List<XAttr> xAttrs,
+        * of encryption zones.
+        */
+       if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
+-        ezManager.addEncryptionZone(inode.getId(), new String(xattr.getValue()));
++        final HdfsProtos.ZoneEncryptionInfoProto ezProto =
++            HdfsProtos.ZoneEncryptionInfoProto.parseFrom(xattr.getValue());
++        ezManager.addEncryptionZone(inode.getId(),
++            PBHelper.convert(ezProto.getSuite()),
++            ezProto.getKeyName());
+       }
+ 
+       if (!isFile && SECURITY_XATTR_UNREADABLE_BY_SUPERUSER.equals(xaName)) {
+@@ -2920,6 +2970,22 @@ private boolean isUserVisible(XAttr xAttr) {
+     return XAttrStorage.readINodeXAttrs(inode, snapshotId);
+   }
+ 
++  private XAttr unprotectedGetXAttrByName(INode inode, int snapshotId,
++                                          String xAttrName)
++      throws IOException {
++    List<XAttr> xAttrs = XAttrStorage.readINodeXAttrs(inode, snapshotId);
++    if (xAttrs == null) {
++      return null;
++    }
++    for (XAttr x : xAttrs) {
++      if (XAttrHelper.getPrefixName(x)
++          .equals(xAttrName)) {
++        return x;
++      }
++    }
++    return null;
++  }
++
+   private static INode resolveLastINode(String src, INodesInPath iip)
+       throws FileNotFoundException {
+     INode inode = iip.getLastINode();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+index 7f7caf6..029de6c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+@@ -340,8 +340,10 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+       // 3. OP_ADD to open file for append
+ 
+       // See if the file already exists (persistBlocks call)
+-      final INodesInPath iip = fsDir.getLastINodeInPath(path);
+-      INodeFile oldFile = INodeFile.valueOf(iip.getINode(0), path, true);
++      final INodesInPath iip = fsDir.getINodesInPath(path, true);
++      final INode[] inodes = iip.getINodes();
++      INodeFile oldFile = INodeFile.valueOf(
++          inodes[inodes.length - 1], path, true);
+       if (oldFile != null && addCloseOp.overwrite) {
+         // This is OP_ADD with overwrite
+         fsDir.unprotectedDelete(path, addCloseOp.mtime);
+@@ -370,7 +372,7 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+         if (toAddRetryCache) {
+           HdfsFileStatus stat = fsNamesys.dir.createFileStatus(
+               HdfsFileStatus.EMPTY_NAME, newFile, Snapshot.CURRENT_STATE_ID,
+-              false);
++              false, iip);
+           fsNamesys.addCacheEntryWithPayload(addCloseOp.rpcClientId,
+               addCloseOp.rpcCallId, stat);
+         }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 9cd3606..d168cb5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -17,7 +17,6 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode;
+ 
+-import static org.apache.hadoop.crypto.key.KeyProvider.KeyVersion;
+ import static org.apache.hadoop.crypto.key.KeyProviderCryptoExtension
+     .EncryptedKeyVersion;
+ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_TRASH_INTERVAL_DEFAULT;
+@@ -138,8 +137,8 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
+-import org.apache.hadoop.crypto.CryptoCodec;
+ import org.apache.hadoop.crypto.key.KeyProvider;
++import org.apache.hadoop.crypto.CryptoCodec;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
+ import org.apache.hadoop.fs.CacheFlag;
+@@ -1831,8 +1830,10 @@ private LocatedBlocks getBlockLocationsUpdateTimes(final String srcArg,
+           doAccessTime = false;
+         }
+ 
+-        final INodesInPath iip = dir.getLastINodeInPath(src);
+-        final INodeFile inode = INodeFile.valueOf(iip.getLastINode(), src);
++        final INodesInPath iip = dir.getINodesInPath(src, true);
++        final INode[] inodes = iip.getINodes();
++        final INodeFile inode = INodeFile.valueOf(
++            inodes[inodes.length - 1], src);
+         if (isPermissionEnabled) {
+           checkUnreadableBySuperuser(pc, inode, iip.getPathSnapshotId());
+         }
+@@ -1865,7 +1866,8 @@ private LocatedBlocks getBlockLocationsUpdateTimes(final String srcArg,
+ 
+         final FileEncryptionInfo feInfo =
+           FSDirectory.isReservedRawName(srcArg) ?
+-          null : dir.getFileEncryptionInfo(inode, iip.getPathSnapshotId());
++          null : dir.getFileEncryptionInfo(inode, iip.getPathSnapshotId(),
++              iip);
+ 
+         final LocatedBlocks blocks =
+           blockManager.createLocatedBlocks(inode.getBlocks(), fileSize,
+@@ -2555,7 +2557,7 @@ private BlocksMapUpdateInfo startFileInternal(FSPermissionChecker pc,
+       feInfo = new FileEncryptionInfo(suite,
+           edek.getEncryptedKeyVersion().getMaterial(),
+           edek.getEncryptedKeyIv(),
+-          edek.getEncryptionKeyVersionName());
++          ezKeyName, edek.getEncryptionKeyVersionName());
+       Preconditions.checkNotNull(feInfo);
+     }
+ 
+@@ -8579,8 +8581,8 @@ void createEncryptionZone(final String src, final String keyName)
+         throw new IOException("Must specify a key name when creating an " +
+             "encryption zone");
+       }
+-      KeyVersion keyVersion = provider.getCurrentKey(keyName);
+-      if (keyVersion == null) {
++      KeyProvider.Metadata metadata = provider.getMetadata(keyName);
++      if (metadata == null) {
+         /*
+          * It would be nice if we threw something more specific than
+          * IOException when the key is not found, but the KeyProvider API
+@@ -8591,7 +8593,8 @@ void createEncryptionZone(final String src, final String keyName)
+          */
+         throw new IOException("Key " + keyName + " doesn't exist.");
+       }
+-      createEncryptionZoneInt(src, keyName, cacheEntry != null);
++      createEncryptionZoneInt(src, metadata.getCipher(),
++          keyName, cacheEntry != null);
+       success = true;
+     } catch (AccessControlException e) {
+       logAuditEvent(false, "createEncryptionZone", src);
+@@ -8601,8 +8604,8 @@ void createEncryptionZone(final String src, final String keyName)
+     }
+   }
+ 
+-  private void createEncryptionZoneInt(final String srcArg, String keyName,
+-      final boolean logRetryCache) throws IOException {
++  private void createEncryptionZoneInt(final String srcArg, String cipher,
++      String keyName, final boolean logRetryCache) throws IOException {
+     String src = srcArg;
+     HdfsFileStatus resultingStat = null;
+     checkSuperuserPrivilege();
+@@ -8616,7 +8619,8 @@ private void createEncryptionZoneInt(final String srcArg, String keyName,
+       checkNameNodeSafeMode("Cannot create encryption zone on " + src);
+       src = resolvePath(src, pathComponents);
+ 
+-      final XAttr ezXAttr = dir.createEncryptionZone(src, keyName);
++      final CipherSuite suite = CipherSuite.convert(cipher);
++      final XAttr ezXAttr = dir.createEncryptionZone(src, suite, keyName);
+       List<XAttr> xAttrs = Lists.newArrayListWithCapacity(1);
+       xAttrs.add(ezXAttr);
+       getEditLog().logSetXAttrs(src, xAttrs, logRetryCache);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java
+index a3507d3..b7aaa9d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java
+@@ -134,6 +134,7 @@ static INodesInPath resolve(final INodeDirectory startingDir,
+    *        be thrown when the path refers to a symbolic link.
+    * @return the specified number of existing INodes in the path
+    */
++  // TODO: Eliminate null elements from inodes (to be provided by HDFS-7104)
+   static INodesInPath resolve(final INodeDirectory startingDir,
+       final byte[][] components, final int numOfINodes, 
+       final boolean resolveLink) throws UnresolvedLinkException {
+@@ -314,7 +315,7 @@ private void updateLatestSnapshotId(int sid) {
+   }
+ 
+   /**
+-   * @return the whole inodes array including the null elements.
++   * @return the inodes array excluding the null elements.
+    */
+   INode[] getINodes() {
+     if (capacity < inodes.length) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+index 1a33cdc..c4b7009 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+@@ -46,9 +46,10 @@ message ListEncryptionZonesRequestProto {
+ }
+ 
+ message EncryptionZoneProto {
+-  required string path = 1;
+-  required string keyName = 2;
+-  required int64 id = 3;
++  required int64 id = 1;
++  required string path = 2;
++  required CipherSuite suite = 3;
++  required string keyName = 4;
+ }
+ 
+ message ListEncryptionZonesResponseProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
+index a410224..99bf646 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
+@@ -215,7 +215,27 @@ message FileEncryptionInfoProto {
+   required CipherSuite suite = 1;
+   required bytes key = 2;
+   required bytes iv = 3;
+-  required string ezKeyVersionName = 4;
++  required string keyName = 4;
++  required string ezKeyVersionName = 5;
++}
++
++/**
++ * Encryption information for an individual
++ * file within an encryption zone
++ */
++message PerFileEncryptionInfoProto {
++  required bytes key = 1;
++  required bytes iv = 2;
++  required string ezKeyVersionName = 3;
++}
++
++/**
++ * Encryption information for an encryption
++ * zone
++ */
++message ZoneEncryptionInfoProto {
++  required CipherSuite suite = 1;
++  required string keyName = 2;
+ }
+ 
+ /**
+-- 
+1.7.9.5
+

@@ -1,0 +1,286 @@
+From 4a5a1b87a3e0e23008c37c65db8584c4d5c0e0a6 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Thu, 14 Aug 2014 21:19:21 +0000
+Subject: [PATCH 535/813] YARN-2397. Avoided loading two authentication
+ filters for RM and TS web interfaces. Contributed
+ by Varun Vasudev. svn merge --ignore-ancestry -c
+ 1618054 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1618055 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c6e240b952cc720f94d84cb87c123822218240f1)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-applicationhistoryservice/src/main/java/org/apache/hadoop/yarn/server/applicationhistoryservice/ApplicationHistoryServer.java
+
+Resolved conflict by dropping all AHS related changes.
+---
+ .../http/RMAuthenticationFilterInitializer.java    |    2 +-
+ .../server/resourcemanager/ResourceManager.java    |   80 +++++++++++++-------
+ .../resourcemanager/TestResourceManager.java       |   76 +++++++++++++++++++
+ ...RMWebServicesDelegationTokenAuthentication.java |    3 +
+ 4 files changed, 134 insertions(+), 27 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
+index 2227833..128794e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
+@@ -114,7 +114,7 @@ public RMAuthenticationFilterInitializer() {
+   public void initFilter(FilterContainer container, Configuration conf) {
+ 
+     Map<String, String> filterConfig = createFilterConfig(conf);
+-    container.addFilter("YARNAuthenticationFilter",
++    container.addFilter("RMAuthenticationFilter",
+       RMAuthenticationFilter.class.getName(), filterConfig);
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 500918f..00b1887 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -22,6 +22,7 @@
+ import java.io.InputStream;
+ import java.net.InetSocketAddress;
+ import java.security.PrivilegedExceptionAction;
++import java.util.ArrayList;
+ import java.util.List;
+ import java.util.concurrent.BlockingQueue;
+ import java.util.concurrent.LinkedBlockingQueue;
+@@ -35,6 +36,7 @@
+ import org.apache.hadoop.http.lib.StaticUserWebFilter;
+ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+ import org.apache.hadoop.metrics2.source.JvmMetrics;
++import org.apache.hadoop.security.AuthenticationFilterInitializer;
+ import org.apache.hadoop.security.Groups;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -799,10 +801,11 @@ protected void startWepApp() {
+ 
+     // Use the customized yarn filter instead of the standard kerberos filter to
+     // allow users to authenticate using delegation tokens
+-    // 3 conditions need to be satisfied -
++    // 4 conditions need to be satisfied -
+     // 1. security is enabled
+     // 2. http auth type is set to kerberos
+     // 3. "yarn.resourcemanager.webapp.use-yarn-filter" override is set to true
++    // 4. hadoop.http.filter.initializers container AuthenticationFilterInitializer
+ 
+     Configuration conf = getConfig();
+     boolean useYarnAuthenticationFilter =
+@@ -811,41 +814,66 @@ protected void startWepApp() {
+           YarnConfiguration.DEFAULT_RM_WEBAPP_DELEGATION_TOKEN_AUTH_FILTER);
+     String authPrefix = "hadoop.http.authentication.";
+     String authTypeKey = authPrefix + "type";
+-    String initializers = conf.get("hadoop.http.filter.initializers");
+-    if (UserGroupInformation.isSecurityEnabled()
+-        && useYarnAuthenticationFilter
+-        && conf.get(authTypeKey, "").equalsIgnoreCase(
+-          KerberosAuthenticationHandler.TYPE)) {
+-      LOG.info("Using RM authentication filter(kerberos/delegation-token)"
+-          + " for RM webapp authentication");
+-      RMAuthenticationHandler
+-        .setSecretManager(getClientRMService().rmDTSecretManager);
+-      String yarnAuthKey =
+-          authPrefix + RMAuthenticationFilter.AUTH_HANDLER_PROPERTY;
+-      conf.setStrings(yarnAuthKey, RMAuthenticationHandler.class.getName());
+-
+-      initializers =
+-          initializers == null || initializers.isEmpty() ? "" : ","
+-              + initializers;
+-      if (!initializers.contains(RMAuthenticationFilterInitializer.class
+-        .getName())) {
+-        conf.set("hadoop.http.filter.initializers",
+-          RMAuthenticationFilterInitializer.class.getName() + initializers);
++    String filterInitializerConfKey = "hadoop.http.filter.initializers";
++    String actualInitializers = "";
++    Class<?>[] initializersClasses =
++        conf.getClasses(filterInitializerConfKey);
++
++    boolean hasHadoopAuthFilterInitializer = false;
++    boolean hasRMAuthFilterInitializer = false;
++    if (initializersClasses != null) {
++      for (Class<?> initializer : initializersClasses) {
++        if (initializer.getName().equals(
++          AuthenticationFilterInitializer.class.getName())) {
++          hasHadoopAuthFilterInitializer = true;
++        }
++        if (initializer.getName().equals(
++          RMAuthenticationFilterInitializer.class.getName())) {
++          hasRMAuthFilterInitializer = true;
++        }
++      }
++      if (UserGroupInformation.isSecurityEnabled()
++          && useYarnAuthenticationFilter
++          && hasHadoopAuthFilterInitializer
++          && conf.get(authTypeKey, "").equals(
++            KerberosAuthenticationHandler.TYPE)) {
++        ArrayList<String> target = new ArrayList<String>();
++        for (Class<?> filterInitializer : initializersClasses) {
++          if (filterInitializer.getName().equals(
++            AuthenticationFilterInitializer.class.getName())) {
++            if (hasRMAuthFilterInitializer == false) {
++              target.add(RMAuthenticationFilterInitializer.class.getName());
++            }
++            continue;
++          }
++          target.add(filterInitializer.getName());
++        }
++        actualInitializers = StringUtils.join(",", target);
++
++        LOG.info("Using RM authentication filter(kerberos/delegation-token)"
++            + " for RM webapp authentication");
++        RMAuthenticationHandler
++          .setSecretManager(getClientRMService().rmDTSecretManager);
++        String yarnAuthKey =
++            authPrefix + RMAuthenticationFilter.AUTH_HANDLER_PROPERTY;
++        conf.setStrings(yarnAuthKey, RMAuthenticationHandler.class.getName());
++        conf.set(filterInitializerConfKey, actualInitializers);
+       }
+     }
+ 
+-    // if security is not enabled and the default filter initializer has been
+-    // set, set the initializer to include the
++    // if security is not enabled and the default filter initializer has not 
++    // been set, set the initializer to include the
+     // RMAuthenticationFilterInitializer which in turn will set up the simple
+     // auth filter.
+ 
++    String initializers = conf.get(filterInitializerConfKey);
+     if (!UserGroupInformation.isSecurityEnabled()) {
+-      if (initializers == null || initializers.isEmpty()) {
+-        conf.set("hadoop.http.filter.initializers",
++      if (initializersClasses == null || initializersClasses.length == 0) {
++        conf.set(filterInitializerConfKey,
+           RMAuthenticationFilterInitializer.class.getName());
+         conf.set(authTypeKey, "simple");
+       } else if (initializers.equals(StaticUserWebFilter.class.getName())) {
+-        conf.set("hadoop.http.filter.initializers",
++        conf.set(filterInitializerConfKey,
+           RMAuthenticationFilterInitializer.class.getName() + ","
+               + initializers);
+         conf.set(authTypeKey, "simple");
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceManager.java
+index 4fdfcf6..1117fbe 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceManager.java
+@@ -27,7 +27,10 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.http.lib.StaticUserWebFilter;
+ import org.apache.hadoop.net.NetworkTopology;
++import org.apache.hadoop.security.AuthenticationFilterInitializer;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.yarn.api.records.Priority;
+ import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+@@ -39,8 +42,10 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
++import org.apache.hadoop.yarn.server.security.http.RMAuthenticationFilterInitializer;
+ import org.apache.hadoop.yarn.util.resource.Resources;
+ import org.junit.After;
++import org.junit.Assert;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+@@ -235,4 +240,75 @@ public void testNMExpiryAndHeartbeatIntervalsValidation() throws Exception {
+     }
+   }
+ 
++  @Test(timeout = 50000)
++  public void testFilterOverrides() throws Exception {
++    String filterInitializerConfKey = "hadoop.http.filter.initializers";
++    String[] filterInitializers =
++        {
++            AuthenticationFilterInitializer.class.getName(),
++            RMAuthenticationFilterInitializer.class.getName(),
++            AuthenticationFilterInitializer.class.getName() + ","
++                + RMAuthenticationFilterInitializer.class.getName(),
++            AuthenticationFilterInitializer.class.getName() + ", "
++                + RMAuthenticationFilterInitializer.class.getName(),
++            AuthenticationFilterInitializer.class.getName() + ", "
++                + this.getClass().getName() };
++    for (String filterInitializer : filterInitializers) {
++      resourceManager = new ResourceManager();
++      Configuration conf = new YarnConfiguration();
++      conf.set(filterInitializerConfKey, filterInitializer);
++      conf.set("hadoop.security.authentication", "kerberos");
++      conf.set("hadoop.http.authentication.type", "kerberos");
++      try {
++        try {
++          UserGroupInformation.setConfiguration(conf);
++        } catch (Exception e) {
++          // ignore we just care about getting true for
++          // isSecurityEnabled()
++          LOG.info("Got expected exception");
++        }
++        resourceManager.init(conf);
++        resourceManager.startWepApp();
++      } catch (RuntimeException e) {
++        // Exceptions are expected because we didn't setup everything
++        // just want to test filter settings
++        String tmp = resourceManager.getConfig().get(filterInitializerConfKey);
++        if (filterInitializer.contains(this.getClass().getName())) {
++          Assert.assertEquals(RMAuthenticationFilterInitializer.class.getName()
++              + "," + this.getClass().getName(), tmp);
++        } else {
++          Assert.assertEquals(
++            RMAuthenticationFilterInitializer.class.getName(), tmp);
++        }
++        resourceManager.stop();
++      }
++    }
++
++    // simple mode overrides
++    String[] simpleFilterInitializers =
++        { "", StaticUserWebFilter.class.getName() };
++    for (String filterInitializer : simpleFilterInitializers) {
++      resourceManager = new ResourceManager();
++      Configuration conf = new YarnConfiguration();
++      conf.set(filterInitializerConfKey, filterInitializer);
++      try {
++        UserGroupInformation.setConfiguration(conf);
++        resourceManager.init(conf);
++        resourceManager.startWepApp();
++      } catch (RuntimeException e) {
++        // Exceptions are expected because we didn't setup everything
++        // just want to test filter settings
++        String tmp = resourceManager.getConfig().get(filterInitializerConfKey);
++        if (filterInitializer.equals(StaticUserWebFilter.class.getName())) {
++          Assert.assertEquals(RMAuthenticationFilterInitializer.class.getName()
++              + "," + StaticUserWebFilter.class.getName(), tmp);
++        } else {
++          Assert.assertEquals(
++            RMAuthenticationFilterInitializer.class.getName(), tmp);
++        }
++        resourceManager.stop();
++      }
++    }
++  }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
+index 34a914a..239d592 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
+@@ -41,6 +41,7 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.minikdc.MiniKdc;
++import org.apache.hadoop.security.AuthenticationFilterInitializer;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authentication.KerberosTestUtils;
+ import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
+@@ -122,6 +123,8 @@ private static void setupAndStartRM() throws Exception {
+       "kerberos");
+     rmconf.setBoolean(YarnConfiguration.RM_WEBAPP_DELEGATION_TOKEN_AUTH_FILTER,
+       true);
++    rmconf.set("hadoop.http.filter.initializers",
++      AuthenticationFilterInitializer.class.getName());
+     rmconf.set(YarnConfiguration.RM_WEBAPP_SPNEGO_USER_NAME_KEY,
+       httpSpnegoPrincipal);
+     rmconf.set(YarnConfiguration.RM_KEYTAB,
+-- 
+1.7.9.5
+

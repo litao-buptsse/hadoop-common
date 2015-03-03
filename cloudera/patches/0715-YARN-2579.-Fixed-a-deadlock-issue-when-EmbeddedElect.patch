@@ -1,0 +1,316 @@
+From 31fe3c604458d995329d93584cc61e0e3a506088 Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Wed, 5 Nov 2014 16:59:54 -0800
+Subject: [PATCH 715/813] YARN-2579. Fixed a deadlock issue when
+ EmbeddedElectorService and FatalEventDispatcher try
+ to transition RM to StandBy at the same time.
+ Contributed by Rohith Sharmaks (cherry picked from
+ commit 395275af8622c780b9071c243422b0780e096202)
+
+(cherry picked from commit f92ff24f5e904058239615db57bf39e90e269875)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+---
+ .../apache/hadoop/yarn/client/TestRMFailover.java  |    8 +--
+ .../server/resourcemanager/RMFatalEventType.java   |    1 -
+ .../server/resourcemanager/ResourceManager.java    |   51 ++++++++--------
+ .../resourcemanager/recovery/RMStateStore.java     |   24 ++++++--
+ .../yarn/server/resourcemanager/TestRMHA.java      |   62 ++++++++++++++++++++
+ 5 files changed, 106 insertions(+), 40 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+index 83fb207..4a1522d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+@@ -43,8 +43,6 @@
+ import org.apache.hadoop.yarn.exceptions.YarnException;
+ import org.apache.hadoop.yarn.server.MiniYARNCluster;
+ import org.apache.hadoop.yarn.server.resourcemanager.AdminService;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEvent;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.webproxy.WebAppProxyServer;
+ import org.junit.After;
+@@ -173,7 +171,6 @@ public void testExplicitFailover()
+     verifyConnections();
+   }
+ 
+-  @SuppressWarnings("unchecked")
+   @Test
+   public void testAutomaticFailover()
+       throws YarnException, InterruptedException, IOException {
+@@ -196,10 +193,7 @@ public void testAutomaticFailover()
+     // so it transitions to standby.
+     ResourceManager rm = cluster.getResourceManager(
+         cluster.getActiveRMIndex());
+-    RMFatalEvent event =
+-        new RMFatalEvent(RMFatalEventType.STATE_STORE_FENCED,
+-            "Fake RMFatalEvent");
+-    rm.getRMContext().getDispatcher().getEventHandler().handle(event);
++    rm.handleTransitionToStandBy();
+     int maxWaitingAttempts = 2000;
+     while (maxWaitingAttempts-- > 0 ) {
+       if (rm.getRMContext().getHAServiceState() == HAServiceState.STANDBY) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMFatalEventType.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMFatalEventType.java
+index 0629c70..789c018 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMFatalEventType.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMFatalEventType.java
+@@ -23,7 +23,6 @@
+ @InterfaceAudience.Private
+ public enum RMFatalEventType {
+   // Source <- Store
+-  STATE_STORE_FENCED,
+   STATE_STORE_OP_FAILED,
+ 
+   // Source <- Embedded Elector
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 0a698ca..58b7ce1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -250,6 +250,7 @@ protected QueueACLsManager createQueueACLsManager(ResourceScheduler scheduler,
+   @VisibleForTesting
+   protected void setRMStateStore(RMStateStore rmStore) {
+     rmStore.setRMDispatcher(rmDispatcher);
++    rmStore.setResourceManager(this);
+     rmContext.setStateStore(rmStore);
+   }
+ 
+@@ -343,11 +344,12 @@ protected static void validateConfigs(Configuration conf) {
+     private EventHandler<SchedulerEvent> schedulerDispatcher;
+     private ApplicationMasterLauncher applicationMasterLauncher;
+     private ContainerAllocationExpirer containerAllocationExpirer;
+-
++    private ResourceManager rm;
+     private boolean recoveryEnabled;
+ 
+-    RMActiveServices() {
++    RMActiveServices(ResourceManager rm) {
+       super("RMActiveServices");
++      this.rm = rm;
+     }
+ 
+     @Override
+@@ -391,6 +393,7 @@ protected void serviceInit(Configuration configuration) throws Exception {
+       try {
+         rmStore.init(conf);
+         rmStore.setRMDispatcher(rmDispatcher);
++        rmStore.setResourceManager(rm);
+       } catch (Exception e) {
+         // the Exception from stateStore.init() needs to be handled for
+         // HA and we need to give up master status if we got fenced
+@@ -655,39 +658,31 @@ public void handle(SchedulerEvent event) {
+   @Private
+   public static class RMFatalEventDispatcher
+       implements EventHandler<RMFatalEvent> {
+-    private final RMContext rmContext;
+-    private final ResourceManager rm;
+-
+-    public RMFatalEventDispatcher(
+-        RMContext rmContext, ResourceManager resourceManager) {
+-      this.rmContext = rmContext;
+-      this.rm = resourceManager;
+-    }
+ 
+     @Override
+     public void handle(RMFatalEvent event) {
+       LOG.fatal("Received a " + RMFatalEvent.class.getName() + " of type " +
+           event.getType().name() + ". Cause:\n" + event.getCause());
+ 
+-      if (event.getType() == RMFatalEventType.STATE_STORE_FENCED) {
+-        LOG.info("RMStateStore has been fenced");
+-        if (rmContext.isHAEnabled()) {
+-          try {
+-            // Transition to standby and reinit active services
+-            LOG.info("Transitioning RM to Standby mode");
+-            rm.transitionToStandby(true);
+-            rm.adminService.resetLeaderElection();
+-            return;
+-          } catch (Exception e) {
+-            LOG.fatal("Failed to transition RM to Standby mode.");
+-          }
+-        }
+-      }
+-
+       ExitUtil.terminate(1, event.getCause());
+     }
+   }
+ 
++  public void handleTransitionToStandBy() {
++    if (rmContext.isHAEnabled()) {
++      try {
++        // Transition to standby and reinit active services
++        LOG.info("Transitioning RM to Standby mode");
++        transitionToStandby(true);
++        adminService.resetLeaderElection();
++        return;
++      } catch (Exception e) {
++        LOG.fatal("Failed to transition RM to Standby mode.");
++        ExitUtil.terminate(1, e);
++      }
++    }
++  }
++
+   @Private
+   public static final class ApplicationEventDispatcher implements
+       EventHandler<RMAppEvent> {
+@@ -913,8 +908,8 @@ protected void startWepApp() {
+    * instance of {@link RMActiveServices} and initializes it.
+    * @throws Exception
+    */
+-  void createAndInitActiveServices() throws Exception {
+-    activeServices = new RMActiveServices();
++  protected void createAndInitActiveServices() throws Exception {
++    activeServices = new RMActiveServices(this);
+     activeServices.init(conf);
+   }
+ 
+@@ -1160,7 +1155,7 @@ public static void main(String argv[]) {
+   private Dispatcher setupDispatcher() {
+     Dispatcher dispatcher = createDispatcher();
+     dispatcher.register(RMFatalEventType.class,
+-        new ResourceManager.RMFatalEventDispatcher(this.rmContext, this));
++        new ResourceManager.RMFatalEventDispatcher());
+     return dispatcher;
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index 0c64d45..68a084d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -49,6 +49,7 @@
+ import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEventType;
++import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+@@ -87,6 +88,7 @@
+       "AMRMTokenSecretManagerRoot";
+   protected static final String VERSION_NODE = "RMVersionNode";
+   protected static final String EPOCH_NODE = "EpochNode";
++  private ResourceManager resourceManager;
+ 
+   public static final Log LOG = LogFactory.getLog(RMStateStore.class);
+ 
+@@ -814,13 +816,15 @@ protected void handleStoreEvent(RMStateStoreEvent event) {
+    * @param failureCause the exception due to which the operation failed
+    */
+   protected void notifyStoreOperationFailed(Exception failureCause) {
+-    RMFatalEventType type;
+     if (failureCause instanceof StoreFencedException) {
+-      type = RMFatalEventType.STATE_STORE_FENCED;
++      Thread standByTransitionThread =
++          new Thread(new StandByTransitionThread());
++      standByTransitionThread.setName("StandByTransitionThread Handler");
++      standByTransitionThread.start();
+     } else {
+-      type = RMFatalEventType.STATE_STORE_OP_FAILED;
++      rmDispatcher.getEventHandler().handle(
++        new RMFatalEvent(RMFatalEventType.STATE_STORE_OP_FAILED, failureCause));
+     }
+-    rmDispatcher.getEventHandler().handle(new RMFatalEvent(type, failureCause));
+   }
+ 
+   @SuppressWarnings("unchecked")
+@@ -881,4 +885,16 @@ public void handle(RMStateStoreEvent event) {
+    * @throws Exception
+    */
+   public abstract void deleteStore() throws Exception;
++
++  public void setResourceManager(ResourceManager rm) {
++    this.resourceManager = rm;
++  }
++
++  private class StandByTransitionThread implements Runnable {
++    @Override
++    public void run() {
++      LOG.info("RMStateStore has been fenced");
++      resourceManager.handleTransitionToStandBy();
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 60794ad..a9bb2c5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -48,6 +48,7 @@
+ import org.apache.hadoop.yarn.event.EventHandler;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.StoreFencedException;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+@@ -450,6 +451,67 @@ public synchronized void startInternal() throws Exception {
+     checkActiveRMFunctionality();
+   }
+ 
++  @Test(timeout = 90000)
++  public void testTransitionedToStandbyShouldNotHang() throws Exception {
++    configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
++    Configuration conf = new YarnConfiguration(configuration);
++
++    MemoryRMStateStore memStore = new MemoryRMStateStore() {
++      @Override
++      public synchronized void updateApplicationState(ApplicationState appState) {
++        notifyStoreOperationFailed(new StoreFencedException());
++      }
++    };
++    memStore.init(conf);
++    rm = new MockRM(conf, memStore) {
++      @Override
++      void stopActiveServices() throws Exception {
++        Thread.sleep(10000);
++        super.stopActiveServices();
++      }
++    };
++    rm.init(conf);
++    final StateChangeRequestInfo requestInfo =
++        new StateChangeRequestInfo(
++            HAServiceProtocol.RequestSource.REQUEST_BY_USER);
++
++    assertEquals(STATE_ERR, HAServiceState.INITIALIZING, rm.adminService
++        .getServiceStatus().getState());
++    assertFalse("RM is ready to become active before being started",
++        rm.adminService.getServiceStatus().isReadyToBecomeActive());
++    checkMonitorHealth();
++
++    rm.start();
++    checkMonitorHealth();
++    checkStandbyRMFunctionality();
++
++    // 2. Transition to Active.
++    rm.adminService.transitionToActive(requestInfo);
++
++    // 3. Try Transition to standby
++    Thread t = new Thread(new Runnable() {
++      @Override
++      public void run() {
++        try {
++          rm.transitionToStandby(true);
++        } catch (IOException e) {
++          e.printStackTrace();
++        } catch (Exception e) {
++          // TODO Auto-generated catch block
++          e.printStackTrace();
++        }
++      }
++    });
++    t.start();
++
++    rm.getRMContext().getStateStore().updateApplicationState(null);
++    t.join(); // wait for thread to finish
++
++    rm.adminService.transitionToStandby(requestInfo);
++    checkStandbyRMFunctionality();
++    rm.stop();
++  }
++
+   public void innerTestHAWithRMHostName(boolean includeBindHost) {
+     //this is run two times, with and without a bind host configured
+     if (includeBindHost) {
+-- 
+1.7.9.5
+

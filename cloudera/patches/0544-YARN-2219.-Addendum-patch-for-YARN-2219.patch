@@ -1,0 +1,128 @@
+From 58d7b434e31e3aef17787a4488fa024abe8794ca Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Thu, 17 Jul 2014 03:28:39 +0000
+Subject: [PATCH 544/813] YARN-2219. Addendum patch for YARN-2219
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1611240 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 3c193811ca36f35ccda40a4c93c91b7476db45b1)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+---
+ .../server/resourcemanager/TestFifoScheduler.java  |    4 ++--
+ .../scheduler/fair/FairSchedulerTestBase.java      |    8 ++++----
+ .../scheduler/fair/TestFairScheduler.java          |   20 ++++++++++----------
+ 3 files changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java
+index 594ea8e..12f7498 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java
+@@ -234,7 +234,7 @@ public void testNodeUpdateBeforeAppAttemptInit() throws Exception {
+     scheduler.handle(new NodeAddedSchedulerEvent(node));
+ 
+     ApplicationId appId = ApplicationId.newInstance(0, 1);
+-    scheduler.addApplication(appId, "queue1", "user1", true);
++    scheduler.addApplication(appId, "queue1", "user1", false);
+ 
+     NodeUpdateSchedulerEvent updateEvent = new NodeUpdateSchedulerEvent(node);
+     try {
+@@ -244,7 +244,7 @@ public void testNodeUpdateBeforeAppAttemptInit() throws Exception {
+     }
+ 
+     ApplicationAttemptId attId = ApplicationAttemptId.newInstance(appId, 1);
+-    scheduler.addApplicationAttempt(attId, false, true);
++    scheduler.addApplicationAttempt(attId, false, false);
+ 
+     rm.stop();
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
+index c4652eb..1c21f55 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
+@@ -147,11 +147,11 @@ protected ApplicationAttemptId createSchedulingRequest(
+       int memory, int vcores, String queueId, String userId, int numContainers,
+       int priority) {
+     ApplicationAttemptId id = createAppAttemptId(this.APP_ID++, this.ATTEMPT_ID++);
+-    scheduler.addApplication(id.getApplicationId(), queueId, userId, true);
++    scheduler.addApplication(id.getApplicationId(), queueId, userId, false);
+     // This conditional is for testAclSubmitApplication where app is rejected
+     // and no app is added.
+     if (scheduler.getSchedulerApplications().containsKey(id.getApplicationId())) {
+-      scheduler.addApplicationAttempt(id, false, true);
++      scheduler.addApplicationAttempt(id, false, false);
+     }
+     List<ResourceRequest> ask = new ArrayList<ResourceRequest>();
+     ResourceRequest request = createResourceRequest(memory, vcores, ResourceRequest.ANY,
+@@ -180,11 +180,11 @@ protected ApplicationAttemptId createSchedulingRequest(String queueId,
+       String userId, List<ResourceRequest> ask) {
+     ApplicationAttemptId id = createAppAttemptId(this.APP_ID++,
+         this.ATTEMPT_ID++);
+-    scheduler.addApplication(id.getApplicationId(), queueId, userId, true);
++    scheduler.addApplication(id.getApplicationId(), queueId, userId, false);
+     // This conditional is for testAclSubmitApplication where app is rejected
+     // and no app is added.
+     if (scheduler.getSchedulerApplications().containsKey(id.getApplicationId())) {
+-      scheduler.addApplicationAttempt(id, false, true);
++      scheduler.addApplicationAttempt(id, false, false);
+     }
+     scheduler.allocate(id, ask, new ArrayList<ContainerId>(), null, null);
+     RMApp rmApp = mock(RMApp.class);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index 8d0b6f6..be7901f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -1126,14 +1126,14 @@ public void testQueueDemandCalculation() throws Exception {
+     scheduler.reinitialize(conf, resourceManager.getRMContext());
+ 
+     ApplicationAttemptId id11 = createAppAttemptId(1, 1);
+-    scheduler.addApplication(id11.getApplicationId(), "root.queue1", "user1", true);
+-    scheduler.addApplicationAttempt(id11, false, true);
++    scheduler.addApplication(id11.getApplicationId(), "root.queue1", "user1", false);
++    scheduler.addApplicationAttempt(id11, false, false);
+     ApplicationAttemptId id21 = createAppAttemptId(2, 1);
+-    scheduler.addApplication(id21.getApplicationId(), "root.queue2", "user1", true);
+-    scheduler.addApplicationAttempt(id21, false, true);
++    scheduler.addApplication(id21.getApplicationId(), "root.queue2", "user1", false);
++    scheduler.addApplicationAttempt(id21, false, false);
+     ApplicationAttemptId id22 = createAppAttemptId(2, 2);
+-    scheduler.addApplication(id22.getApplicationId(), "root.queue2", "user1", true);
+-    scheduler.addApplicationAttempt(id22, false, true);
++    scheduler.addApplication(id22.getApplicationId(), "root.queue2", "user1", false);
++    scheduler.addApplicationAttempt(id22, false, false);
+ 
+     int minReqSize = 
+         FairSchedulerConfiguration.DEFAULT_RM_SCHEDULER_INCREMENT_ALLOCATION_MB;
+@@ -2156,8 +2156,8 @@ public void testMultipleNodesSingleRackRequest() throws Exception {
+     scheduler.handle(nodeEvent2);
+     
+     ApplicationAttemptId appId = createAppAttemptId(this.APP_ID++, this.ATTEMPT_ID++);
+-    scheduler.addApplication(appId.getApplicationId(), "queue1", "user1", true);
+-    scheduler.addApplicationAttempt(appId, false, true);
++    scheduler.addApplication(appId.getApplicationId(), "queue1", "user1", false);
++    scheduler.addApplicationAttempt(appId, false, false);
+     
+     // 1 request with 2 nodes on the same rack. another request with 1 node on
+     // a different rack
+@@ -2438,7 +2438,7 @@ public void testNotAllowSubmitApplication() throws Exception {
+ 
+     ApplicationAttemptId attId =
+         ApplicationAttemptId.newInstance(applicationId, this.ATTEMPT_ID++);
+-    scheduler.addApplication(attId.getApplicationId(), queue, user, true);
++    scheduler.addApplication(attId.getApplicationId(), queue, user, false);
+ 
+     numTries = 0;
+     while (application.getFinishTime() == 0 && numTries < MAX_TRIES) {
+@@ -3329,7 +3329,7 @@ public void testContinuousScheduling() throws Exception {
+     // send application request
+     ApplicationAttemptId appAttemptId =
+             createAppAttemptId(this.APP_ID++, this.ATTEMPT_ID++);
+-    scheduler.addApplication(appAttemptId.getApplicationId(), "queue11", "user11", true);
++    scheduler.addApplication(appAttemptId.getApplicationId(), "queue11", "user11", false);
+     scheduler.addApplicationAttempt(appAttemptId, false, false);
+     List<ResourceRequest> ask = new ArrayList<ResourceRequest>();
+     ResourceRequest request =
+-- 
+1.7.9.5
+

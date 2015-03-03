@@ -1,0 +1,153 @@
+From 6fdf92e2e86b05417df993b8c73dbca596d66b5e Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Fri, 3 Oct 2014 11:04:02 -0700
+Subject: [PATCH 697/813] YARN-2562. Changed ContainerId#toString() to be more
+ readable. Contributed by Tsuyoshi OZAWA (cherry
+ picked from commit
+ eb6ce5e97c6a379caf9de0b34cc7770c4447bb1a)
+
+(cherry picked from commit 1c58ab92063d7e44be4fc2dca64d5e1285b323de)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../hadoop/yarn/api/records/ContainerId.java       |   43 +++++++++++++++-----
+ .../apache/hadoop/yarn/api/TestContainerId.java    |    6 ++-
+ .../hadoop/yarn/util/TestConverterUtils.java       |    6 ++-
+ 3 files changed, 41 insertions(+), 14 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/records/ContainerId.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/records/ContainerId.java
+index d03a439..b7c03ee 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/records/ContainerId.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/records/ContainerId.java
+@@ -37,6 +37,7 @@
+ public abstract class ContainerId implements Comparable<ContainerId>{
+   private static final Splitter _SPLITTER = Splitter.on('_').trimResults();
+   private static final String CONTAINER_PREFIX = "container";
++  private static final String EPOCH_PREFIX = "e";
+ 
+   @Private
+   @Unstable
+@@ -158,10 +159,24 @@ public int compareTo(ContainerId other) {
+     }
+   }
+ 
++  /**
++   * @return A string representation of containerId. The format is
++   * container_e*epoch*_*clusterTimestamp*_*appId*_*attemptId*_*containerId*
++   * when epoch is larger than 0
++   * (e.g. container_e17_1410901177871_0001_01_000005).
++   * *epoch* is increased when RM restarts or fails over.
++   * When epoch is 0, epoch is omitted
++   * (e.g. container_1410901177871_0001_01_000005).
++   */
+   @Override
+   public String toString() {
+     StringBuilder sb = new StringBuilder();
+-    sb.append("container_");
++    sb.append(CONTAINER_PREFIX + "_");
++    long epoch = getContainerId() >> 40;
++    if (epoch > 0) {
++      sb.append(EPOCH_PREFIX)
++          .append(appAttemptIdAndEpochFormat.get().format(epoch)).append("_");;
++    }
+     ApplicationId appId = getApplicationAttemptId().getApplicationId();
+     sb.append(appId.getClusterTimestamp()).append("_");
+     sb.append(ApplicationId.appIdFormat.get().format(appId.getId()))
+@@ -170,10 +185,6 @@ public String toString() {
+         appAttemptIdAndEpochFormat.get().format(
+             getApplicationAttemptId().getAttemptId())).append("_");
+     sb.append(containerIdFormat.get().format(0xffffffffffL & getContainerId()));
+-    long epoch = getContainerId() >> 40;
+-    if (epoch > 0) {
+-      sb.append("_").append(appAttemptIdAndEpochFormat.get().format(epoch));
+-    }
+     return sb.toString();
+   }
+ 
+@@ -186,12 +197,19 @@ public static ContainerId fromString(String containerIdStr) {
+           + containerIdStr);
+     }
+     try {
+-      ApplicationAttemptId appAttemptID = toApplicationAttemptId(it);
+-      long id = Long.parseLong(it.next());
++      String epochOrClusterTimestampStr = it.next();
+       long epoch = 0;
+-      if (it.hasNext()) {
+-        epoch = Integer.parseInt(it.next());
++      ApplicationAttemptId appAttemptID = null;
++      if (epochOrClusterTimestampStr.startsWith(EPOCH_PREFIX)) {
++        String epochStr = epochOrClusterTimestampStr;
++        epoch = Integer.parseInt(epochStr.substring(EPOCH_PREFIX.length()));
++        appAttemptID = toApplicationAttemptId(it);
++      } else {
++        String clusterTimestampStr = epochOrClusterTimestampStr;
++        long clusterTimestamp = Long.parseLong(clusterTimestampStr);
++        appAttemptID = toApplicationAttemptId(clusterTimestamp, it);
+       }
++      long id = Long.parseLong(it.next());
+       long cid = (epoch << 40) | id;
+       ContainerId containerId = ContainerId.newInstance(appAttemptID, cid);
+       return containerId;
+@@ -203,7 +221,12 @@ public static ContainerId fromString(String containerIdStr) {
+ 
+   private static ApplicationAttemptId toApplicationAttemptId(
+       Iterator<String> it) throws NumberFormatException {
+-    ApplicationId appId = ApplicationId.newInstance(Long.parseLong(it.next()),
++    return toApplicationAttemptId(Long.parseLong(it.next()), it);
++  }
++
++  private static ApplicationAttemptId toApplicationAttemptId(
++      long clusterTimestamp, Iterator<String> it) throws NumberFormatException {
++    ApplicationId appId = ApplicationId.newInstance(clusterTimestamp,
+         Integer.parseInt(it.next()));
+     ApplicationAttemptId appAttemptId =
+         ApplicationAttemptId.newInstance(appId, Integer.parseInt(it.next()));
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/api/TestContainerId.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/api/TestContainerId.java
+index c11fd96..2259294 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/api/TestContainerId.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/api/TestContainerId.java
+@@ -63,13 +63,15 @@ public void testContainerId() {
+     Assert.assertEquals(999799999997L, 0xffffffffffL & c7.getContainerId());
+     Assert.assertEquals(3, c7.getContainerId() >> 40);
+     Assert.assertEquals(
+-        "container_" + ts + "_36473_4365472_999799999997_03", c7.toString());
++        "container_e03_" + ts + "_36473_4365472_999799999997",
++        c7.toString());
+ 
+     ContainerId c8 = newContainerId(36473, 4365472, ts, 844424930131965L);
+     Assert.assertEquals(1099511627773L, 0xffffffffffL & c8.getContainerId());
+     Assert.assertEquals(767, c8.getContainerId() >> 40);
+     Assert.assertEquals(
+-        "container_" + ts + "_36473_4365472_1099511627773_767", c8.toString());
++        "container_e767_" + ts + "_36473_4365472_1099511627773",
++        c8.toString());
+   }
+ 
+   public static ContainerId newContainerId(int appId, int appAttemptId,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestConverterUtils.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestConverterUtils.java
+index f7e7fe4..824e6c0 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestConverterUtils.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestConverterUtils.java
+@@ -67,14 +67,16 @@ public void testContainerIdWithEpoch() throws URISyntaxException {
+     ContainerId id2 =
+         TestContainerId.newContainerId(36473, 4365472, ts, 4298334883325L);
+     String cid2 = ConverterUtils.toString(id2);
+-    assertEquals("container_" + ts + "_36473_4365472_999799999997_03", cid2);
++    assertEquals(
++        "container_e03_" + ts + "_36473_4365472_999799999997", cid2);
+     ContainerId gen2 = ConverterUtils.toContainerId(cid2);
+     assertEquals(gen2.toString(), id2.toString());
+ 
+     ContainerId id3 =
+         TestContainerId.newContainerId(36473, 4365472, ts, 844424930131965L);
+     String cid3 = ConverterUtils.toString(id3);
+-    assertEquals("container_" + ts + "_36473_4365472_1099511627773_767", cid3);
++    assertEquals(
++        "container_e767_" + ts + "_36473_4365472_1099511627773", cid3);
+     ContainerId gen3 = ConverterUtils.toContainerId(cid3);
+     assertEquals(gen3.toString(), id3.toString());
+   }
+-- 
+1.7.9.5
+

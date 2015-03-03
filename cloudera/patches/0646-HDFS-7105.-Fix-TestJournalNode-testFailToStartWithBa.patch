@@ -1,0 +1,30 @@
+From 8f3fcf6c92e67176912dbb0601b2c7d7c759b96b Mon Sep 17 00:00:00 2001
+From: cnauroth <cnauroth@apache.org>
+Date: Fri, 19 Sep 2014 21:04:55 -0700
+Subject: [PATCH 646/813] HDFS-7105. Fix
+ TestJournalNode#testFailToStartWithBadConfig to
+ match log output change. Contributed by Ray Chiang.
+
+(cherry picked from commit 332e2e23ba6f0748a46c0bda76f426d9cad73edd)
+(cherry picked from commit 9ee5e26cbb7818defcf308817f87b093771469af)
+(cherry picked from commit 1bb69a586801b626827baac5c136560d83f774cd)
+---
+ .../hdfs/qjournal/server/TestJournalNode.java      |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournalNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournalNode.java
+index 10b6b79..56a4348 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournalNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournalNode.java
+@@ -292,7 +292,7 @@ public void testFailToStartWithBadConfig() throws Exception {
+     // Directory which cannot be created
+     conf.set(DFSConfigKeys.DFS_JOURNALNODE_EDITS_DIR_KEY,
+         Shell.WINDOWS ? "\\\\cannotBeCreated" : "/proc/does-not-exist");
+-    assertJNFailsToStart(conf, "Can not create directory");
++    assertJNFailsToStart(conf, "Cannot create directory");
+   }
+ 
+   private static void assertJNFailsToStart(Configuration conf,
+-- 
+1.7.9.5
+

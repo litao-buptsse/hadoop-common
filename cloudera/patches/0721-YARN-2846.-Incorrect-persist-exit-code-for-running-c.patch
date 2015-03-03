@@ -1,0 +1,119 @@
+From 5c0d40213b12864f5d80adc163457ba0bc5e4ae7 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 13 Nov 2014 16:11:04 +0000
+Subject: [PATCH 721/813] YARN-2846. Incorrect persist exit code for running
+ containers in reacquireContainer() that interrupted
+ by NodeManager restart. Contributed by Junping Du
+ (cherry picked from commit
+ 33ea5ae92b9dd3abace104903d9a94d17dd75af5)
+
+(cherry picked from commit 6fd547da8feb71058f701eb94296cf6cace357b2)
+---
+ .../yarn/server/nodemanager/ContainerExecutor.java |   21 +++++++-------------
+ .../server/nodemanager/LinuxContainerExecutor.java |    2 +-
+ .../launcher/RecoveredContainerLaunch.java         |   20 ++++++++++++-------
+ 3 files changed, 21 insertions(+), 22 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/ContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/ContainerExecutor.java
+index 4637929..4230d08 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/ContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/ContainerExecutor.java
+@@ -139,9 +139,10 @@ public abstract boolean isContainerProcessAlive(String user, String pid)
+    * @param containerId The ID of the container to reacquire
+    * @return The exit code of the pre-existing container
+    * @throws IOException
++   * @throws InterruptedException 
+    */
+   public int reacquireContainer(String user, ContainerId containerId)
+-      throws IOException {
++      throws IOException, InterruptedException {
+     Path pidPath = getPidFilePath(containerId);
+     if (pidPath == null) {
+       LOG.warn(containerId + " is not active, returning terminated error");
+@@ -155,13 +156,8 @@ public int reacquireContainer(String user, ContainerId containerId)
+     }
+ 
+     LOG.info("Reacquiring " + containerId + " with pid " + pid);
+-    try {
+-      while(isContainerProcessAlive(user, pid)) {
+-        Thread.sleep(1000);
+-      }
+-    } catch (InterruptedException e) {
+-      throw new IOException("Interrupted while waiting for process " + pid
+-          + " to exit", e);
++    while(isContainerProcessAlive(user, pid)) {
++      Thread.sleep(1000);
+     }
+ 
+     // wait for exit code file to appear
+@@ -174,12 +170,9 @@ public int reacquireContainer(String user, ContainerId containerId)
+         LOG.info(containerId + " was deactivated");
+         return ExitCode.TERMINATED.getExitCode();
+       }
+-      try {
+-        Thread.sleep(sleepMsec);
+-      } catch (InterruptedException e) {
+-        throw new IOException(
+-            "Interrupted while waiting for exit code from " + containerId, e);
+-      }
++      
++      Thread.sleep(sleepMsec);
++      
+       msecLeft -= sleepMsec;
+     }
+     if (msecLeft < 0) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
+index b182420..dc1e401 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
+@@ -342,7 +342,7 @@ public int launchContainer(Container container,
+ 
+   @Override
+   public int reacquireContainer(String user, ContainerId containerId)
+-      throws IOException {
++      throws IOException, InterruptedException {
+     try {
+       return super.reacquireContainer(user, containerId);
+     } finally {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/launcher/RecoveredContainerLaunch.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/launcher/RecoveredContainerLaunch.java
+index 446695a..03a39aa 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/launcher/RecoveredContainerLaunch.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/launcher/RecoveredContainerLaunch.java
+@@ -73,6 +73,7 @@ public Integer call() {
+     dispatcher.getEventHandler().handle(new ContainerEvent(containerId,
+         ContainerEventType.CONTAINER_LAUNCHED));
+ 
++    boolean notInterrupted = true;
+     try {
+       File pidFile = locatePidFile(appIdStr, containerIdStr);
+       if (pidFile != null) {
+@@ -85,14 +86,19 @@ public Integer call() {
+       }
+     } catch (IOException e) {
+         LOG.error("Unable to recover container " + containerIdStr, e);
++    } catch (InterruptedException e) {
++      LOG.warn("Interrupted while waiting for exit code from " + containerId);
++      notInterrupted = false;
+     } finally {
+-      this.completed.set(true);
+-      exec.deactivateContainer(containerId);
+-      try {
+-        getContext().getNMStateStore().storeContainerCompleted(containerId,
+-            retCode);
+-      } catch (IOException e) {
+-        LOG.error("Unable to set exit code for container " + containerId);
++      if (notInterrupted) {
++        this.completed.set(true);
++        exec.deactivateContainer(containerId);
++        try {
++          getContext().getNMStateStore().storeContainerCompleted(containerId,
++              retCode);
++        } catch (IOException e) {
++          LOG.error("Unable to set exit code for container " + containerId);
++        }
+       }
+     }
+ 
+-- 
+1.7.9.5
+

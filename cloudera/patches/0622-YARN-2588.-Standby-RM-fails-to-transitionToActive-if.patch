@@ -1,0 +1,110 @@
+From 850906acc13535de90c01393996319077190951d Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Fri, 17 Oct 2014 10:54:24 -0700
+Subject: [PATCH 622/813] YARN-2588. Standby RM fails to transitionToActive if
+ previous transitionToActive failed with ZK
+ exception. Contributed by Rohith Sharmaks (cherry
+ picked from commit
+ a6aa6e42cacdbfcc1c2b7c19e7239204fe9ff654)
+
+(cherry picked from commit 79428e021f7f2673e77ef69f0db3f177a58fd3e0)
+(cherry picked from commit f83a3347fe31ebe177021e04b2a09321a8b11dcf)
+---
+ .../server/resourcemanager/ResourceManager.java    |   10 +++-
+ .../yarn/server/resourcemanager/TestRMHA.java      |   52 ++++++++++++++++++++
+ 2 files changed, 60 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index b2b2a2a..0a698ca 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -965,8 +965,14 @@ synchronized void transitionToActive() throws Exception {
+     this.rmLoginUGI.doAs(new PrivilegedExceptionAction<Void>() {
+       @Override
+       public Void run() throws Exception {
+-        startActiveServices();
+-        return null;
++        try {
++          startActiveServices();
++          return null;
++        } catch (Exception e) {
++          resetDispatcher();
++          createAndInitActiveServices();
++          throw e;
++        }
+       }
+     });
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 1066b3a..60794ad 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -47,6 +47,7 @@
+ import org.apache.hadoop.yarn.event.Dispatcher;
+ import org.apache.hadoop.yarn.event.EventHandler;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+@@ -398,6 +399,57 @@ public void testHAWithRMHostName() throws Exception {
+     innerTestHAWithRMHostName(true);
+   }
+ 
++  @Test(timeout = 30000)
++  public void testFailoverWhenTransitionToActiveThrowException()
++      throws Exception {
++    configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
++    Configuration conf = new YarnConfiguration(configuration);
++
++    MemoryRMStateStore memStore = new MemoryRMStateStore() {
++      int count = 0;
++
++      @Override
++      public synchronized void startInternal() throws Exception {
++        // first time throw exception
++        if (count++ == 0) {
++          throw new Exception("Session Expired");
++        }
++      }
++    };
++    // start RM
++    memStore.init(conf);
++
++    rm = new MockRM(conf, memStore);
++    rm.init(conf);
++    StateChangeRequestInfo requestInfo =
++        new StateChangeRequestInfo(
++            HAServiceProtocol.RequestSource.REQUEST_BY_USER);
++
++    assertEquals(STATE_ERR, HAServiceState.INITIALIZING, rm.adminService
++        .getServiceStatus().getState());
++    assertFalse("RM is ready to become active before being started",
++        rm.adminService.getServiceStatus().isReadyToBecomeActive());
++    checkMonitorHealth();
++
++    rm.start();
++    checkMonitorHealth();
++    checkStandbyRMFunctionality();
++
++    // 2. Try Transition to active, throw exception
++    try {
++      rm.adminService.transitionToActive(requestInfo);
++      Assert.fail("Transitioned to Active should throw exception.");
++    } catch (Exception e) {
++      assertTrue("Error when transitioning to Active mode".contains(e
++          .getMessage()));
++    }
++
++    // 3. Transition to active, success
++    rm.adminService.transitionToActive(requestInfo);
++    checkMonitorHealth();
++    checkActiveRMFunctionality();
++  }
++
+   public void innerTestHAWithRMHostName(boolean includeBindHost) {
+     //this is run two times, with and without a bind host configured
+     if (includeBindHost) {
+-- 
+1.7.9.5
+

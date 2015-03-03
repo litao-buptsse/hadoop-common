@@ -1,0 +1,199 @@
+From 23a96c027db8272ebb8c1509c692c9e1cbaf4606 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Wed, 6 Aug 2014 01:13:36 +0000
+Subject: [PATCH 407/813] HDFS-6790. Merging change r1616058 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1616072 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 5e3640eb4ff5a297d11c7ef6b578f7314701baff)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    3 +
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |   31 ++++++++-
+ .../java/org/apache/hadoop/hdfs/TestDFSUtil.java   |   73 ++++++++++++++++++++
+ 3 files changed, 104 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 32d0b75..b259bd2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -204,6 +204,9 @@
+   public static final String  DFS_ADMIN = "dfs.cluster.administrators";
+   public static final String  DFS_SERVER_HTTPS_KEYSTORE_RESOURCE_KEY = "dfs.https.server.keystore.resource";
+   public static final String  DFS_SERVER_HTTPS_KEYSTORE_RESOURCE_DEFAULT = "ssl-server.xml";
++  public static final String  DFS_SERVER_HTTPS_KEYPASSWORD_KEY = "ssl.server.keystore.keypassword";
++  public static final String  DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY = "ssl.server.keystore.password";
++  public static final String  DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY = "ssl.server.truststore.password";
+   public static final String  DFS_NAMENODE_NAME_DIR_RESTORE_KEY = "dfs.namenode.name.dir.restore";
+   public static final boolean DFS_NAMENODE_NAME_DIR_RESTORE_DEFAULT = false;
+   public static final String  DFS_NAMENODE_SUPPORT_ALLOW_FORMAT_KEY = "dfs.namenode.support.allow.format";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index 49d7728..7d2e1d2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -33,6 +33,9 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYPASSWORD_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY;
+ 
+ import java.io.IOException;
+ import java.io.PrintStream;
+@@ -1568,12 +1571,12 @@ public static String getSpnegoKeytabKey(Configuration conf, String defaultKey) {
+         .needsClientAuth(
+             sslConf.getBoolean(DFS_CLIENT_HTTPS_NEED_AUTH_KEY,
+                 DFS_CLIENT_HTTPS_NEED_AUTH_DEFAULT))
+-        .keyPassword(sslConf.get("ssl.server.keystore.keypassword"))
++        .keyPassword(getPassword(sslConf, DFS_SERVER_HTTPS_KEYPASSWORD_KEY))
+         .keyStore(sslConf.get("ssl.server.keystore.location"),
+-            sslConf.get("ssl.server.keystore.password"),
++            getPassword(sslConf, DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY),
+             sslConf.get("ssl.server.keystore.type", "jks"))
+         .trustStore(sslConf.get("ssl.server.truststore.location"),
+-            sslConf.get("ssl.server.truststore.password"),
++            getPassword(sslConf, DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY),
+             sslConf.get("ssl.server.truststore.type", "jks"));
+   }
+ 
+@@ -1641,6 +1644,28 @@ public static Configuration loadSslConfiguration(Configuration conf) {
+   }
+ 
+   /**
++   * Leverages the Configuration.getPassword method to attempt to get
++   * passwords from the CredentialProvider API before falling back to
++   * clear text in config - if falling back is allowed.
++   * @param conf Configuration instance
++   * @param alias name of the credential to retreive
++   * @return String credential value or null
++   */
++  static String getPassword(Configuration conf, String alias) {
++    String password = null;
++    try {
++      char[] passchars = conf.getPassword(alias);
++      if (passchars != null) {
++        password = new String(passchars);
++      }
++    }
++    catch (IOException ioe) {
++      password = null;
++    }
++    return password;
++  }
++
++  /**
+    * Converts a Date into an ISO-8601 formatted datetime string.
+    */
+   public static String dateToIso8601String(Date date) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java
+index c64ae1c..caedca0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java
+@@ -30,8 +30,12 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYPASSWORD_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY;
+ import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+ import static org.hamcrest.CoreMatchers.not;
++import static org.junit.Assert.assertArrayEquals;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertNull;
+@@ -39,6 +43,7 @@
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ 
++import java.io.File;
+ import java.io.IOException;
+ import java.net.InetSocketAddress;
+ import java.net.URI;
+@@ -61,8 +66,12 @@
+ import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.alias.CredentialProvider;
++import org.apache.hadoop.security.alias.CredentialProviderFactory;
++import org.apache.hadoop.security.alias.JavaKeyStoreProvider;
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.apache.hadoop.util.Shell;
++import org.junit.Assert;
+ import org.junit.Assume;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -792,4 +801,68 @@ private static void checkAllResults(Long[] toCheck, boolean shouldSucceed) {
+       }
+     }
+   }
++
++  @Test
++  public void testGetPassword() throws Exception {
++    File testDir = new File(System.getProperty("test.build.data",
++        "target/test-dir"));
++
++    Configuration conf = new Configuration();
++    final String ourUrl =
++    JavaKeyStoreProvider.SCHEME_NAME + "://file/" + testDir + "/test.jks";
++
++    File file = new File(testDir, "test.jks");
++    file.delete();
++    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH, ourUrl);
++
++    CredentialProvider provider =
++        CredentialProviderFactory.getProviders(conf).get(0);
++    char[] keypass = {'k', 'e', 'y', 'p', 'a', 's', 's'};
++    char[] storepass = {'s', 't', 'o', 'r', 'e', 'p', 'a', 's', 's'};
++    char[] trustpass = {'t', 'r', 'u', 's', 't', 'p', 'a', 's', 's'};
++
++    // ensure that we get nulls when the key isn't there
++    assertEquals(null, provider.getCredentialEntry(
++        DFS_SERVER_HTTPS_KEYPASSWORD_KEY));
++    assertEquals(null, provider.getCredentialEntry(
++        DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY));
++    assertEquals(null, provider.getCredentialEntry(
++        DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY));
++
++    // create new aliases
++    try {
++      provider.createCredentialEntry(
++          DFS_SERVER_HTTPS_KEYPASSWORD_KEY, keypass);
++
++      provider.createCredentialEntry(
++          DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY, storepass);
++
++      provider.createCredentialEntry(
++          DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY, trustpass);
++
++      // write out so that it can be found in checks
++      provider.flush();
++    } catch (Exception e) {
++      e.printStackTrace();
++      throw e;
++    }
++    // make sure we get back the right key directly from api
++    assertArrayEquals(keypass, provider.getCredentialEntry(
++        DFS_SERVER_HTTPS_KEYPASSWORD_KEY).getCredential());
++    assertArrayEquals(storepass, provider.getCredentialEntry(
++        DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY).getCredential());
++    assertArrayEquals(trustpass, provider.getCredentialEntry(
++        DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY).getCredential());
++
++    // use WebAppUtils as would be used by loadSslConfiguration
++    Assert.assertEquals("keypass",
++        DFSUtil.getPassword(conf, DFS_SERVER_HTTPS_KEYPASSWORD_KEY));
++    Assert.assertEquals("storepass",
++        DFSUtil.getPassword(conf, DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY));
++    Assert.assertEquals("trustpass",
++        DFSUtil.getPassword(conf, DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY));
++
++    // let's make sure that a password that doesn't exist returns null
++    Assert.assertEquals(null, DFSUtil.getPassword(conf,"invalid-alias"));
++  }
+ }
+-- 
+1.7.9.5
+

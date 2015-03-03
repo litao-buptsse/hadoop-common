@@ -1,0 +1,1248 @@
+From 5d6e76f5f33645ace384e62cdfd291613494fea0 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 19:00:01 +0000
+Subject: [PATCH 237/813] HADOOP-10770. KMS add delegation token support.
+ (tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619550 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../key/KeyProviderDelegationTokenExtension.java   |    8 +-
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |   54 +++-
+ .../web/DelegationTokenAuthenticationHandler.java  |    2 +-
+ .../apache/hadoop/crypto/key/kms/server/KMS.java   |  272 +++++++++++++-------
+ .../hadoop/crypto/key/kms/server/KMSACLs.java      |    3 +-
+ .../hadoop/crypto/key/kms/server/KMSAudit.java     |   18 +-
+ .../key/kms/server/KMSAuthenticationFilter.java    |   21 +-
+ .../key/kms/server/KMSExceptionsProvider.java      |    8 +-
+ .../hadoop/crypto/key/kms/server/KMSMDCFilter.java |   17 +-
+ .../hadoop-kms/src/site/apt/index.apt.vm           |   40 +++
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |   98 ++++++-
+ .../hadoop/crypto/key/kms/server/TestKMSACLs.java  |   10 +-
+ .../hadoop/crypto/key/kms/server/TestKMSAudit.java |   10 +-
+ 13 files changed, 416 insertions(+), 145 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java
+index ccaa8d4..be8014e 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java
+@@ -20,6 +20,8 @@
+ import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.token.Token;
+ 
++import java.io.IOException;
++
+ /**
+  * A KeyProvider extension with the ability to add a renewer's Delegation
+  * Tokens to the provided Credentials.
+@@ -45,9 +47,10 @@
+      * @param renewer the user allowed to renew the delegation tokens
+      * @param credentials cache in which to add new delegation tokens
+      * @return list of new delegation tokens
++     * @throws IOException thrown if IOException if an IO error occurs.
+      */
+     public Token<?>[] addDelegationTokens(final String renewer,
+-        Credentials credentials);
++        Credentials credentials) throws IOException;
+   }
+ 
+   /**
+@@ -76,9 +79,10 @@ private KeyProviderDelegationTokenExtension(KeyProvider keyProvider,
+    * @param renewer the user allowed to renew the delegation tokens
+    * @param credentials cache in which to add new delegation tokens
+    * @return list of new delegation tokens
++   * @throws IOException thrown if IOException if an IO error occurs.
+    */
+   public Token<?>[] addDelegationTokens(final String renewer,
+-      Credentials credentials) {
++      Credentials credentials) throws IOException {
+     return getExtension().addDelegationTokens(renewer, credentials);
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index 44fd957..a06bc79 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -22,15 +22,17 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
++import org.apache.hadoop.crypto.key.KeyProviderDelegationTokenExtension;
+ import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.ProviderUtils;
+-import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+ import org.apache.hadoop.security.authentication.client.AuthenticationException;
+ import org.apache.hadoop.security.authentication.client.ConnectionConfigurator;
+-import org.apache.hadoop.security.authentication.client.PseudoAuthenticator;
+ import org.apache.hadoop.security.ssl.SSLFactory;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticatedURL;
+ import org.apache.http.client.utils.URIBuilder;
+ import org.codehaus.jackson.map.ObjectMapper;
+ 
+@@ -69,7 +71,10 @@
+  * KMS client <code>KeyProvider</code> implementation.
+  */
+ @InterfaceAudience.Private
+-public class KMSClientProvider extends KeyProvider implements CryptoExtension {
++public class KMSClientProvider extends KeyProvider implements CryptoExtension,
++    KeyProviderDelegationTokenExtension.DelegationTokenExtension {
++
++  public static final String TOKEN_KIND = "kms-dt";
+ 
+   public static final String SCHEME_NAME = "kms";
+ 
+@@ -229,6 +234,7 @@ public static String checkNotEmpty(String s, String name)
+   private String kmsUrl;
+   private SSLFactory sslFactory;
+   private ConnectionConfigurator configurator;
++  private DelegationTokenAuthenticatedURL.Token authToken;
+ 
+   @Override
+   public String toString() {
+@@ -309,6 +315,7 @@ public KMSClientProvider(URI uri, Configuration conf) throws IOException {
+                 CommonConfigurationKeysPublic.
+                     KMS_CLIENT_ENC_KEY_CACHE_NUM_REFILL_THREADS_DEFAULT),
+             new EncryptedQueueRefiller());
++    authToken = new DelegationTokenAuthenticatedURL.Token();
+   }
+ 
+   private String createServiceURL(URL url) throws IOException {
+@@ -325,12 +332,14 @@ private URL createURL(String collection, String resource, String subResource,
+     try {
+       StringBuilder sb = new StringBuilder();
+       sb.append(kmsUrl);
+-      sb.append(collection);
+-      if (resource != null) {
+-        sb.append("/").append(URLEncoder.encode(resource, UTF8));
+-      }
+-      if (subResource != null) {
+-        sb.append("/").append(subResource);
++      if (collection != null) {
++        sb.append(collection);
++        if (resource != null) {
++          sb.append("/").append(URLEncoder.encode(resource, UTF8));
++          if (subResource != null) {
++            sb.append("/").append(subResource);
++          }
++        }
+       }
+       URIBuilder uriBuilder = new URIBuilder(sb.toString());
+       if (parameters != null) {
+@@ -369,9 +378,9 @@ private HttpURLConnection createConnection(URL url, String method)
+       throws IOException {
+     HttpURLConnection conn;
+     try {
+-      AuthenticatedURL authUrl = new AuthenticatedURL(new PseudoAuthenticator(),
+-          configurator);
+-      conn = authUrl.openConnection(url, new AuthenticatedURL.Token());
++      DelegationTokenAuthenticatedURL authUrl =
++          new DelegationTokenAuthenticatedURL(configurator);
++      conn = authUrl.openConnection(url, authToken);
+     } catch (AuthenticationException ex) {
+       throw new IOException(ex);
+     }
+@@ -729,4 +738,25 @@ public void warmUpEncryptedKeys(String... keyNames)
+     }
+   }
+ 
++  @Override
++  public Token<?>[] addDelegationTokens(String renewer,
++      Credentials credentials) throws IOException {
++    Token<?>[] tokens;
++    URL url = createURL(null, null, null, null);
++    DelegationTokenAuthenticatedURL authUrl =
++        new DelegationTokenAuthenticatedURL(configurator);
++    try {
++      Token<?> token = authUrl.getDelegationToken(url, authToken, renewer);
++      if (token != null) {
++        credentials.addToken(token.getService(), token);
++        tokens = new Token<?>[] { token };
++      } else {
++        throw new IOException("Got NULL as delegation token");
++      }
++    } catch (AuthenticationException ex) {
++      throw new IOException(ex);
++    }
++    return tokens;
++  }
++
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+index 3b6c289..670ec55 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+@@ -75,7 +75,7 @@
+ 
+   public static final String PREFIX = "delegation-token.";
+ 
+-  public static final String TOKEN_KIND = PREFIX + "token-kind.sec";
++  public static final String TOKEN_KIND = PREFIX + "token-kind";
+ 
+   public static final String UPDATE_INTERVAL = PREFIX + "update-interval.sec";
+   public static final long UPDATE_INTERVAL_DEFAULT = 24 * 60 * 60;
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+index ea89432..608751a 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+@@ -25,9 +25,10 @@
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
+ import org.apache.hadoop.crypto.key.kms.KMSRESTConstants;
+ import org.apache.hadoop.security.AccessControlException;
+-import org.apache.hadoop.security.authentication.client.AuthenticationException;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
++import org.apache.hadoop.security.token.delegation.web.HttpUserGroupInformation;
+ 
+ import javax.ws.rs.Consumes;
+ import javax.ws.rs.DELETE;
+@@ -38,15 +39,13 @@
+ import javax.ws.rs.PathParam;
+ import javax.ws.rs.Produces;
+ import javax.ws.rs.QueryParam;
+-import javax.ws.rs.core.Context;
+ import javax.ws.rs.core.MediaType;
+ import javax.ws.rs.core.Response;
+-import javax.ws.rs.core.SecurityContext;
+ 
+ import java.io.IOException;
+ import java.net.URI;
+ import java.net.URISyntaxException;
+-import java.security.Principal;
++import java.security.PrivilegedExceptionAction;
+ import java.util.ArrayList;
+ import java.util.LinkedList;
+ import java.util.List;
+@@ -74,15 +73,6 @@ public KMS() throws Exception {
+     kmsAudit= KMSWebApp.getKMSAudit();
+   }
+ 
+-  private static Principal getPrincipal(SecurityContext securityContext)
+-      throws AuthenticationException{
+-    Principal user = securityContext.getUserPrincipal();
+-    if (user == null) {
+-      throw new AuthenticationException("User must be authenticated");
+-    }
+-    return user;
+-  }
+-
+ 
+   private static final String UNAUTHORIZED_MSG_WITH_KEY =
+       "User:%s not allowed to do '%s' on '%s'";
+@@ -90,20 +80,21 @@ private static Principal getPrincipal(SecurityContext securityContext)
+   private static final String UNAUTHORIZED_MSG_WITHOUT_KEY =
+       "User:%s not allowed to do '%s'";
+ 
+-  private void assertAccess(KMSACLs.Type aclType, Principal principal,
++  private void assertAccess(KMSACLs.Type aclType, UserGroupInformation ugi,
+       KMSOp operation) throws AccessControlException {
+-    assertAccess(aclType, principal, operation, null);
++    assertAccess(aclType, ugi, operation, null);
+   }
+ 
+-  private void assertAccess(KMSACLs.Type aclType, Principal principal,
+-      KMSOp operation, String key) throws AccessControlException {
+-    if (!KMSWebApp.getACLs().hasAccess(aclType, principal.getName())) {
++  private void assertAccess(KMSACLs.Type aclType,
++      UserGroupInformation ugi, KMSOp operation, String key)
++      throws AccessControlException {
++    if (!KMSWebApp.getACLs().hasAccess(aclType, ugi)) {
+       KMSWebApp.getUnauthorizedCallsMeter().mark();
+-      kmsAudit.unauthorized(principal, operation, key);
++      kmsAudit.unauthorized(ugi, operation, key);
+       throw new AuthorizationException(String.format(
+           (key != null) ? UNAUTHORIZED_MSG_WITH_KEY
+                         : UNAUTHORIZED_MSG_WITHOUT_KEY,
+-          principal.getName(), operation, key));
++          ugi.getShortUserName(), operation, key));
+     }
+   }
+ 
+@@ -123,15 +114,14 @@ private static URI getKeyURI(String name) throws URISyntaxException {
+   @Consumes(MediaType.APPLICATION_JSON)
+   @Produces(MediaType.APPLICATION_JSON)
+   @SuppressWarnings("unchecked")
+-  public Response createKey(@Context SecurityContext securityContext,
+-      Map jsonKey) throws Exception {
++  public Response createKey(Map jsonKey) throws Exception {
+     KMSWebApp.getAdminCallsMeter().mark();
+-    Principal user = getPrincipal(securityContext);
+-    String name = (String) jsonKey.get(KMSRESTConstants.NAME_FIELD);
++    UserGroupInformation user = HttpUserGroupInformation.get();
++    final String name = (String) jsonKey.get(KMSRESTConstants.NAME_FIELD);
+     KMSClientProvider.checkNotEmpty(name, KMSRESTConstants.NAME_FIELD);
+     assertAccess(KMSACLs.Type.CREATE, user, KMSOp.CREATE_KEY, name);
+     String cipher = (String) jsonKey.get(KMSRESTConstants.CIPHER_FIELD);
+-    String material = (String) jsonKey.get(KMSRESTConstants.MATERIAL_FIELD);
++    final String material = (String) jsonKey.get(KMSRESTConstants.MATERIAL_FIELD);
+     int length = (jsonKey.containsKey(KMSRESTConstants.LENGTH_FIELD))
+                  ? (Integer) jsonKey.get(KMSRESTConstants.LENGTH_FIELD) : 0;
+     String description = (String)
+@@ -142,7 +132,7 @@ public Response createKey(@Context SecurityContext securityContext,
+       assertAccess(KMSACLs.Type.SET_KEY_MATERIAL, user,
+           KMSOp.CREATE_KEY, name);
+     }
+-    KeyProvider.Options options = new KeyProvider.Options(
++    final KeyProvider.Options options = new KeyProvider.Options(
+         KMSWebApp.getConfiguration());
+     if (cipher != null) {
+       options.setCipher(cipher);
+@@ -153,16 +143,23 @@ public Response createKey(@Context SecurityContext securityContext,
+     options.setDescription(description);
+     options.setAttributes(attributes);
+ 
+-    KeyProvider.KeyVersion keyVersion = (material != null)
+-        ? provider.createKey(name, Base64.decodeBase64(material), options)
+-        : provider.createKey(name, options);
+-
+-    provider.flush();
++    KeyProvider.KeyVersion keyVersion = user.doAs(
++        new PrivilegedExceptionAction<KeyVersion>() {
++          @Override
++          public KeyVersion run() throws Exception {
++            KeyProvider.KeyVersion keyVersion = (material != null)
++              ? provider.createKey(name, Base64.decodeBase64(material), options)
++              : provider.createKey(name, options);
++            provider.flush();
++            return keyVersion;
++          }
++        }
++    );
+ 
+     kmsAudit.ok(user, KMSOp.CREATE_KEY, name, "UserProvidedMaterial:" +
+         (material != null) + " Description:" + description);
+ 
+-    if (!KMSWebApp.getACLs().hasAccess(KMSACLs.Type.GET, user.getName())) {
++    if (!KMSWebApp.getACLs().hasAccess(KMSACLs.Type.GET, user)) {
+       keyVersion = removeKeyMaterial(keyVersion);
+     }
+     Map json = KMSServerJSONUtils.toJSON(keyVersion);
+@@ -176,14 +173,21 @@ public Response createKey(@Context SecurityContext securityContext,
+ 
+   @DELETE
+   @Path(KMSRESTConstants.KEY_RESOURCE + "/{name:.*}")
+-  public Response deleteKey(@Context SecurityContext securityContext,
+-      @PathParam("name") String name) throws Exception {
++  public Response deleteKey(@PathParam("name") final String name)
++      throws Exception {
+     KMSWebApp.getAdminCallsMeter().mark();
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     assertAccess(KMSACLs.Type.DELETE, user, KMSOp.DELETE_KEY, name);
+     KMSClientProvider.checkNotEmpty(name, "name");
+-    provider.deleteKey(name);
+-    provider.flush();
++
++    user.doAs(new PrivilegedExceptionAction<Void>() {
++      @Override
++      public Void run() throws Exception {
++        provider.deleteKey(name);
++        provider.flush();
++        return null;
++      }
++    });
+ 
+     kmsAudit.ok(user, KMSOp.DELETE_KEY, name, "");
+ 
+@@ -194,29 +198,36 @@ public Response deleteKey(@Context SecurityContext securityContext,
+   @Path(KMSRESTConstants.KEY_RESOURCE + "/{name:.*}")
+   @Consumes(MediaType.APPLICATION_JSON)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response rolloverKey(@Context SecurityContext securityContext,
+-      @PathParam("name") String name, Map jsonMaterial)
+-      throws Exception {
++  public Response rolloverKey(@PathParam("name") final String name,
++      Map jsonMaterial) throws Exception {
+     KMSWebApp.getAdminCallsMeter().mark();
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     assertAccess(KMSACLs.Type.ROLLOVER, user, KMSOp.ROLL_NEW_VERSION, name);
+     KMSClientProvider.checkNotEmpty(name, "name");
+-    String material = (String)
++    final String material = (String)
+         jsonMaterial.get(KMSRESTConstants.MATERIAL_FIELD);
+     if (material != null) {
+       assertAccess(KMSACLs.Type.SET_KEY_MATERIAL, user,
+           KMSOp.ROLL_NEW_VERSION, name);
+     }
+-    KeyProvider.KeyVersion keyVersion = (material != null)
+-        ? provider.rollNewVersion(name, Base64.decodeBase64(material))
+-        : provider.rollNewVersion(name);
+ 
+-    provider.flush();
++    KeyProvider.KeyVersion keyVersion = user.doAs(
++        new PrivilegedExceptionAction<KeyVersion>() {
++          @Override
++          public KeyVersion run() throws Exception {
++            KeyVersion keyVersion = (material != null)
++              ? provider.rollNewVersion(name, Base64.decodeBase64(material))
++              : provider.rollNewVersion(name);
++            provider.flush();
++            return keyVersion;
++          }
++        }
++    );
+ 
+     kmsAudit.ok(user, KMSOp.ROLL_NEW_VERSION, name, "UserProvidedMaterial:" +
+         (material != null) + " NewVersion:" + keyVersion.getVersionName());
+ 
+-    if (!KMSWebApp.getACLs().hasAccess(KMSACLs.Type.GET, user.getName())) {
++    if (!KMSWebApp.getACLs().hasAccess(KMSACLs.Type.GET, user)) {
+       keyVersion = removeKeyMaterial(keyVersion);
+     }
+     Map json = KMSServerJSONUtils.toJSON(keyVersion);
+@@ -226,14 +237,23 @@ public Response rolloverKey(@Context SecurityContext securityContext,
+   @GET
+   @Path(KMSRESTConstants.KEYS_METADATA_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response getKeysMetadata(@Context SecurityContext securityContext,
+-      @QueryParam(KMSRESTConstants.KEY) List<String> keyNamesList)
+-      throws Exception {
++  public Response getKeysMetadata(@QueryParam(KMSRESTConstants.KEY)
++      List<String> keyNamesList) throws Exception {
+     KMSWebApp.getAdminCallsMeter().mark();
+-    Principal user = getPrincipal(securityContext);
+-    String[] keyNames = keyNamesList.toArray(new String[keyNamesList.size()]);
++    UserGroupInformation user = HttpUserGroupInformation.get();
++    final String[] keyNames = keyNamesList.toArray(
++        new String[keyNamesList.size()]);
+     assertAccess(KMSACLs.Type.GET_METADATA, user, KMSOp.GET_KEYS_METADATA);
+-    KeyProvider.Metadata[] keysMeta = provider.getKeysMetadata(keyNames);
++
++    KeyProvider.Metadata[] keysMeta = user.doAs(
++        new PrivilegedExceptionAction<KeyProvider.Metadata[]>() {
++          @Override
++          public KeyProvider.Metadata[] run() throws Exception {
++            return provider.getKeysMetadata(keyNames);
++          }
++        }
++    );
++
+     Object json = KMSServerJSONUtils.toJSON(keyNames, keysMeta);
+     kmsAudit.ok(user, KMSOp.GET_KEYS_METADATA, "");
+     return Response.ok().type(MediaType.APPLICATION_JSON).entity(json).build();
+@@ -242,36 +262,52 @@ public Response getKeysMetadata(@Context SecurityContext securityContext,
+   @GET
+   @Path(KMSRESTConstants.KEYS_NAMES_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response getKeyNames(@Context SecurityContext securityContext)
+-      throws Exception {
++  public Response getKeyNames() throws Exception {
+     KMSWebApp.getAdminCallsMeter().mark();
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     assertAccess(KMSACLs.Type.GET_KEYS, user, KMSOp.GET_KEYS);
+-    Object json = provider.getKeys();
++
++    List<String> json = user.doAs(
++        new PrivilegedExceptionAction<List<String>>() {
++          @Override
++          public List<String> run() throws Exception {
++            return provider.getKeys();
++          }
++        }
++    );
++
+     kmsAudit.ok(user, KMSOp.GET_KEYS, "");
+     return Response.ok().type(MediaType.APPLICATION_JSON).entity(json).build();
+   }
+ 
+   @GET
+   @Path(KMSRESTConstants.KEY_RESOURCE + "/{name:.*}")
+-  public Response getKey(@Context SecurityContext securityContext,
+-      @PathParam("name") String name)
++  public Response getKey(@PathParam("name") String name)
+       throws Exception {
+-    return getMetadata(securityContext, name);
++    return getMetadata(name);
+   }
+ 
+   @GET
+   @Path(KMSRESTConstants.KEY_RESOURCE + "/{name:.*}/" +
+       KMSRESTConstants.METADATA_SUB_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response getMetadata(@Context SecurityContext securityContext,
+-      @PathParam("name") String name)
++  public Response getMetadata(@PathParam("name") final String name)
+       throws Exception {
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     KMSClientProvider.checkNotEmpty(name, "name");
+     KMSWebApp.getAdminCallsMeter().mark();
+     assertAccess(KMSACLs.Type.GET_METADATA, user, KMSOp.GET_METADATA, name);
+-    Object json = KMSServerJSONUtils.toJSON(name, provider.getMetadata(name));
++
++    KeyProvider.Metadata metadata = user.doAs(
++        new PrivilegedExceptionAction<KeyProvider.Metadata>() {
++          @Override
++          public KeyProvider.Metadata run() throws Exception {
++            return provider.getMetadata(name);
++          }
++        }
++    );
++
++    Object json = KMSServerJSONUtils.toJSON(name, metadata);
+     kmsAudit.ok(user, KMSOp.GET_METADATA, name, "");
+     return Response.ok().type(MediaType.APPLICATION_JSON).entity(json).build();
+   }
+@@ -280,14 +316,23 @@ public Response getMetadata(@Context SecurityContext securityContext,
+   @Path(KMSRESTConstants.KEY_RESOURCE + "/{name:.*}/" +
+       KMSRESTConstants.CURRENT_VERSION_SUB_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response getCurrentVersion(@Context SecurityContext securityContext,
+-      @PathParam("name") String name)
++  public Response getCurrentVersion(@PathParam("name") final String name)
+       throws Exception {
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     KMSClientProvider.checkNotEmpty(name, "name");
+     KMSWebApp.getKeyCallsMeter().mark();
+     assertAccess(KMSACLs.Type.GET, user, KMSOp.GET_CURRENT_KEY, name);
+-    Object json = KMSServerJSONUtils.toJSON(provider.getCurrentKey(name));
++
++    KeyVersion keyVersion = user.doAs(
++        new PrivilegedExceptionAction<KeyVersion>() {
++          @Override
++          public KeyVersion run() throws Exception {
++            return provider.getCurrentKey(name);
++          }
++        }
++    );
++
++    Object json = KMSServerJSONUtils.toJSON(keyVersion);
+     kmsAudit.ok(user, KMSOp.GET_CURRENT_KEY, name, "");
+     return Response.ok().type(MediaType.APPLICATION_JSON).entity(json).build();
+   }
+@@ -295,14 +340,22 @@ public Response getCurrentVersion(@Context SecurityContext securityContext,
+   @GET
+   @Path(KMSRESTConstants.KEY_VERSION_RESOURCE + "/{versionName:.*}")
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response getKeyVersion(@Context SecurityContext securityContext,
+-      @PathParam("versionName") String versionName)
+-      throws Exception {
+-    Principal user = getPrincipal(securityContext);
++  public Response getKeyVersion(
++      @PathParam("versionName") final String versionName) throws Exception {
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     KMSClientProvider.checkNotEmpty(versionName, "versionName");
+     KMSWebApp.getKeyCallsMeter().mark();
+-    KeyVersion keyVersion = provider.getKeyVersion(versionName);
+     assertAccess(KMSACLs.Type.GET, user, KMSOp.GET_KEY_VERSION);
++
++    KeyVersion keyVersion = user.doAs(
++        new PrivilegedExceptionAction<KeyVersion>() {
++          @Override
++          public KeyVersion run() throws Exception {
++            return provider.getKeyVersion(versionName);
++          }
++        }
++    );
++
+     if (keyVersion != null) {
+       kmsAudit.ok(user, KMSOp.GET_KEY_VERSION, keyVersion.getName(), "");
+     }
+@@ -316,13 +369,12 @@ public Response getKeyVersion(@Context SecurityContext securityContext,
+       KMSRESTConstants.EEK_SUB_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+   public Response generateEncryptedKeys(
+-          @Context SecurityContext securityContext,
+-          @PathParam("name") String name,
++          @PathParam("name") final String name,
+           @QueryParam(KMSRESTConstants.EEK_OP) String edekOp,
+           @DefaultValue("1")
+-          @QueryParam(KMSRESTConstants.EEK_NUM_KEYS) int numKeys)
++          @QueryParam(KMSRESTConstants.EEK_NUM_KEYS) final int numKeys)
+           throws Exception {
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     KMSClientProvider.checkNotEmpty(name, "name");
+     KMSClientProvider.checkNotNull(edekOp, "eekOp");
+ 
+@@ -330,12 +382,22 @@ public Response generateEncryptedKeys(
+     if (edekOp.equals(KMSRESTConstants.EEK_GENERATE)) {
+       assertAccess(KMSACLs.Type.GENERATE_EEK, user, KMSOp.GENERATE_EEK, name);
+ 
+-      List<EncryptedKeyVersion> retEdeks =
++      final List<EncryptedKeyVersion> retEdeks =
+           new LinkedList<EncryptedKeyVersion>();
+       try {
+-        for (int i = 0; i < numKeys; i ++) {
+-          retEdeks.add(provider.generateEncryptedKey(name));
+-        }
++
++        user.doAs(
++            new PrivilegedExceptionAction<Void>() {
++              @Override
++              public Void run() throws Exception {
++                for (int i = 0; i < numKeys; i++) {
++                  retEdeks.add(provider.generateEncryptedKey(name));
++                }
++                return null;
++              }
++            }
++        );
++
+       } catch (Exception e) {
+         throw new IOException(e);
+       }
+@@ -359,16 +421,17 @@ public Response generateEncryptedKeys(
+   @Path(KMSRESTConstants.KEY_VERSION_RESOURCE + "/{versionName:.*}/" +
+       KMSRESTConstants.EEK_SUB_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response decryptEncryptedKey(@Context SecurityContext securityContext,
+-      @PathParam("versionName") String versionName,
++  public Response decryptEncryptedKey(
++      @PathParam("versionName") final String versionName,
+       @QueryParam(KMSRESTConstants.EEK_OP) String eekOp,
+       Map jsonPayload)
+       throws Exception {
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     KMSClientProvider.checkNotEmpty(versionName, "versionName");
+     KMSClientProvider.checkNotNull(eekOp, "eekOp");
+ 
+-    String keyName = (String) jsonPayload.get(KMSRESTConstants.NAME_FIELD);
++    final String keyName = (String) jsonPayload.get(
++        KMSRESTConstants.NAME_FIELD);
+     String ivStr = (String) jsonPayload.get(KMSRESTConstants.IV_FIELD);
+     String encMaterialStr =
+         (String) jsonPayload.get(KMSRESTConstants.MATERIAL_FIELD);
+@@ -376,14 +439,24 @@ public Response decryptEncryptedKey(@Context SecurityContext securityContext,
+     if (eekOp.equals(KMSRESTConstants.EEK_DECRYPT)) {
+       assertAccess(KMSACLs.Type.DECRYPT_EEK, user, KMSOp.DECRYPT_EEK, keyName);
+       KMSClientProvider.checkNotNull(ivStr, KMSRESTConstants.IV_FIELD);
+-      byte[] iv = Base64.decodeBase64(ivStr);
++      final byte[] iv = Base64.decodeBase64(ivStr);
+       KMSClientProvider.checkNotNull(encMaterialStr,
+           KMSRESTConstants.MATERIAL_FIELD);
+-      byte[] encMaterial = Base64.decodeBase64(encMaterialStr);
+-      KeyProvider.KeyVersion retKeyVersion =
+-          provider.decryptEncryptedKey(
+-              new KMSClientProvider.KMSEncryptedKeyVersion(keyName, versionName,
+-                  iv, KeyProviderCryptoExtension.EEK, encMaterial));
++      final byte[] encMaterial = Base64.decodeBase64(encMaterialStr);
++
++      KeyProvider.KeyVersion retKeyVersion = user.doAs(
++          new PrivilegedExceptionAction<KeyVersion>() {
++            @Override
++            public KeyVersion run() throws Exception {
++              return provider.decryptEncryptedKey(
++                  new KMSClientProvider.KMSEncryptedKeyVersion(keyName,
++                      versionName, iv, KeyProviderCryptoExtension.EEK,
++                      encMaterial)
++              );
++            }
++          }
++      );
++
+       retJSON = KMSServerJSONUtils.toJSON(retKeyVersion);
+       kmsAudit.ok(user, KMSOp.DECRYPT_EEK, keyName, "");
+     } else {
+@@ -400,14 +473,23 @@ public Response decryptEncryptedKey(@Context SecurityContext securityContext,
+   @Path(KMSRESTConstants.KEY_RESOURCE + "/{name:.*}/" +
+       KMSRESTConstants.VERSIONS_SUB_RESOURCE)
+   @Produces(MediaType.APPLICATION_JSON)
+-  public Response getKeyVersions(@Context SecurityContext securityContext,
+-      @PathParam("name") String name)
++  public Response getKeyVersions(@PathParam("name") final String name)
+       throws Exception {
+-    Principal user = getPrincipal(securityContext);
++    UserGroupInformation user = HttpUserGroupInformation.get();
+     KMSClientProvider.checkNotEmpty(name, "name");
+     KMSWebApp.getKeyCallsMeter().mark();
+     assertAccess(KMSACLs.Type.GET, user, KMSOp.GET_KEY_VERSIONS, name);
+-    Object json = KMSServerJSONUtils.toJSON(provider.getKeyVersions(name));
++
++    List<KeyVersion> ret = user.doAs(
++        new PrivilegedExceptionAction<List<KeyVersion>>() {
++          @Override
++          public List<KeyVersion> run() throws Exception {
++            return provider.getKeyVersions(name);
++          }
++        }
++    );
++
++    Object json = KMSServerJSONUtils.toJSON(ret);
+     kmsAudit.ok(user, KMSOp.GET_KEY_VERSIONS, name, "");
+     return Response.ok().type(MediaType.APPLICATION_JSON).entity(json).build();
+   }
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
+index 58e9147..a6c5bf4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
+@@ -113,8 +113,7 @@ private Configuration loadACLs() {
+     return conf;
+   }
+ 
+-  public boolean hasAccess(Type type, String user) {
+-    UserGroupInformation ugi = UserGroupInformation.createRemoteUser(user);
++  public boolean hasAccess(Type type, UserGroupInformation ugi) {
+     return acls.get(type).isUserAllowed(ugi);
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java
+index 30d340d..dc55a84 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java
+@@ -17,6 +17,7 @@
+  */
+ package org.apache.hadoop.crypto.key.kms.server;
+ 
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -29,7 +30,6 @@
+ import com.google.common.collect.Sets;
+ import com.google.common.util.concurrent.ThreadFactoryBuilder;
+ 
+-import java.security.Principal;
+ import java.util.LinkedList;
+ import java.util.List;
+ import java.util.Set;
+@@ -186,22 +186,22 @@ public AuditEvent call() throws Exception {
+     }
+   }
+ 
+-  public void ok(Principal user, KMS.KMSOp op, String key,
++  public void ok(UserGroupInformation user, KMS.KMSOp op, String key,
+       String extraMsg) {
+-    op(OpStatus.OK, op, user.getName(), key, extraMsg);
++    op(OpStatus.OK, op, user.getShortUserName(), key, extraMsg);
+   }
+ 
+-  public void ok(Principal user, KMS.KMSOp op, String extraMsg) {
+-    op(OpStatus.OK, op, user.getName(), null, extraMsg);
++  public void ok(UserGroupInformation user, KMS.KMSOp op, String extraMsg) {
++    op(OpStatus.OK, op, user.getShortUserName(), null, extraMsg);
+   }
+ 
+-  public void unauthorized(Principal user, KMS.KMSOp op, String key) {
+-    op(OpStatus.UNAUTHORIZED, op, user.getName(), key, "");
++  public void unauthorized(UserGroupInformation user, KMS.KMSOp op, String key) {
++    op(OpStatus.UNAUTHORIZED, op, user.getShortUserName(), key, "");
+   }
+ 
+-  public void error(Principal user, String method, String url,
++  public void error(UserGroupInformation user, String method, String url,
+       String extraMsg) {
+-    op(OpStatus.ERROR, null, user.getName(), null, "Method:'" + method
++    op(OpStatus.ERROR, null, user.getShortUserName(), null, "Method:'" + method
+         + "' Exception:'" + extraMsg + "'");
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAuthenticationFilter.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAuthenticationFilter.java
+index db60b09..76c22c4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAuthenticationFilter.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAuthenticationFilter.java
+@@ -19,7 +19,13 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
++import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
++import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
++import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationFilter;
++import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationHandler;
++import org.apache.hadoop.security.token.delegation.web.KerberosDelegationTokenAuthenticationHandler;
++import org.apache.hadoop.security.token.delegation.web.PseudoDelegationTokenAuthenticationHandler;
+ 
+ import javax.servlet.FilterChain;
+ import javax.servlet.FilterConfig;
+@@ -38,7 +44,8 @@
+  * file.
+  */
+ @InterfaceAudience.Private
+-public class KMSAuthenticationFilter extends AuthenticationFilter {
++public class KMSAuthenticationFilter
++    extends DelegationTokenAuthenticationFilter {
+   private static final String CONF_PREFIX = KMSConfiguration.CONFIG_PREFIX +
+       "authentication.";
+ 
+@@ -55,6 +62,16 @@ protected Properties getConfiguration(String configPrefix,
+         props.setProperty(name, value);
+       }
+     }
++    String authType = props.getProperty(AUTH_TYPE);
++    if (authType.equals(PseudoAuthenticationHandler.TYPE)) {
++      props.setProperty(AUTH_TYPE,
++          PseudoDelegationTokenAuthenticationHandler.class.getName());
++    } else if (authType.equals(KerberosAuthenticationHandler.TYPE)) {
++      props.setProperty(AUTH_TYPE,
++          KerberosDelegationTokenAuthenticationHandler.class.getName());
++    }
++    props.setProperty(DelegationTokenAuthenticationHandler.TOKEN_KIND,
++        KMSClientProvider.TOKEN_KIND);
+     return props;
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSExceptionsProvider.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSExceptionsProvider.java
+index bf24ed8..059d7f0 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSExceptionsProvider.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSExceptionsProvider.java
+@@ -23,6 +23,7 @@
+ 
+ import org.apache.hadoop.crypto.key.kms.KMSRESTConstants;
+ import org.apache.hadoop.security.AccessControlException;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authentication.client.AuthenticationException;
+ import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.slf4j.Logger;
+@@ -34,7 +35,6 @@
+ import javax.ws.rs.ext.Provider;
+ 
+ import java.io.IOException;
+-import java.security.Principal;
+ import java.util.LinkedHashMap;
+ import java.util.Map;
+ 
+@@ -102,7 +102,7 @@ public Response toResponse(Exception exception) {
+       status = Response.Status.INTERNAL_SERVER_ERROR;
+     }
+     if (doAudit) {
+-      KMSWebApp.getKMSAudit().error(KMSMDCFilter.getPrincipal(),
++      KMSWebApp.getKMSAudit().error(KMSMDCFilter.getUgi(),
+           KMSMDCFilter.getMethod(),
+           KMSMDCFilter.getURL(), getOneLineMessage(exception));
+     }
+@@ -110,11 +110,11 @@ public Response toResponse(Exception exception) {
+   }
+ 
+   protected void log(Response.Status status, Throwable ex) {
+-    Principal principal = KMSMDCFilter.getPrincipal();
++    UserGroupInformation ugi = KMSMDCFilter.getUgi();
+     String method = KMSMDCFilter.getMethod();
+     String url = KMSMDCFilter.getURL();
+     String msg = getOneLineMessage(ex);
+-    LOG.warn("User:{} Method:{} URL:{} Response:{}-{}", principal, method, url,
++    LOG.warn("User:'{}' Method:{} URL:{} Response:{}-{}", ugi, method, url,
+         status, msg, ex);
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSMDCFilter.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSMDCFilter.java
+index 8d24c7c..2a3c149 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSMDCFilter.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSMDCFilter.java
+@@ -18,6 +18,8 @@
+ package org.apache.hadoop.crypto.key.kms.server;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.token.delegation.web.HttpUserGroupInformation;
+ 
+ import javax.servlet.Filter;
+ import javax.servlet.FilterChain;
+@@ -27,7 +29,6 @@
+ import javax.servlet.ServletResponse;
+ import javax.servlet.http.HttpServletRequest;
+ import java.io.IOException;
+-import java.security.Principal;
+ 
+ /**
+  * Servlet filter that captures context of the HTTP request to be use in the
+@@ -37,12 +38,12 @@
+ public class KMSMDCFilter implements Filter {
+ 
+   private static class Data {
+-    private Principal principal;
++    private UserGroupInformation ugi;
+     private String method;
+     private StringBuffer url;
+ 
+-    private Data(Principal principal, String method, StringBuffer url) {
+-      this.principal = principal;
++    private Data(UserGroupInformation ugi, String method, StringBuffer url) {
++      this.ugi = ugi;
+       this.method = method;
+       this.url = url;
+     }
+@@ -50,8 +51,8 @@ private Data(Principal principal, String method, StringBuffer url) {
+ 
+   private static ThreadLocal<Data> DATA_TL = new ThreadLocal<Data>();
+ 
+-  public static Principal getPrincipal() {
+-    return DATA_TL.get().principal;
++  public static UserGroupInformation getUgi() {
++    return DATA_TL.get().ugi;
+   }
+ 
+   public static String getMethod() {
+@@ -72,14 +73,14 @@ public void doFilter(ServletRequest request, ServletResponse response,
+       throws IOException, ServletException {
+     try {
+       DATA_TL.remove();
+-      Principal principal = ((HttpServletRequest) request).getUserPrincipal();
++      UserGroupInformation ugi = HttpUserGroupInformation.get();
+       String method = ((HttpServletRequest) request).getMethod();
+       StringBuffer requestURL = ((HttpServletRequest) request).getRequestURL();
+       String queryString = ((HttpServletRequest) request).getQueryString();
+       if (queryString != null) {
+         requestURL.append("?").append(queryString);
+       }
+-      DATA_TL.set(new Data(principal, method, requestURL));
++      DATA_TL.set(new Data(ugi, method, requestURL));
+       chain.doFilter(request, response);
+     } finally {
+       DATA_TL.remove();
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index 860c075..66f444a 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -319,6 +319,46 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+ </configuration>
+ +---+
+ 
++** KMS Delegation Token Configuration
++
++  KMS delegation token secret manager can be configured with the following
++  properties:
++
++  +---+
++    <property>
++      <name>hadoop.kms.authentication.delegation-token.update-interval.sec</name>
++      <value>86400</value>
++      <description>
++        How often the master key is rotated, in seconds. Default value 1 day.
++      </description>
++    </property>
++
++    <property>
++      <name>hadoop.kms.authentication.delegation-token.max-lifetime.sec</name>
++      <value>604800</value>
++      <description>
++        Maximum lifetime of a delagation token, in seconds. Default value 7 days.
++      </description>
++    </property>
++
++    <property>
++      <name>hadoop.kms.authentication.delegation-token.renew-interval.sec</name>
++      <value>86400</value>
++      <description>
++        Renewal interval of a delagation token, in seconds. Default value 1 day.
++      </description>
++    </property>
++
++    <property>
++      <name>hadoop.kms.authentication.delegation-token.removal-scan-interval.sec</name>
++      <value>3600</value>
++      <description>
++        Scan interval to remove expired delegation tokens.
++      </description>
++    </property>
++  +---+
++
++
+ ** KMS HTTP REST API
+ 
+ *** Create a Key
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index 021f3cb..971c617 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -22,8 +22,13 @@
+ import org.apache.hadoop.crypto.key.KeyProvider.KeyVersion;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
++import org.apache.hadoop.crypto.key.KeyProviderDelegationTokenExtension;
+ import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
++import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.minikdc.MiniKdc;
++import org.apache.hadoop.security.Credentials;
++import org.apache.hadoop.security.SecurityUtil;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
+ import org.junit.AfterClass;
+@@ -45,6 +50,7 @@
+ import java.io.IOException;
+ import java.io.Writer;
+ import java.net.InetAddress;
++import java.net.InetSocketAddress;
+ import java.net.MalformedURLException;
+ import java.net.ServerSocket;
+ import java.net.SocketTimeoutException;
+@@ -565,6 +571,17 @@ public Void call() throws Exception {
+         Assert.assertEquals("d", meta.getDescription());
+         Assert.assertEquals(attributes, meta.getAttributes());
+ 
++        KeyProviderDelegationTokenExtension kpdte =
++            KeyProviderDelegationTokenExtension.
++                createKeyProviderDelegationTokenExtension(kp);
++        Credentials credentials = new Credentials();
++        kpdte.addDelegationTokens("foo", credentials);
++        Assert.assertEquals(1, credentials.getAllTokens().size());
++        InetSocketAddress kmsAddr = new InetSocketAddress(getKMSUrl().getHost(),
++            getKMSUrl().getPort());
++
++        Assert.assertEquals(new Text("kms-dt"), credentials.getToken(
++            SecurityUtil.buildTokenService(kmsAddr)).getKind());
+         return null;
+       }
+     });
+@@ -596,13 +613,13 @@ public void testACLs() throws Exception {
+       public Void call() throws Exception {
+         final Configuration conf = new Configuration();
+         conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
+-        URI uri = createKMSUri(getKMSUrl());
+-        final KeyProvider kp = new KMSClientProvider(uri, conf);
++        final URI uri = createKMSUri(getKMSUrl());
+ 
+         //nothing allowed
+         doAs("client", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               kp.createKey("k", new KeyProvider.Options(conf));
+               Assert.fail();
+@@ -693,6 +710,7 @@ public Void run() throws Exception {
+         doAs("CREATE", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               KeyProvider.KeyVersion kv = kp.createKey("k0",
+                   new KeyProvider.Options(conf));
+@@ -707,6 +725,7 @@ public Void run() throws Exception {
+         doAs("DELETE", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               kp.deleteKey("k0");
+             } catch (Exception ex) {
+@@ -719,6 +738,7 @@ public Void run() throws Exception {
+         doAs("SET_KEY_MATERIAL", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               KeyProvider.KeyVersion kv = kp.createKey("k1", new byte[16],
+                   new KeyProvider.Options(conf));
+@@ -733,6 +753,7 @@ public Void run() throws Exception {
+         doAs("ROLLOVER", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               KeyProvider.KeyVersion kv = kp.rollNewVersion("k1");
+               Assert.assertNull(kv.getMaterial());
+@@ -746,6 +767,7 @@ public Void run() throws Exception {
+         doAs("SET_KEY_MATERIAL", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               KeyProvider.KeyVersion kv =
+                   kp.rollNewVersion("k1", new byte[16]);
+@@ -761,6 +783,7 @@ public Void run() throws Exception {
+             doAs("GET", new PrivilegedExceptionAction<KeyVersion>() {
+           @Override
+           public KeyVersion run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               kp.getKeyVersion("k1@0");
+               KeyVersion kv = kp.getCurrentKey("k1");
+@@ -777,6 +800,7 @@ public KeyVersion run() throws Exception {
+                 new PrivilegedExceptionAction<EncryptedKeyVersion>() {
+           @Override
+           public EncryptedKeyVersion run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                       createKeyProviderCryptoExtension(kp);
+@@ -793,6 +817,7 @@ public EncryptedKeyVersion run() throws Exception {
+         doAs("DECRYPT_EEK", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                       createKeyProviderCryptoExtension(kp);
+@@ -807,6 +832,7 @@ public Void run() throws Exception {
+         doAs("GET_KEYS", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               kp.getKeys();
+             } catch (Exception ex) {
+@@ -819,6 +845,7 @@ public Void run() throws Exception {
+         doAs("GET_METADATA", new PrivilegedExceptionAction<Void>() {
+           @Override
+           public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
+             try {
+               kp.getMetadata("k1");
+               kp.getKeysMetadata("k1");
+@@ -836,6 +863,7 @@ public Void run() throws Exception {
+         Thread.sleep(10); // to ensure the ACLs file modifiedTime is newer
+         conf.set(KMSACLs.Type.CREATE.getConfigKey(), "foo");
+         writeConf(testDir, conf);
++        Thread.sleep(1000);
+ 
+         KMSWebApp.getACLs().run(); // forcing a reload by hand.
+ 
+@@ -844,6 +872,7 @@ public Void run() throws Exception {
+           @Override
+           public Void run() throws Exception {
+             try {
++              KeyProvider kp = new KMSClientProvider(uri, conf);
+               KeyProvider.KeyVersion kv = kp.createKey("k2",
+                   new KeyProvider.Options(conf));
+               Assert.fail();
+@@ -982,4 +1011,69 @@ public void testKMSTimeout() throws Exception {
+ 
+     sock.close();
+   }
++
++  @Test
++  public void testDelegationTokenAccess() throws Exception {
++    final File testDir = getTestDir();
++    Configuration conf = createBaseKMSConf(testDir);
++    conf.set("hadoop.kms.authentication.type", "kerberos");
++    conf.set("hadoop.kms.authentication.kerberos.keytab",
++        keytab.getAbsolutePath());
++    conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
++    conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
++
++    writeConf(testDir, conf);
++
++    runServer(null, null, testDir, new KMSCallable() {
++      @Override
++      public Void call() throws Exception {
++        final Configuration conf = new Configuration();
++        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 64);
++        final URI uri = createKMSUri(getKMSUrl());
++        final Credentials credentials = new Credentials();
++        final UserGroupInformation nonKerberosUgi =
++            UserGroupInformation.getCurrentUser();
++
++        try {
++          KeyProvider kp = new KMSClientProvider(uri, conf);
++          kp.createKey("kA", new KeyProvider.Options(conf));
++        } catch (IOException ex) {
++          System.out.println(ex.getMessage());
++        }
++
++        doAs("client", new PrivilegedExceptionAction<Void>() {
++          @Override
++          public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
++            KeyProviderDelegationTokenExtension kpdte =
++                KeyProviderDelegationTokenExtension.
++                    createKeyProviderDelegationTokenExtension(kp);
++            kpdte.addDelegationTokens("foo", credentials);
++            return null;
++          }
++        });
++
++        nonKerberosUgi.addCredentials(credentials);
++
++        try {
++          KeyProvider kp = new KMSClientProvider(uri, conf);
++          kp.createKey("kA", new KeyProvider.Options(conf));
++        } catch (IOException ex) {
++          System.out.println(ex.getMessage());
++        }
++
++        nonKerberosUgi.doAs(new PrivilegedExceptionAction<Void>() {
++          @Override
++          public Void run() throws Exception {
++            KeyProvider kp = new KMSClientProvider(uri, conf);
++            kp.createKey("kD", new KeyProvider.Options(conf));
++            return null;
++          }
++        });
++
++        return null;
++      }
++    });
++  }
++
+ }
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java
+index e65a102..7c0ad3b 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.crypto.key.kms.server;
+ 
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.junit.Assert;
+ import org.junit.Test;
+ 
+@@ -27,7 +28,8 @@
+   public void testDefaults() {
+     KMSACLs acls = new KMSACLs(new Configuration(false));
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+-      Assert.assertTrue(acls.hasAccess(type, "foo"));
++      Assert.assertTrue(acls.hasAccess(type,
++          UserGroupInformation.createRemoteUser("foo")));
+     }
+   }
+ 
+@@ -39,8 +41,10 @@ public void testCustom() {
+     }
+     KMSACLs acls = new KMSACLs(conf);
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+-      Assert.assertTrue(acls.hasAccess(type, type.toString()));
+-      Assert.assertFalse(acls.hasAccess(type, "foo"));
++      Assert.assertTrue(acls.hasAccess(type,
++          UserGroupInformation.createRemoteUser(type.toString())));
++      Assert.assertFalse(acls.hasAccess(type,
++          UserGroupInformation.createRemoteUser("foo")));
+     }
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSAudit.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSAudit.java
+index a33358a..04daeee 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSAudit.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSAudit.java
+@@ -21,9 +21,9 @@
+ import java.io.FilterOutputStream;
+ import java.io.OutputStream;
+ import java.io.PrintStream;
+-import java.security.Principal;
+ 
+ import org.apache.hadoop.crypto.key.kms.server.KMS.KMSOp;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.log4j.LogManager;
+ import org.apache.log4j.PropertyConfigurator;
+ import org.junit.After;
+@@ -81,8 +81,8 @@ private String getAndResetLogOutput() {
+ 
+   @Test
+   public void testAggregation() throws Exception {
+-    Principal luser = Mockito.mock(Principal.class);
+-    Mockito.when(luser.getName()).thenReturn("luser");
++    UserGroupInformation luser = Mockito.mock(UserGroupInformation.class);
++    Mockito.when(luser.getShortUserName()).thenReturn("luser");
+     kmsAudit.ok(luser, KMSOp.DECRYPT_EEK, "k1", "testmsg");
+     kmsAudit.ok(luser, KMSOp.DECRYPT_EEK, "k1", "testmsg");
+     kmsAudit.ok(luser, KMSOp.DECRYPT_EEK, "k1", "testmsg");
+@@ -109,8 +109,8 @@ public void testAggregation() throws Exception {
+ 
+   @Test
+   public void testAggregationUnauth() throws Exception {
+-    Principal luser = Mockito.mock(Principal.class);
+-    Mockito.when(luser.getName()).thenReturn("luser");
++    UserGroupInformation luser = Mockito.mock(UserGroupInformation.class);
++    Mockito.when(luser.getShortUserName()).thenReturn("luser");
+     kmsAudit.unauthorized(luser, KMSOp.GENERATE_EEK, "k2");
+     Thread.sleep(1000);
+     kmsAudit.ok(luser, KMSOp.GENERATE_EEK, "k3", "testmsg");
+-- 
+1.7.9.5
+

@@ -1,0 +1,29 @@
+From 1b2c31af27bb1775a50e5c3cca8c501b5edea930 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 20 Jun 2014 18:36:11 +0000
+Subject: [PATCH 613/813] HADOOP-10690. Lack of synchronization on access to
+ InputStream in
+ NativeAzureFileSystem#NativeAzureFsInputStream#close().
+ Contributed by Chen He.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1604236 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hadoop/fs/azure/NativeAzureFileSystem.java     |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-tools/hadoop-azure/src/main/java/org/apache/hadoop/fs/azure/NativeAzureFileSystem.java b/hadoop-tools/hadoop-azure/src/main/java/org/apache/hadoop/fs/azure/NativeAzureFileSystem.java
+index 30e6b30..87dc978 100644
+--- a/hadoop-tools/hadoop-azure/src/main/java/org/apache/hadoop/fs/azure/NativeAzureFileSystem.java
++++ b/hadoop-tools/hadoop-azure/src/main/java/org/apache/hadoop/fs/azure/NativeAzureFileSystem.java
+@@ -193,7 +193,7 @@ public synchronized int read(byte[] b, int off, int len) throws IOException {
+     }
+ 
+     @Override
+-    public void close() throws IOException {
++    public synchronized void close() throws IOException {
+       in.close();
+     }
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,190 @@
+From b9c81e51d9d9ef1319b8397c5366ea1c12a2c149 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 13 Aug 2014 17:47:28 +0000
+Subject: [PATCH 268/813] HDFS-6567. Merge r1617779 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1617780 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e9bd4578d6f1b29303734129eb508a88830d9a94)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/protocol/HdfsFileStatus.java       |   38 ++++++++++----------
+ .../hdfs/protocol/HdfsLocatedFileStatus.java       |    2 +-
+ 2 files changed, 20 insertions(+), 20 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsFileStatus.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsFileStatus.java
+index 66c56fa..0652de1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsFileStatus.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsFileStatus.java
+@@ -91,7 +91,7 @@ public HdfsFileStatus(long length, boolean isdir, int block_replication,
+    * Get the length of this file, in bytes.
+    * @return the length of this file, in bytes.
+    */
+-  final public long getLen() {
++  public final long getLen() {
+     return length;
+   }
+ 
+@@ -99,7 +99,7 @@ final public long getLen() {
+    * Is this a directory?
+    * @return true if this is a directory
+    */
+-  final public boolean isDir() {
++  public final boolean isDir() {
+     return isdir;
+   }
+ 
+@@ -115,7 +115,7 @@ public boolean isSymlink() {
+    * Get the block size of the file.
+    * @return the number of bytes
+    */
+-  final public long getBlockSize() {
++  public final long getBlockSize() {
+     return blocksize;
+   }
+ 
+@@ -123,7 +123,7 @@ final public long getBlockSize() {
+    * Get the replication factor of a file.
+    * @return the replication factor of a file.
+    */
+-  final public short getReplication() {
++  public final short getReplication() {
+     return block_replication;
+   }
+ 
+@@ -131,7 +131,7 @@ final public short getReplication() {
+    * Get the modification time of the file.
+    * @return the modification time of file in milliseconds since January 1, 1970 UTC.
+    */
+-  final public long getModificationTime() {
++  public final long getModificationTime() {
+     return modification_time;
+   }
+ 
+@@ -139,7 +139,7 @@ final public long getModificationTime() {
+    * Get the access time of the file.
+    * @return the access time of file in milliseconds since January 1, 1970 UTC.
+    */
+-  final public long getAccessTime() {
++  public final long getAccessTime() {
+     return access_time;
+   }
+ 
+@@ -147,7 +147,7 @@ final public long getAccessTime() {
+    * Get FsPermission associated with the file.
+    * @return permssion
+    */
+-  final public FsPermission getPermission() {
++  public final FsPermission getPermission() {
+     return permission;
+   }
+   
+@@ -155,7 +155,7 @@ final public FsPermission getPermission() {
+    * Get the owner of the file.
+    * @return owner of the file
+    */
+-  final public String getOwner() {
++  public final String getOwner() {
+     return owner;
+   }
+   
+@@ -163,7 +163,7 @@ final public String getOwner() {
+    * Get the group associated with the file.
+    * @return group for the file. 
+    */
+-  final public String getGroup() {
++  public final String getGroup() {
+     return group;
+   }
+   
+@@ -171,7 +171,7 @@ final public String getGroup() {
+    * Check if the local name is empty
+    * @return true if the name is empty
+    */
+-  final public boolean isEmptyLocalName() {
++  public final boolean isEmptyLocalName() {
+     return path.length == 0;
+   }
+ 
+@@ -179,7 +179,7 @@ final public boolean isEmptyLocalName() {
+    * Get the string representation of the local name
+    * @return the local name in string
+    */
+-  final public String getLocalName() {
++  public final String getLocalName() {
+     return DFSUtil.bytes2String(path);
+   }
+   
+@@ -187,7 +187,7 @@ final public String getLocalName() {
+    * Get the Java UTF8 representation of the local name
+    * @return the local name in java UTF8
+    */
+-  final public byte[] getLocalNameInBytes() {
++  public final byte[] getLocalNameInBytes() {
+     return path;
+   }
+ 
+@@ -196,7 +196,7 @@ final public String getLocalName() {
+    * @param parent the parent path
+    * @return the full path in string
+    */
+-  final public String getFullName(final String parent) {
++  public final String getFullName(final String parent) {
+     if (isEmptyLocalName()) {
+       return parent;
+     }
+@@ -214,7 +214,7 @@ final public String getFullName(final String parent) {
+    * @param parent the parent path
+    * @return the full path
+    */
+-  final public Path getFullPath(final Path parent) {
++  public final Path getFullPath(final Path parent) {
+     if (isEmptyLocalName()) {
+       return parent;
+     }
+@@ -226,23 +226,23 @@ final public Path getFullPath(final Path parent) {
+    * Get the string representation of the symlink.
+    * @return the symlink as a string.
+    */
+-  final public String getSymlink() {
++  public final String getSymlink() {
+     return DFSUtil.bytes2String(symlink);
+   }
+   
+-  final public byte[] getSymlinkInBytes() {
++  public final byte[] getSymlinkInBytes() {
+     return symlink;
+   }
+   
+-  final public long getFileId() {
++  public final long getFileId() {
+     return fileId;
+   }
+   
+-  final public int getChildrenNum() {
++  public final int getChildrenNum() {
+     return childrenNum;
+   }
+ 
+-  final public FileStatus makeQualified(URI defaultUri, Path path) {
++  public final FileStatus makeQualified(URI defaultUri, Path path) {
+     return new FileStatus(getLen(), isDir(), getReplication(),
+         getBlockSize(), getModificationTime(),
+         getAccessTime(),
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsLocatedFileStatus.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsLocatedFileStatus.java
+index 0f90e43..6199b8e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsLocatedFileStatus.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsLocatedFileStatus.java
+@@ -67,7 +67,7 @@ public LocatedBlocks getBlockLocations() {
+     return locations;
+   }
+ 
+-  final public LocatedFileStatus makeQualifiedLocated(URI defaultUri,
++  public final LocatedFileStatus makeQualifiedLocated(URI defaultUri,
+       Path path) {
+     return new LocatedFileStatus(getLen(), isDir(), getReplication(),
+         getBlockSize(), getModificationTime(),
+-- 
+1.7.9.5
+

@@ -1,0 +1,81 @@
+From a87130c500a50218ed8b9335af9541a390725119 Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Tue, 25 Sep 2012 00:11:56 +0000
+Subject: [PATCH 272/813] HADOOP-8815. RandomDatum needs to override
+ hashCode(). Contributed by Brandon Li.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1389661 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+(cherry picked from commit 3ede27f4557c9e90430a7a3f385b8be243e89688)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+(cherry picked from commit 631dea88d8a89f03e1643b2c9179c775ee4112f2)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../java/org/apache/hadoop/io/RandomDatum.java     |    6 ++++++
+ .../org/apache/hadoop/io/compress/TestCodec.java   |   11 +++++++++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/RandomDatum.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/RandomDatum.java
+index 8f99aab..01e00b7 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/RandomDatum.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/RandomDatum.java
+@@ -21,6 +21,7 @@
+ import java.io.DataInput;
+ import java.io.DataOutput;
+ import java.io.IOException;
++import java.util.Arrays;
+ import java.util.Random;
+ 
+ 
+@@ -65,6 +66,11 @@ public boolean equals(Object o) {
+     return compareTo((RandomDatum)o) == 0;
+   }
+ 
++  @Override
++  public int hashCode() {
++    return Arrays.hashCode(this.data);
++  }
++  
+   private static final char[] HEX_DIGITS =
+   {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/compress/TestCodec.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/compress/TestCodec.java
+index fe533ff..54768f3 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/compress/TestCodec.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/compress/TestCodec.java
+@@ -34,6 +34,8 @@
+ import java.io.OutputStream;
+ import java.io.OutputStreamWriter;
+ import java.util.Arrays;
++import java.util.HashMap;
++import java.util.Map;
+ import java.util.Random;
+ import java.util.zip.GZIPInputStream;
+ import java.util.zip.GZIPOutputStream;
+@@ -226,6 +228,15 @@ private static void codecTest(Configuration conf, int seed, int count,
+       v2.readFields(inflateIn);
+       assertTrue("original and compressed-then-decompressed-output not equal",
+                  k1.equals(k2) && v1.equals(v2));
++      
++      // original and compressed-then-decompressed-output have the same hashCode
++      Map<RandomDatum, String> m = new HashMap<RandomDatum, String>();
++      m.put(k1, k1.toString());
++      m.put(v1, v1.toString());
++      String result = m.get(k2);
++      assertEquals("k1 and k2 hashcode not equal", result, k1.toString());
++      result = m.get(v2);
++      assertEquals("v1 and v2 hashcode not equal", result, v1.toString());
+     }
+ 
+     // De-compress data byte-at-a-time
+-- 
+1.7.9.5
+

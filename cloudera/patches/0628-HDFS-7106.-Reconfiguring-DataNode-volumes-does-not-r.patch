@@ -1,0 +1,158 @@
+From 32611e29d003937363c23188086adf41c3a6241a Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Mon, 22 Sep 2014 11:51:31 -0700
+Subject: [PATCH 628/813] HDFS-7106. Reconfiguring DataNode volumes does not
+ release the lock files in removed volumes.
+ (cnauroth via cmccabe) (Cherry picked from commit
+ 912ad32b03c1e023ab88918bfa8cb356d1851545)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/datanode/DataStorage.java   |    7 +++
+ .../datanode/TestDataNodeHotSwapVolumes.java       |   64 +++++++++++++++++++-
+ 2 files changed, 68 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java
+index c1496d0..a2826f7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java
+@@ -375,6 +375,13 @@ synchronized void removeVolumes(Collection<StorageLocation> locations) {
+       StorageDirectory sd = it.next();
+       if (dataDirs.contains(sd.getRoot())) {
+         it.remove();
++        try {
++          sd.unlock();
++        } catch (IOException e) {
++          LOG.warn(String.format(
++            "I/O error attempting to unlock storage directory %s.",
++            sd.getRoot()), e);
++        }
+       }
+     }
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDataNodeHotSwapVolumes.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDataNodeHotSwapVolumes.java
+index d2b2995..f6e984b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDataNodeHotSwapVolumes.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDataNodeHotSwapVolumes.java
+@@ -31,13 +31,19 @@
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+ import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
++import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
++import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.junit.After;
+ import org.junit.Test;
+ 
+ import java.io.File;
+ import java.io.IOException;
++import java.io.RandomAccessFile;
++import java.nio.channels.FileChannel;
++import java.nio.channels.FileLock;
++import java.nio.channels.OverlappingFileLockException;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -46,13 +52,19 @@
+ import java.util.Map;
+ import java.util.concurrent.TimeoutException;
+ 
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ 
+ public class TestDataNodeHotSwapVolumes {
++  private static final Log LOG = LogFactory.getLog(
++    TestDataNodeHotSwapVolumes.class);
+   private static final int BLOCK_SIZE = 512;
+   private MiniDFSCluster cluster;
+ 
+@@ -179,8 +191,10 @@ public void testParseChangedVolumes() throws IOException {
+     DataNode.ChangedVolumes changedVolumes =dn.parseChangedVolumes();
+     List<StorageLocation> newVolumes = changedVolumes.newLocations;
+     assertEquals(2, newVolumes.size());
+-    assertEquals("/foo/path1", newVolumes.get(0).getFile().getAbsolutePath());
+-    assertEquals("/foo/path2", newVolumes.get(1).getFile().getAbsolutePath());
++    assertEquals(new File("/foo/path1").getAbsolutePath(),
++      newVolumes.get(0).getFile().getAbsolutePath());
++    assertEquals(new File("/foo/path2").getAbsolutePath(),
++      newVolumes.get(1).getFile().getAbsolutePath());
+ 
+     List<StorageLocation> removedVolumes = changedVolumes.deactivateLocations;
+     assertEquals(oldLocations.size(), removedVolumes.size());
+@@ -371,6 +385,8 @@ public void testRemoveOneVolume()
+     String newDirs = oldDirs.iterator().next();  // Keep the first volume.
+     dn.reconfigurePropertyImpl(
+         DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY, newDirs);
++    assertFileLocksReleased(
++      new ArrayList<String>(oldDirs).subList(1, oldDirs.size()));
+     dn.scheduleAllBlockReport(0);
+ 
+     try {
+@@ -409,6 +425,8 @@ public void testReplicatingAfterRemoveVolume()
+     String newDirs = oldDirs.iterator().next();  // Keep the first volume.
+     dn.reconfigurePropertyImpl(
+         DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY, newDirs);
++    assertFileLocksReleased(
++      new ArrayList<String>(oldDirs).subList(1, oldDirs.size()));
+ 
+     // Force DataNode to report missing blocks.
+     dn.scheduleAllBlockReport(0);
+@@ -420,4 +438,44 @@ public void testReplicatingAfterRemoveVolume()
+     // Wait NameNode to replica missing blocks.
+     DFSTestUtil.waitReplication(fs, testFile, replFactor);
+   }
+-}
+\ No newline at end of file
++
++  /**
++   * Asserts that the storage lock file in each given directory has been
++   * released.  This method works by trying to acquire the lock file itself.  If
++   * locking fails here, then the main code must have failed to release it.
++   *
++   * @param dirs every storage directory to check
++   * @throws IOException if there is an unexpected I/O error
++   */
++  private static void assertFileLocksReleased(Collection<String> dirs)
++      throws IOException {
++    for (String dir: dirs) {
++      StorageLocation sl = StorageLocation.parse(dir);
++      File lockFile = new File(sl.getFile(), Storage.STORAGE_FILE_LOCK);
++      RandomAccessFile raf = null;
++      FileChannel channel = null;
++      FileLock lock = null;
++      try {
++        raf = new RandomAccessFile(lockFile, "rws");
++        channel = raf.getChannel();
++        lock = channel.tryLock();
++        assertNotNull(String.format(
++          "Lock file at %s appears to be held by a different process.",
++          lockFile.getAbsolutePath()), lock);
++      } catch (OverlappingFileLockException e) {
++        fail(String.format("Must release lock file at %s.",
++          lockFile.getAbsolutePath()));
++      } finally {
++        if (lock != null) {
++          try {
++            lock.release();
++          } catch (IOException e) {
++            LOG.warn(String.format("I/O error releasing file lock %s.",
++              lockFile.getAbsolutePath()), e);
++          }
++        }
++        IOUtils.cleanup(null, channel, raf);
++      }
++    }
++  }
++}
+-- 
+1.7.9.5
+

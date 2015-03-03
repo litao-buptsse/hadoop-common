@@ -1,0 +1,112 @@
+From 09d569450be92e5527fdc237ae3e46f7e9f3261e Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Tue, 30 Sep 2014 22:37:28 +0000
+Subject: [PATCH 533/813] YARN-2387. Resource Manager crashes with NPE due to
+ lack of synchronization. Contributed by Mit Desai
+ (cherry picked from commit
+ feaf139b4f327d33011e5a4424c06fb44c630955)
+
+(cherry picked from commit a0305ba3fcf3c7fd5285aac4117ca80538988f89)
+---
+ .../api/records/impl/pb/ContainerStatusPBImpl.java |   22 ++++++++++----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/records/impl/pb/ContainerStatusPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/records/impl/pb/ContainerStatusPBImpl.java
+index 8e3e2cc..86f2af9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/records/impl/pb/ContainerStatusPBImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/records/impl/pb/ContainerStatusPBImpl.java
+@@ -50,7 +50,7 @@ public ContainerStatusPBImpl(ContainerStatusProto proto) {
+     viaProto = true;
+   }
+   
+-  public ContainerStatusProto getProto() {
++  public synchronized ContainerStatusProto getProto() {
+       mergeLocalToProto();
+     proto = viaProto ? proto : builder.build();
+     viaProto = true;
+@@ -90,7 +90,7 @@ private void mergeLocalToBuilder() {
+     }
+   }
+ 
+-  private void mergeLocalToProto() {
++  private synchronized void mergeLocalToProto() {
+     if (viaProto) 
+       maybeInitBuilder();
+     mergeLocalToBuilder();
+@@ -98,7 +98,7 @@ private void mergeLocalToProto() {
+     viaProto = true;
+   }
+ 
+-  private void maybeInitBuilder() {
++  private synchronized void maybeInitBuilder() {
+     if (viaProto || builder == null) {
+       builder = ContainerStatusProto.newBuilder(proto);
+     }
+@@ -107,7 +107,7 @@ private void maybeInitBuilder() {
+     
+   
+   @Override
+-  public ContainerState getState() {
++  public synchronized ContainerState getState() {
+     ContainerStatusProtoOrBuilder p = viaProto ? proto : builder;
+     if (!p.hasState()) {
+       return null;
+@@ -116,7 +116,7 @@ public ContainerState getState() {
+   }
+ 
+   @Override
+-  public void setState(ContainerState state) {
++  public synchronized void setState(ContainerState state) {
+     maybeInitBuilder();
+     if (state == null) {
+       builder.clearState();
+@@ -125,7 +125,7 @@ public void setState(ContainerState state) {
+     builder.setState(convertToProtoFormat(state));
+   }
+   @Override
+-  public ContainerId getContainerId() {
++  public synchronized ContainerId getContainerId() {
+     ContainerStatusProtoOrBuilder p = viaProto ? proto : builder;
+     if (this.containerId != null) {
+       return this.containerId;
+@@ -138,32 +138,32 @@ public ContainerId getContainerId() {
+   }
+ 
+   @Override
+-  public void setContainerId(ContainerId containerId) {
++  public synchronized void setContainerId(ContainerId containerId) {
+     maybeInitBuilder();
+     if (containerId == null) 
+       builder.clearContainerId();
+     this.containerId = containerId;
+   }
+   @Override
+-  public int getExitStatus() {
++  public synchronized int getExitStatus() {
+     ContainerStatusProtoOrBuilder p = viaProto ? proto : builder;
+     return p.getExitStatus();
+   }
+ 
+   @Override
+-  public void setExitStatus(int exitStatus) {
++  public synchronized void setExitStatus(int exitStatus) {
+     maybeInitBuilder();
+     builder.setExitStatus(exitStatus);
+   }
+ 
+   @Override
+-  public String getDiagnostics() {
++  public synchronized String getDiagnostics() {
+     ContainerStatusProtoOrBuilder p = viaProto ? proto : builder;
+     return (p.getDiagnostics());    
+   }
+ 
+   @Override
+-  public void setDiagnostics(String diagnostics) {
++  public synchronized void setDiagnostics(String diagnostics) {
+     maybeInitBuilder();
+     builder.setDiagnostics(diagnostics);
+   }
+-- 
+1.7.9.5
+

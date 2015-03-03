@@ -1,0 +1,78 @@
+From b4f62f114eccb60eb0dab47d5f67575ddb878089 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 18 Sep 2014 21:00:53 +0000
+Subject: [PATCH 414/813] MAPREDUCE-6090. mapred hsadmin getGroups fails to
+ connect in some cases. Contributed by Robert Kanter
+ (cherry picked from commit
+ 1cf31980474bf9ac28e51b6f014eae09eda9e15f)
+
+(cherry picked from commit 4b4e44a8aade35df406fa0ded020a357c92f1e73)
+---
+ .../hadoop/mapreduce/v2/hs/client/HSAdmin.java     |    6 ++++--
+ .../mapreduce/v2/hs/server/TestHSAdminServer.java  |    5 +++--
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/client/HSAdmin.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/client/HSAdmin.java
+index be6ca13..000ea54 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/client/HSAdmin.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/client/HSAdmin.java
+@@ -25,6 +25,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.conf.Configured;
++import org.apache.hadoop.mapred.JobConf;
+ import org.apache.hadoop.mapreduce.v2.hs.HSProxies;
+ import org.apache.hadoop.mapreduce.v2.hs.protocol.HSAdminRefreshProtocol;
+ import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
+@@ -41,7 +42,7 @@ public HSAdmin() {
+     super();
+   }
+ 
+-  public HSAdmin(Configuration conf) {
++  public HSAdmin(JobConf conf) {
+     super(conf);
+   }
+ 
+@@ -331,7 +332,8 @@ public int run(String[] args) throws Exception {
+   }
+ 
+   public static void main(String[] args) throws Exception {
+-    int result = ToolRunner.run(new HSAdmin(), args);
++    JobConf conf = new JobConf();
++    int result = ToolRunner.run(new HSAdmin(conf), args);
+     System.exit(result);
+   }
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/server/TestHSAdminServer.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/server/TestHSAdminServer.java
+index 277a1953..2c239ec 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/server/TestHSAdminServer.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/server/TestHSAdminServer.java
+@@ -28,6 +28,7 @@
+ import org.apache.hadoop.HadoopIllegalArgumentException;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.ipc.RemoteException;
++import org.apache.hadoop.mapred.JobConf;
+ import org.apache.hadoop.mapreduce.v2.hs.JobHistory;
+ import org.apache.hadoop.mapreduce.v2.hs.client.HSAdmin;
+ import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
+@@ -48,7 +49,7 @@
+ public class TestHSAdminServer {
+   private HSAdminServer hsAdminServer = null;
+   private HSAdmin hsAdminClient = null;
+-  Configuration conf = null;
++  JobConf conf = null;
+   private static long groupRefreshTimeoutSec = 1;
+   JobHistory jobHistoryService = null;
+   AggregatedLogDeletionService alds = null;
+@@ -81,7 +82,7 @@ public void cacheGroupsAdd(List<String> groups) throws IOException {
+ 
+   @Before
+   public void init() throws HadoopIllegalArgumentException, IOException {
+-    conf = new Configuration();
++    conf = new JobConf();
+     conf.set(JHAdminConfig.JHS_ADMIN_ADDRESS, "0.0.0.0:0");
+     conf.setClass("hadoop.security.group.mapping", MockUnixGroupsMapping.class,
+         GroupMappingServiceProvider.class);
+-- 
+1.7.9.5
+

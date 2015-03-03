@@ -1,0 +1,48 @@
+From bea9eb0b3bc64006bde3d66fa982a36b788e73d5 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Tue, 16 Sep 2014 21:47:55 -0700
+Subject: [PATCH 397/813] HADOOP-11097. kms docs say proxyusers, not proxyuser
+ for config params. (clamb via tucu)
+
+(cherry picked from commit 75bd79231ca30cb7a16107101c175c5b6fa06f56)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop-kms/src/site/apt/index.apt.vm           |    8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index be6c8f1..02ca1c5 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -197,22 +197,22 @@ hadoop-${project.version} $ sbin/kms.sh start
+ 
+ *** KMS Proxyuser Configuration
+ 
+-  Each proxyusers must be configured in <<<etc/hadoop/kms-site.xml>>> using the
++  Each proxyuser must be configured in <<<etc/hadoop/kms-site.xml>>> using the
+   following properties:
+ 
+ +---+
+   <property>
+-    <name>hadoop.kms.proxyusers.#USER#.users</name>
++    <name>hadoop.kms.proxyuser.#USER#.users</name>
+     <value>*</value>
+   </property>
+ 
+   <property>
+-    <name>hadoop.kms.proxyusers.#USER#.groups</name>
++    <name>hadoop.kms.proxyuser.#USER#.groups</name>
+     <value>*</value>
+   </property>
+ 
+   <property>
+-    <name>hadoop.kms.proxyusers.#USER#.hosts</name>
++    <name>hadoop.kms.proxyuser.#USER#.hosts</name>
+     <value>*</value>
+   </property>
+ +---+
+-- 
+1.7.9.5
+

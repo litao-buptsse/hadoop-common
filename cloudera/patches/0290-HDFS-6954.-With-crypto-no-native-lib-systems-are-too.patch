@@ -1,0 +1,120 @@
+From 08c49b0859aec3dc5d7c6f2d82f6c211a7bbc4e6 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Tue, 2 Sep 2014 14:22:20 -0700
+Subject: [PATCH 290/813] HDFS-6954. With crypto, no native lib systems are
+ too verbose. Contributed by Charles Lamb.
+
+(cherry picked from commit a0ccf83dfd6bff81944d6855652eae7f7f7b0ba9)
+---
+ .../java/org/apache/hadoop/crypto/CryptoCodec.java |   19 ++++++++++++-------
+ .../apache/hadoop/util/PerformanceAdvisory.java    |    7 ++++---
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |   10 ++++++----
+ 3 files changed, 22 insertions(+), 14 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java
+index 9de7f95..9bd1846 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java
+@@ -24,6 +24,7 @@
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.conf.Configurable;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ import org.apache.hadoop.util.ReflectionUtils;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -48,7 +49,7 @@
+    * 
+    * @param conf
+    *          the configuration
+-   * @param CipherSuite
++   * @param cipherSuite
+    *          algorithm/mode/padding
+    * @return CryptoCodec the codec object. Null value will be returned if no
+    *         crypto codec classes with cipher suite configured.
+@@ -66,15 +67,18 @@ public static CryptoCodec getInstance(Configuration conf,
+         CryptoCodec c = ReflectionUtils.newInstance(klass, conf);
+         if (c.getCipherSuite().getName().equals(cipherSuite.getName())) {
+           if (codec == null) {
+-            LOG.debug("Using crypto codec {}.", klass.getName());
++            PerformanceAdvisory.LOG.debug("Using crypto codec {}.",
++                klass.getName());
+             codec = c;
+           }
+         } else {
+-          LOG.warn("Crypto codec {} doesn't meet the cipher suite {}.", 
++          PerformanceAdvisory.LOG.debug(
++              "Crypto codec {} doesn't meet the cipher suite {}.",
+               klass.getName(), cipherSuite.getName());
+         }
+       } catch (Exception e) {
+-        LOG.warn("Crypto codec {} is not available.", klass.getName());
++        PerformanceAdvisory.LOG.debug("Crypto codec {} is not available.",
++            klass.getName());
+       }
+     }
+     
+@@ -108,7 +112,8 @@ public static CryptoCodec getInstance(Configuration conf) {
+         cipherSuite.getConfigSuffix();
+     String codecString = conf.get(configName);
+     if (codecString == null) {
+-      LOG.warn("No crypto codec classes with cipher suite configured.");
++      PerformanceAdvisory.LOG.debug(
++          "No crypto codec classes with cipher suite configured.");
+       return null;
+     }
+     for (String c : Splitter.on(',').trimResults().omitEmptyStrings().
+@@ -117,9 +122,9 @@ public static CryptoCodec getInstance(Configuration conf) {
+         Class<?> cls = conf.getClassByName(c);
+         result.add(cls.asSubclass(CryptoCodec.class));
+       } catch (ClassCastException e) {
+-        LOG.warn("Class " + c + " is not a CryptoCodec.");
++        PerformanceAdvisory.LOG.debug("Class {} is not a CryptoCodec.", c);
+       } catch (ClassNotFoundException e) {
+-        LOG.warn("Crypto codec " + c + " not found.");
++        PerformanceAdvisory.LOG.debug("Crypto codec {} not found.", c);
+       }
+     }
+     
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java
+index 306d47c..3304ebb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java
+@@ -16,9 +16,10 @@
+  */
+ package org.apache.hadoop.util;
+ 
+-import org.apache.commons.logging.Log;
+-import org.apache.commons.logging.LogFactory;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
+ 
+ public class PerformanceAdvisory {
+-  public static final Log LOG = LogFactory.getLog(PerformanceAdvisory.class);
++  public static final Logger LOG =
++      LoggerFactory.getLogger(PerformanceAdvisory.class);
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index 2958bec..99c23b0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -606,10 +606,12 @@ public DFSClient(URI nameNodeUri, ClientProtocol rpcNamenode,
+       cipherSuites.add(codec.getCipherSuite());
+     }
+     provider = DFSUtil.createKeyProviderCryptoExtension(conf);
+-    if (provider == null) {
+-      LOG.info("No KeyProvider found.");
+-    } else {
+-      LOG.info("Found KeyProvider: " + provider.toString());
++    if (LOG.isDebugEnabled()) {
++      if (provider == null) {
++        LOG.debug("No KeyProvider found.");
++      } else {
++        LOG.debug("Found KeyProvider: " + provider.toString());
++      }
+     }
+     int numResponseToDrop = conf.getInt(
+         DFSConfigKeys.DFS_CLIENT_TEST_DROP_NAMENODE_RESPONSE_NUM_KEY,
+-- 
+1.7.9.5
+

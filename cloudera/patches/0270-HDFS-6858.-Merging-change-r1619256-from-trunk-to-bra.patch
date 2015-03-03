@@ -1,0 +1,53 @@
+From abb4986cd0ae28f5babffac668a4e353523998fa Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Wed, 20 Aug 2014 22:49:38 +0000
+Subject: [PATCH 270/813] HDFS-6858. Merging change r1619256 from trunk to
+ branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619258 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fd50cd91502541fb64251c26770be911bf644fac)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../datatransfer/sasl/DataTransferSaslUtil.java    |    4 +++-
+ .../src/main/resources/hdfs-default.xml            |    7 ++-----
+ 2 files changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java
+index cd18b9f..81d740f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java
+@@ -162,8 +162,10 @@ public static SaslPropertiesResolver getSaslPropertiesResolver(
+     Configuration saslPropsResolverConf = new Configuration(conf);
+     saslPropsResolverConf.set(HADOOP_RPC_PROTECTION, qops);
+     Class<? extends SaslPropertiesResolver> resolverClass = conf.getClass(
+-      DFS_DATA_TRANSFER_SASL_PROPS_RESOLVER_CLASS_KEY,
++      HADOOP_SECURITY_SASL_PROPS_RESOLVER_CLASS,
+       SaslPropertiesResolver.class, SaslPropertiesResolver.class);
++    resolverClass = conf.getClass(DFS_DATA_TRANSFER_SASL_PROPS_RESOLVER_CLASS_KEY,
++      resolverClass, SaslPropertiesResolver.class);
+     saslPropsResolverConf.setClass(HADOOP_SECURITY_SASL_PROPS_RESOLVER_CLASS,
+       resolverClass, SaslPropertiesResolver.class);
+     SaslPropertiesResolver resolver = SaslPropertiesResolver.getInstance(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index c42234e..73f264f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -1474,11 +1474,8 @@
+   <value></value>
+   <description>
+     SaslPropertiesResolver used to resolve the QOP used for a connection to the
+-    DataNode when reading or writing block data.  If not specified, the full set
+-    of values specified in dfs.data.transfer.protection is used while
+-    determining the QOP used for the connection. If a class is specified, then
+-    the QOP values returned by the class will be used while determining the QOP
+-    used for the connection.
++    DataNode when reading or writing block data. If not specified, the value of
++    hadoop.security.saslproperties.resolver.class is used as the default value.
+   </description>
+ </property>
+ 
+-- 
+1.7.9.5
+

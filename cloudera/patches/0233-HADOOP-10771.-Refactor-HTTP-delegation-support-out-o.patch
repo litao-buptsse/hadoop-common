@@ -1,0 +1,2923 @@
+From 2d7ad023c54c6ea867e90543688f7186fc9d483f Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Fri, 8 Aug 2014 04:55:38 +0000
+Subject: [PATCH 233/813] HADOOP-10771. Refactor HTTP delegation support out
+ of httpfs to common, PART 1. (tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1616671 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../web/DelegationTokenAuthenticationFilter.java   |   93 ++++++
+ .../web/DelegationTokenAuthenticationHandler.java  |  230 ++++++++++++++
+ .../web/DelegationTokenAuthenticator.java          |  188 ++++++++++++
+ .../delegation/web/DelegationTokenIdentifier.java  |   61 ++++
+ .../delegation/web/DelegationTokenManager.java     |  242 +++++++++++++++
+ .../web/PseudoDelegationTokenAuthenticator.java    |   47 +++
+ ...egationTokenAuthenticationHandlerWithMocks.java |  316 ++++++++++++++++++++
+ .../delegation/web/TestDelegationTokenManager.java |   89 ++++++
+ .../http/client/HttpFSKerberosAuthenticator.java   |  188 ------------
+ .../fs/http/client/HttpFSPseudoAuthenticator.java  |   47 ---
+ .../fs/http/server/HttpFSAuthenticationFilter.java |   93 ------
+ .../HttpFSKerberosAuthenticationHandler.java       |  230 --------------
+ .../lib/service/DelegationTokenIdentifier.java     |   61 ----
+ .../hadoop/lib/service/DelegationTokenManager.java |   78 -----
+ .../service/DelegationTokenManagerException.java   |   51 ----
+ .../security/DelegationTokenManagerService.java    |  242 ---------------
+ .../fs/http/server/TestHttpFSCustomUserName.java   |   94 ------
+ .../TestHttpFSKerberosAuthenticationHandler.java   |  316 --------------------
+ .../TestDelegationTokenManagerService.java         |   89 ------
+ 19 files changed, 1266 insertions(+), 1489 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenIdentifier.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenManager.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/PseudoDelegationTokenAuthenticator.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenAuthenticationHandlerWithMocks.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenManager.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSKerberosAuthenticator.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSPseudoAuthenticator.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSAuthenticationFilter.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSKerberosAuthenticationHandler.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenIdentifier.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManager.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManagerException.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/security/DelegationTokenManagerService.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSCustomUserName.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSKerberosAuthenticationHandler.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/lib/service/security/TestDelegationTokenManagerService.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java
+new file mode 100644
+index 0000000..545654c
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java
+@@ -0,0 +1,93 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.fs.http.server;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
++import javax.servlet.FilterConfig;
++import java.io.FileReader;
++import java.io.IOException;
++import java.io.Reader;
++import java.util.Map;
++import java.util.Properties;
++
++/**
++ * Subclass of hadoop-auth <code>AuthenticationFilter</code> that obtains its configuration
++ * from HttpFSServer's server configuration.
++ */
++@InterfaceAudience.Private
++public class HttpFSAuthenticationFilter extends AuthenticationFilter {
++  private static final String CONF_PREFIX = "httpfs.authentication.";
++
++  private static final String SIGNATURE_SECRET_FILE = SIGNATURE_SECRET + ".file";
++
++  /**
++   * Returns the hadoop-auth configuration from HttpFSServer's configuration.
++   * <p/>
++   * It returns all HttpFSServer's configuration properties prefixed with
++   * <code>httpfs.authentication</code>. The <code>httpfs.authentication</code>
++   * prefix is removed from the returned property names.
++   *
++   * @param configPrefix parameter not used.
++   * @param filterConfig parameter not used.
++   *
++   * @return hadoop-auth configuration read from HttpFSServer's configuration.
++   */
++  @Override
++  protected Properties getConfiguration(String configPrefix, FilterConfig filterConfig) {
++    Properties props = new Properties();
++    Configuration conf = HttpFSServerWebApp.get().getConfig();
++
++    props.setProperty(AuthenticationFilter.COOKIE_PATH, "/");
++    for (Map.Entry<String, String> entry : conf) {
++      String name = entry.getKey();
++      if (name.startsWith(CONF_PREFIX)) {
++        String value = conf.get(name);
++        name = name.substring(CONF_PREFIX.length());
++        props.setProperty(name, value);
++      }
++    }
++
++    if (props.getProperty(AUTH_TYPE).equals("kerberos")) {
++      props.setProperty(AUTH_TYPE,
++                        HttpFSKerberosAuthenticationHandler.class.getName());
++    }
++
++    String signatureSecretFile = props.getProperty(SIGNATURE_SECRET_FILE, null);
++    if (signatureSecretFile == null) {
++      throw new RuntimeException("Undefined property: " + SIGNATURE_SECRET_FILE);
++    }
++
++    try {
++      StringBuilder secret = new StringBuilder();
++      Reader reader = new FileReader(signatureSecretFile);
++      int c = reader.read();
++      while (c > -1) {
++        secret.append((char)c);
++        c = reader.read();
++      }
++      reader.close();
++      props.setProperty(AuthenticationFilter.SIGNATURE_SECRET, secret.toString());
++    } catch (IOException ex) {
++      throw new RuntimeException("Could not read HttpFS signature secret file: " + signatureSecretFile);
++    }
++    return props;
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+new file mode 100644
+index 0000000..fc2649c
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationHandler.java
+@@ -0,0 +1,230 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.fs.http.server;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.fs.http.client.HttpFSFileSystem;
++import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator;
++import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator.DelegationTokenOperation;
++import org.apache.hadoop.lib.service.DelegationTokenIdentifier;
++import org.apache.hadoop.lib.service.DelegationTokenManager;
++import org.apache.hadoop.lib.service.DelegationTokenManagerException;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authentication.client.AuthenticationException;
++import org.apache.hadoop.security.authentication.server.AuthenticationToken;
++import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
++import org.apache.hadoop.security.token.Token;
++import org.json.simple.JSONObject;
++
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++import javax.ws.rs.core.MediaType;
++import java.io.IOException;
++import java.io.Writer;
++import java.text.MessageFormat;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Set;
++
++/**
++ * Server side <code>AuthenticationHandler</code> that authenticates requests
++ * using the incoming delegation token as a 'delegation' query string parameter.
++ * <p/>
++ * If not delegation token is present in the request it delegates to the
++ * {@link KerberosAuthenticationHandler}
++ */
++@InterfaceAudience.Private
++public class HttpFSKerberosAuthenticationHandler
++  extends KerberosAuthenticationHandler {
++
++  static final Set<String> DELEGATION_TOKEN_OPS =
++    new HashSet<String>();
++
++  static {
++    DELEGATION_TOKEN_OPS.add(
++      DelegationTokenOperation.GETDELEGATIONTOKEN.toString());
++    DELEGATION_TOKEN_OPS.add(
++      DelegationTokenOperation.RENEWDELEGATIONTOKEN.toString());
++    DELEGATION_TOKEN_OPS.add(
++      DelegationTokenOperation.CANCELDELEGATIONTOKEN.toString());
++  }
++
++  public static final String TYPE = "kerberos-dt";
++
++  /**
++   * Returns authentication type of the handler.
++   *
++   * @return <code>delegationtoken-kerberos</code>
++   */
++  @Override
++  public String getType() {
++    return TYPE;
++  }
++
++  private static final String ENTER = System.getProperty("line.separator");
++
++  @Override
++  @SuppressWarnings("unchecked")
++  public boolean managementOperation(AuthenticationToken token,
++      HttpServletRequest request, HttpServletResponse response)
++    throws IOException, AuthenticationException {
++    boolean requestContinues = true;
++    String op = request.getParameter(HttpFSFileSystem.OP_PARAM);
++    op = (op != null) ? op.toUpperCase() : null;
++    if (DELEGATION_TOKEN_OPS.contains(op) &&
++        !request.getMethod().equals("OPTIONS")) {
++      DelegationTokenOperation dtOp =
++        DelegationTokenOperation.valueOf(op);
++      if (dtOp.getHttpMethod().equals(request.getMethod())) {
++        if (dtOp.requiresKerberosCredentials() && token == null) {
++          response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
++            MessageFormat.format(
++              "Operation [{0}] requires SPNEGO authentication established",
++              dtOp));
++          requestContinues = false;
++        } else {
++          DelegationTokenManager tokenManager =
++            HttpFSServerWebApp.get().get(DelegationTokenManager.class);
++          try {
++            Map map = null;
++            switch (dtOp) {
++              case GETDELEGATIONTOKEN:
++                String renewerParam =
++                  request.getParameter(HttpFSKerberosAuthenticator.RENEWER_PARAM);
++                if (renewerParam == null) {
++                  renewerParam = token.getUserName();
++                }
++                Token<?> dToken = tokenManager.createToken(
++                  UserGroupInformation.getCurrentUser(), renewerParam);
++                map = delegationTokenToJSON(dToken);
++                break;
++              case RENEWDELEGATIONTOKEN:
++              case CANCELDELEGATIONTOKEN:
++                String tokenParam =
++                  request.getParameter(HttpFSKerberosAuthenticator.TOKEN_PARAM);
++                if (tokenParam == null) {
++                  response.sendError(HttpServletResponse.SC_BAD_REQUEST,
++                    MessageFormat.format(
++                      "Operation [{0}] requires the parameter [{1}]",
++                      dtOp, HttpFSKerberosAuthenticator.TOKEN_PARAM));
++                  requestContinues = false;
++                } else {
++                  if (dtOp == DelegationTokenOperation.CANCELDELEGATIONTOKEN) {
++                    Token<DelegationTokenIdentifier> dt =
++                      new Token<DelegationTokenIdentifier>();
++                    dt.decodeFromUrlString(tokenParam);
++                    tokenManager.cancelToken(dt,
++                      UserGroupInformation.getCurrentUser().getUserName());
++                  } else {
++                    Token<DelegationTokenIdentifier> dt =
++                      new Token<DelegationTokenIdentifier>();
++                    dt.decodeFromUrlString(tokenParam);
++                    long expirationTime =
++                      tokenManager.renewToken(dt, token.getUserName());
++                    map = new HashMap();
++                    map.put("long", expirationTime);
++                  }
++                }
++                break;
++            }
++            if (requestContinues) {
++              response.setStatus(HttpServletResponse.SC_OK);
++              if (map != null) {
++                response.setContentType(MediaType.APPLICATION_JSON);
++                Writer writer = response.getWriter();
++                JSONObject.writeJSONString(map, writer);
++                writer.write(ENTER);
++                writer.flush();
++
++              }
++              requestContinues = false;
++            }
++          } catch (DelegationTokenManagerException ex) {
++            throw new AuthenticationException(ex.toString(), ex);
++          }
++        }
++      } else {
++        response.sendError(HttpServletResponse.SC_BAD_REQUEST,
++          MessageFormat.format(
++            "Wrong HTTP method [{0}] for operation [{1}], it should be [{2}]",
++            request.getMethod(), dtOp, dtOp.getHttpMethod()));
++        requestContinues = false;
++      }
++    }
++    return requestContinues;
++  }
++
++  @SuppressWarnings("unchecked")
++  private static Map delegationTokenToJSON(Token token) throws IOException {
++    Map json = new LinkedHashMap();
++    json.put(HttpFSKerberosAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON,
++             token.encodeToUrlString());
++    Map response = new LinkedHashMap();
++    response.put(HttpFSKerberosAuthenticator.DELEGATION_TOKEN_JSON, json);
++    return response;
++  }
++  
++  /**
++   * Authenticates a request looking for the <code>delegation</code>
++   * query-string parameter and verifying it is a valid token. If there is not
++   * <code>delegation</code> query-string parameter, it delegates the
++   * authentication to the {@link KerberosAuthenticationHandler} unless it is
++   * disabled.
++   *
++   * @param request the HTTP client request.
++   * @param response the HTTP client response.
++   *
++   * @return the authentication token for the authenticated request.
++   * @throws IOException thrown if an IO error occurred.
++   * @throws AuthenticationException thrown if the authentication failed.
++   */
++  @Override
++  public AuthenticationToken authenticate(HttpServletRequest request,
++                                          HttpServletResponse response)
++    throws IOException, AuthenticationException {
++    AuthenticationToken token;
++    String delegationParam =
++      request.getParameter(HttpFSKerberosAuthenticator.DELEGATION_PARAM);
++    if (delegationParam != null) {
++      try {
++        Token<DelegationTokenIdentifier> dt =
++          new Token<DelegationTokenIdentifier>();
++        dt.decodeFromUrlString(delegationParam);
++        DelegationTokenManager tokenManager =
++          HttpFSServerWebApp.get().get(DelegationTokenManager.class);
++        UserGroupInformation ugi = tokenManager.verifyToken(dt);
++        final String shortName = ugi.getShortUserName();
++
++        // creating a ephemeral token
++        token = new AuthenticationToken(shortName, ugi.getUserName(),
++                                        getType());
++        token.setExpires(0);
++      } catch (Throwable ex) {
++        throw new AuthenticationException("Could not verify DelegationToken, " +
++                                          ex.toString(), ex);
++      }
++    } else {
++      token = super.authenticate(request, response);
++    }
++    return token;
++  }
++
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java
+new file mode 100644
+index 0000000..a6f7c54
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java
+@@ -0,0 +1,188 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.fs.http.client;
++
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.security.SecurityUtil;
++import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
++import org.apache.hadoop.security.authentication.client.AuthenticationException;
++import org.apache.hadoop.security.authentication.client.Authenticator;
++import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
++import org.json.simple.JSONObject;
++
++import java.io.IOException;
++import java.net.HttpURLConnection;
++import java.net.InetSocketAddress;
++import java.net.URI;
++import java.net.URL;
++import java.util.HashMap;
++import java.util.Map;
++
++/**
++ * A <code>KerberosAuthenticator</code> subclass that fallback to
++ * {@link HttpFSPseudoAuthenticator}.
++ */
++@InterfaceAudience.Private
++public class HttpFSKerberosAuthenticator extends KerberosAuthenticator {
++
++  /**
++   * Returns the fallback authenticator if the server does not use
++   * Kerberos SPNEGO HTTP authentication.
++   *
++   * @return a {@link HttpFSPseudoAuthenticator} instance.
++   */
++  @Override
++  protected Authenticator getFallBackAuthenticator() {
++    return new HttpFSPseudoAuthenticator();
++  }
++
++  private static final String HTTP_GET = "GET";
++  private static final String HTTP_PUT = "PUT";
++
++  public static final String DELEGATION_PARAM = "delegation";
++  public static final String TOKEN_PARAM = "token";
++  public static final String RENEWER_PARAM = "renewer";
++  public static final String DELEGATION_TOKEN_JSON = "Token";
++  public static final String DELEGATION_TOKEN_URL_STRING_JSON = "urlString";
++  public static final String RENEW_DELEGATION_TOKEN_JSON = "long";
++
++  /**
++   * DelegationToken operations.
++   */
++  @InterfaceAudience.Private
++  public static enum DelegationTokenOperation {
++    GETDELEGATIONTOKEN(HTTP_GET, true),
++    RENEWDELEGATIONTOKEN(HTTP_PUT, true),
++    CANCELDELEGATIONTOKEN(HTTP_PUT, false);
++
++    private String httpMethod;
++    private boolean requiresKerberosCredentials;
++
++    private DelegationTokenOperation(String httpMethod,
++                                     boolean requiresKerberosCredentials) {
++      this.httpMethod = httpMethod;
++      this.requiresKerberosCredentials = requiresKerberosCredentials;
++    }
++
++    public String getHttpMethod() {
++      return httpMethod;
++    }
++
++    public boolean requiresKerberosCredentials() {
++      return requiresKerberosCredentials;
++    }
++
++  }
++
++  public static void injectDelegationToken(Map<String, String> params,
++                                          Token<?> dtToken)
++    throws IOException {
++    if (dtToken != null) {
++      params.put(DELEGATION_PARAM, dtToken.encodeToUrlString());
++    }
++  }
++
++  private boolean hasDelegationToken(URL url) {
++    return url.getQuery().contains(DELEGATION_PARAM + "=");
++  }
++
++  @Override
++  public void authenticate(URL url, AuthenticatedURL.Token token)
++    throws IOException, AuthenticationException {
++    if (!hasDelegationToken(url)) {
++      super.authenticate(url, token);
++    }
++  }
++
++  public static final String OP_PARAM = "op";
++
++  public static Token<?> getDelegationToken(URI fsURI,
++    InetSocketAddress httpFSAddr, AuthenticatedURL.Token token,
++    String renewer) throws IOException {
++    DelegationTokenOperation op = 
++      DelegationTokenOperation.GETDELEGATIONTOKEN;
++    Map<String, String> params = new HashMap<String, String>();
++    params.put(OP_PARAM, op.toString());
++    params.put(RENEWER_PARAM,renewer);
++    URL url = HttpFSUtils.createURL(new Path(fsURI), params);
++    AuthenticatedURL aUrl =
++      new AuthenticatedURL(new HttpFSKerberosAuthenticator());
++    try {
++      HttpURLConnection conn = aUrl.openConnection(url, token);
++      conn.setRequestMethod(op.getHttpMethod());
++      HttpFSUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
++      JSONObject json = (JSONObject) ((JSONObject)
++        HttpFSUtils.jsonParse(conn)).get(DELEGATION_TOKEN_JSON);
++      String tokenStr = (String)
++        json.get(DELEGATION_TOKEN_URL_STRING_JSON);
++      Token<AbstractDelegationTokenIdentifier> dToken =
++        new Token<AbstractDelegationTokenIdentifier>();
++      dToken.decodeFromUrlString(tokenStr);
++      SecurityUtil.setTokenService(dToken, httpFSAddr);
++      return dToken;
++    } catch (AuthenticationException ex) {
++      throw new IOException(ex.toString(), ex);
++    }
++  }
++
++  public static long renewDelegationToken(URI fsURI,
++    AuthenticatedURL.Token token, Token<?> dToken) throws IOException {
++    Map<String, String> params = new HashMap<String, String>();
++    params.put(OP_PARAM,
++               DelegationTokenOperation.RENEWDELEGATIONTOKEN.toString());
++    params.put(TOKEN_PARAM, dToken.encodeToUrlString());
++    URL url = HttpFSUtils.createURL(new Path(fsURI), params);
++    AuthenticatedURL aUrl =
++      new AuthenticatedURL(new HttpFSKerberosAuthenticator());
++    try {
++      HttpURLConnection conn = aUrl.openConnection(url, token);
++      conn.setRequestMethod(
++        DelegationTokenOperation.RENEWDELEGATIONTOKEN.getHttpMethod());
++      HttpFSUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
++      JSONObject json = (JSONObject) ((JSONObject)
++        HttpFSUtils.jsonParse(conn)).get(DELEGATION_TOKEN_JSON);
++      return (Long)(json.get(RENEW_DELEGATION_TOKEN_JSON));
++    } catch (AuthenticationException ex) {
++      throw new IOException(ex.toString(), ex);
++    }
++  }
++
++  public static void cancelDelegationToken(URI fsURI,
++    AuthenticatedURL.Token token, Token<?> dToken) throws IOException {
++    Map<String, String> params = new HashMap<String, String>();
++    params.put(OP_PARAM,
++               DelegationTokenOperation.CANCELDELEGATIONTOKEN.toString());
++    params.put(TOKEN_PARAM, dToken.encodeToUrlString());
++    URL url = HttpFSUtils.createURL(new Path(fsURI), params);
++    AuthenticatedURL aUrl =
++      new AuthenticatedURL(new HttpFSKerberosAuthenticator());
++    try {
++      HttpURLConnection conn = aUrl.openConnection(url, token);
++      conn.setRequestMethod(
++        DelegationTokenOperation.CANCELDELEGATIONTOKEN.getHttpMethod());
++      HttpFSUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
++    } catch (AuthenticationException ex) {
++      throw new IOException(ex.toString(), ex);
++    }
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenIdentifier.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenIdentifier.java
+new file mode 100644
+index 0000000..baa4603
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenIdentifier.java
+@@ -0,0 +1,61 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.lib.service;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
++import org.apache.hadoop.io.Text;
++import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
++
++/**
++ * HttpFS <code>DelegationTokenIdentifier</code> implementation.
++ */
++@InterfaceAudience.Private
++public class DelegationTokenIdentifier
++  extends AbstractDelegationTokenIdentifier {
++
++  private Text kind = WebHdfsFileSystem.TOKEN_KIND;
++
++  public DelegationTokenIdentifier(Text kind) {
++    this.kind = kind;
++  }
++
++  /**
++   * Create a new delegation token identifier
++   *
++   * @param kind token kind
++   * @param owner the effective username of the token owner
++   * @param renewer the username of the renewer
++   * @param realUser the real username of the token owner
++   */
++  public DelegationTokenIdentifier(Text kind, Text owner, Text renewer,
++      Text realUser) {
++    super(owner, renewer, realUser);
++    this.kind = kind;
++  }
++
++  /**
++   * Returns the kind, <code>TOKEN_KIND</code>.
++   * @return returns <code>TOKEN_KIND</code>.
++   */
++  @Override
++  public Text getKind() {
++    return kind;
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenManager.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenManager.java
+new file mode 100644
+index 0000000..dca13d4
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenManager.java
+@@ -0,0 +1,242 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.lib.service.security;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.fs.http.server.HttpFSServerWebApp;
++import org.apache.hadoop.hdfs.web.SWebHdfsFileSystem;
++import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
++import org.apache.hadoop.io.Text;
++import org.apache.hadoop.lib.server.BaseService;
++import org.apache.hadoop.lib.server.ServerException;
++import org.apache.hadoop.lib.server.ServiceException;
++import org.apache.hadoop.lib.service.DelegationTokenIdentifier;
++import org.apache.hadoop.lib.service.DelegationTokenManager;
++import org.apache.hadoop.lib.service.DelegationTokenManagerException;
++import org.apache.hadoop.security.SecurityUtil;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
++
++import java.io.ByteArrayInputStream;
++import java.io.DataInputStream;
++import java.io.IOException;
++
++/**
++ * DelegationTokenManager service implementation.
++ */
++@InterfaceAudience.Private
++public class DelegationTokenManagerService extends BaseService
++  implements DelegationTokenManager {
++
++  private static final String PREFIX = "delegation.token.manager";
++
++  private static final String UPDATE_INTERVAL = "update.interval";
++
++  private static final String MAX_LIFETIME = "max.lifetime";
++
++  private static final String RENEW_INTERVAL = "renew.interval";
++
++  private static final long HOUR = 60 * 60 * 1000;
++  private static final long DAY = 24 * HOUR;
++
++  DelegationTokenSecretManager secretManager = null;
++
++  private Text tokenKind;
++
++  public DelegationTokenManagerService() {
++    super(PREFIX);
++  }
++
++  /**
++   * Initializes the service.
++   *
++   * @throws ServiceException thrown if the service could not be initialized.
++   */
++  @Override
++  protected void init() throws ServiceException {
++
++    long updateInterval = getServiceConfig().getLong(UPDATE_INTERVAL, DAY);
++    long maxLifetime = getServiceConfig().getLong(MAX_LIFETIME, 7 * DAY);
++    long renewInterval = getServiceConfig().getLong(RENEW_INTERVAL, DAY);
++    tokenKind = (HttpFSServerWebApp.get().isSslEnabled())
++                ? SWebHdfsFileSystem.TOKEN_KIND : WebHdfsFileSystem.TOKEN_KIND;
++    secretManager = new DelegationTokenSecretManager(tokenKind, updateInterval,
++                                                     maxLifetime,
++                                                     renewInterval, HOUR);
++    try {
++      secretManager.startThreads();
++    } catch (IOException ex) {
++      throw new ServiceException(ServiceException.ERROR.S12,
++                                 DelegationTokenManager.class.getSimpleName(),
++                                 ex.toString(), ex);
++    }
++  }
++
++  /**
++   * Destroys the service.
++   */
++  @Override
++  public void destroy() {
++    secretManager.stopThreads();
++    super.destroy();
++  }
++
++  /**
++   * Returns the service interface.
++   *
++   * @return the service interface.
++   */
++  @Override
++  public Class getInterface() {
++    return DelegationTokenManager.class;
++  }
++
++  /**
++   * Creates a delegation token.
++   *
++   * @param ugi UGI creating the token.
++   * @param renewer token renewer.
++   * @return new delegation token.
++   * @throws DelegationTokenManagerException thrown if the token could not be
++   * created.
++   */
++  @Override
++  public Token<DelegationTokenIdentifier> createToken(UserGroupInformation ugi,
++                                                      String renewer)
++    throws DelegationTokenManagerException {
++    renewer = (renewer == null) ? ugi.getShortUserName() : renewer;
++    String user = ugi.getUserName();
++    Text owner = new Text(user);
++    Text realUser = null;
++    if (ugi.getRealUser() != null) {
++      realUser = new Text(ugi.getRealUser().getUserName());
++    }
++    DelegationTokenIdentifier tokenIdentifier =
++      new DelegationTokenIdentifier(tokenKind, owner, new Text(renewer), realUser);
++    Token<DelegationTokenIdentifier> token =
++      new Token<DelegationTokenIdentifier>(tokenIdentifier, secretManager);
++    try {
++      SecurityUtil.setTokenService(token,
++                                   HttpFSServerWebApp.get().getAuthority());
++    } catch (ServerException ex) {
++      throw new DelegationTokenManagerException(
++        DelegationTokenManagerException.ERROR.DT04, ex.toString(), ex);
++    }
++    return token;
++  }
++
++  /**
++   * Renews a delegation token.
++   *
++   * @param token delegation token to renew.
++   * @param renewer token renewer.
++   * @return epoc expiration time.
++   * @throws DelegationTokenManagerException thrown if the token could not be
++   * renewed.
++   */
++  @Override
++  public long renewToken(Token<DelegationTokenIdentifier> token, String renewer)
++    throws DelegationTokenManagerException {
++    try {
++      return secretManager.renewToken(token, renewer);
++    } catch (IOException ex) {
++      throw new DelegationTokenManagerException(
++        DelegationTokenManagerException.ERROR.DT02, ex.toString(), ex);
++    }
++  }
++
++  /**
++   * Cancels a delegation token.
++   *
++   * @param token delegation token to cancel.
++   * @param canceler token canceler.
++   * @throws DelegationTokenManagerException thrown if the token could not be
++   * canceled.
++   */
++  @Override
++  public void cancelToken(Token<DelegationTokenIdentifier> token,
++                          String canceler)
++    throws DelegationTokenManagerException {
++    try {
++      secretManager.cancelToken(token, canceler);
++    } catch (IOException ex) {
++      throw new DelegationTokenManagerException(
++        DelegationTokenManagerException.ERROR.DT03, ex.toString(), ex);
++    }
++  }
++
++  /**
++   * Verifies a delegation token.
++   *
++   * @param token delegation token to verify.
++   * @return the UGI for the token.
++   * @throws DelegationTokenManagerException thrown if the token could not be
++   * verified.
++   */
++  @Override
++  public UserGroupInformation verifyToken(Token<DelegationTokenIdentifier> token)
++    throws DelegationTokenManagerException {
++    ByteArrayInputStream buf = new ByteArrayInputStream(token.getIdentifier());
++    DataInputStream dis = new DataInputStream(buf);
++    DelegationTokenIdentifier id = new DelegationTokenIdentifier(tokenKind);
++    try {
++      id.readFields(dis);
++      dis.close();
++      secretManager.verifyToken(id, token.getPassword());
++    } catch (Exception ex) {
++      throw new DelegationTokenManagerException(
++        DelegationTokenManagerException.ERROR.DT01, ex.toString(), ex);
++    }
++    return id.getUser();
++  }
++
++  private static class DelegationTokenSecretManager
++    extends AbstractDelegationTokenSecretManager<DelegationTokenIdentifier> {
++
++    private Text tokenKind;
++
++    /**
++     * Create a secret manager
++     *
++     * @param delegationKeyUpdateInterval the number of seconds for rolling new
++     * secret keys.
++     * @param delegationTokenMaxLifetime the maximum lifetime of the delegation
++     * tokens
++     * @param delegationTokenRenewInterval how often the tokens must be renewed
++     * @param delegationTokenRemoverScanInterval how often the tokens are
++     * scanned
++     * for expired tokens
++     */
++    public DelegationTokenSecretManager(Text tokenKind, long delegationKeyUpdateInterval,
++                                        long delegationTokenMaxLifetime,
++                                        long delegationTokenRenewInterval,
++                                        long delegationTokenRemoverScanInterval) {
++      super(delegationKeyUpdateInterval, delegationTokenMaxLifetime,
++            delegationTokenRenewInterval, delegationTokenRemoverScanInterval);
++      this.tokenKind = tokenKind;
++    }
++
++    @Override
++    public DelegationTokenIdentifier createIdentifier() {
++      return new DelegationTokenIdentifier(tokenKind);
++    }
++
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/PseudoDelegationTokenAuthenticator.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/PseudoDelegationTokenAuthenticator.java
+new file mode 100644
+index 0000000..180149c
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/PseudoDelegationTokenAuthenticator.java
+@@ -0,0 +1,47 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.fs.http.client;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authentication.client.PseudoAuthenticator;
++
++import java.io.IOException;
++
++/**
++ * A <code>PseudoAuthenticator</code> subclass that uses FileSystemAccess's
++ * <code>UserGroupInformation</code> to obtain the client user name (the UGI's login user).
++ */
++@InterfaceAudience.Private
++public class HttpFSPseudoAuthenticator extends PseudoAuthenticator {
++
++  /**
++   * Return the client user name.
++   *
++   * @return the client user name.
++   */
++  @Override
++  protected String getUserName() {
++    try {
++      return UserGroupInformation.getLoginUser().getUserName();
++    } catch (IOException ex) {
++      throw new SecurityException("Could not obtain current user, " + ex.getMessage(), ex);
++    }
++  }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenAuthenticationHandlerWithMocks.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenAuthenticationHandlerWithMocks.java
+new file mode 100644
+index 0000000..25612a0
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenAuthenticationHandlerWithMocks.java
+@@ -0,0 +1,316 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.fs.http.server;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.http.client.HttpFSFileSystem;
++import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator;
++import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator.DelegationTokenOperation;
++import org.apache.hadoop.hdfs.web.SWebHdfsFileSystem;
++import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
++import org.apache.hadoop.io.Text;
++import org.apache.hadoop.lib.service.DelegationTokenIdentifier;
++import org.apache.hadoop.lib.service.DelegationTokenManager;
++import org.apache.hadoop.lib.service.DelegationTokenManagerException;
++import org.apache.hadoop.lib.servlet.ServerWebApp;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authentication.client.AuthenticationException;
++import org.apache.hadoop.security.authentication.server.AuthenticationHandler;
++import org.apache.hadoop.security.authentication.server.AuthenticationToken;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.test.HFSTestCase;
++import org.apache.hadoop.test.TestDir;
++import org.apache.hadoop.test.TestDirHelper;
++import org.json.simple.JSONObject;
++import org.json.simple.parser.JSONParser;
++import org.junit.Assert;
++import org.junit.Test;
++import org.mockito.Mockito;
++
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++import javax.ws.rs.core.MediaType;
++import java.io.PrintWriter;
++import java.io.StringWriter;
++import java.net.InetAddress;
++import java.net.InetSocketAddress;
++
++public class TestHttpFSKerberosAuthenticationHandler extends HFSTestCase {
++
++  @Test
++  @TestDir
++  public void testManagementOperationsWebHdfsFileSystem() throws Exception {
++    testManagementOperations(WebHdfsFileSystem.TOKEN_KIND);
++  }
++
++  @Test
++  @TestDir
++  public void testManagementOperationsSWebHdfsFileSystem() throws Exception {
++    try {
++      System.setProperty(HttpFSServerWebApp.NAME +
++          ServerWebApp.SSL_ENABLED, "true");
++      testManagementOperations(SWebHdfsFileSystem.TOKEN_KIND);
++    } finally {
++      System.getProperties().remove(HttpFSServerWebApp.NAME +
++          ServerWebApp.SSL_ENABLED);
++    }
++  }
++
++  private void testManagementOperations(Text expectedTokenKind) throws Exception {
++    String dir = TestDirHelper.getTestDir().getAbsolutePath();
++
++    Configuration httpfsConf = new Configuration(false);
++    HttpFSServerWebApp server =
++      new HttpFSServerWebApp(dir, dir, dir, dir, httpfsConf);
++    server.setAuthority(new InetSocketAddress(InetAddress.getLocalHost(), 
++                                              14000));
++    AuthenticationHandler handler =
++      new HttpFSKerberosAuthenticationHandlerForTesting();
++    try {
++      server.init();
++      handler.init(null);
++
++      testNonManagementOperation(handler);
++      testManagementOperationErrors(handler);
++      testGetToken(handler, null, expectedTokenKind);
++      testGetToken(handler, "foo", expectedTokenKind);
++      testCancelToken(handler);
++      testRenewToken(handler);
++
++    } finally {
++      if (handler != null) {
++        handler.destroy();
++      }
++    server.destroy();
++    }
++  }
++
++  private void testNonManagementOperation(AuthenticationHandler handler)
++    throws Exception {
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
++      thenReturn(null);
++    Assert.assertTrue(handler.managementOperation(null, request, null));
++    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
++      thenReturn(HttpFSFileSystem.Operation.CREATE.toString());
++    Assert.assertTrue(handler.managementOperation(null, request, null));
++  }
++
++  private void testManagementOperationErrors(AuthenticationHandler handler)
++    throws Exception {
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
++      thenReturn(DelegationTokenOperation.GETDELEGATIONTOKEN.toString());
++    Mockito.when(request.getMethod()).thenReturn("FOO");
++    Assert.assertFalse(handler.managementOperation(null, request, response));
++    Mockito.verify(response).sendError(
++      Mockito.eq(HttpServletResponse.SC_BAD_REQUEST),
++      Mockito.startsWith("Wrong HTTP method"));
++
++    Mockito.reset(response);
++    Mockito.when(request.getMethod()).
++      thenReturn(DelegationTokenOperation.GETDELEGATIONTOKEN.getHttpMethod());
++    Assert.assertFalse(handler.managementOperation(null, request, response));
++    Mockito.verify(response).sendError(
++      Mockito.eq(HttpServletResponse.SC_UNAUTHORIZED),
++      Mockito.contains("requires SPNEGO"));
++  }
++
++  private void testGetToken(AuthenticationHandler handler, String renewer,
++      Text expectedTokenKind) throws Exception {
++    DelegationTokenOperation op = DelegationTokenOperation.GETDELEGATIONTOKEN;
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
++      thenReturn(op.toString());
++    Mockito.when(request.getMethod()).
++      thenReturn(op.getHttpMethod());
++
++    AuthenticationToken token = Mockito.mock(AuthenticationToken.class);
++    Mockito.when(token.getUserName()).thenReturn("user");
++    Assert.assertFalse(handler.managementOperation(null, request, response));
++    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.RENEWER_PARAM)).
++      thenReturn(renewer);
++
++    Mockito.reset(response);
++    StringWriter writer = new StringWriter();
++    PrintWriter pwriter = new PrintWriter(writer);
++    Mockito.when(response.getWriter()).thenReturn(pwriter);
++    Assert.assertFalse(handler.managementOperation(token, request, response));
++    if (renewer == null) {
++      Mockito.verify(token).getUserName();
++    } else {
++      Mockito.verify(token, Mockito.never()).getUserName();
++    }
++    Mockito.verify(response).setStatus(HttpServletResponse.SC_OK);
++    Mockito.verify(response).setContentType(MediaType.APPLICATION_JSON);
++    pwriter.close();
++    String responseOutput = writer.toString();
++    String tokenLabel = HttpFSKerberosAuthenticator.DELEGATION_TOKEN_JSON;
++    Assert.assertTrue(responseOutput.contains(tokenLabel));
++    Assert.assertTrue(responseOutput.contains(
++      HttpFSKerberosAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON));
++    JSONObject json = (JSONObject) new JSONParser().parse(responseOutput);
++    json = (JSONObject) json.get(tokenLabel);
++    String tokenStr;
++    tokenStr = (String)
++      json.get(HttpFSKerberosAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON);
++    Token<DelegationTokenIdentifier> dt = new Token<DelegationTokenIdentifier>();
++    dt.decodeFromUrlString(tokenStr);
++    HttpFSServerWebApp.get().get(DelegationTokenManager.class).verifyToken(dt);
++    Assert.assertEquals(expectedTokenKind, dt.getKind());
++  }
++
++  private void testCancelToken(AuthenticationHandler handler)
++    throws Exception {
++    DelegationTokenOperation op =
++      DelegationTokenOperation.CANCELDELEGATIONTOKEN;
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
++      thenReturn(op.toString());
++    Mockito.when(request.getMethod()).
++      thenReturn(op.getHttpMethod());
++
++    Assert.assertFalse(handler.managementOperation(null, request, response));
++    Mockito.verify(response).sendError(
++      Mockito.eq(HttpServletResponse.SC_BAD_REQUEST),
++      Mockito.contains("requires the parameter [token]"));
++
++    Mockito.reset(response);
++    Token<DelegationTokenIdentifier> token =
++      HttpFSServerWebApp.get().get(DelegationTokenManager.class).createToken(
++        UserGroupInformation.getCurrentUser(), "foo");
++    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.TOKEN_PARAM)).
++      thenReturn(token.encodeToUrlString());
++    Assert.assertFalse(handler.managementOperation(null, request, response));
++    Mockito.verify(response).setStatus(HttpServletResponse.SC_OK);
++    try {
++      HttpFSServerWebApp.get().get(DelegationTokenManager.class).verifyToken(token);
++      Assert.fail();
++    }
++    catch (DelegationTokenManagerException ex) {
++      Assert.assertTrue(ex.toString().contains("DT01"));
++    }
++  }
++
++  private void testRenewToken(AuthenticationHandler handler)
++    throws Exception {
++    DelegationTokenOperation op =
++      DelegationTokenOperation.RENEWDELEGATIONTOKEN;
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
++      thenReturn(op.toString());
++    Mockito.when(request.getMethod()).
++      thenReturn(op.getHttpMethod());
++
++    Assert.assertFalse(handler.managementOperation(null, request, response));
++    Mockito.verify(response).sendError(
++      Mockito.eq(HttpServletResponse.SC_UNAUTHORIZED),
++      Mockito.contains("equires SPNEGO authentication established"));
++
++    Mockito.reset(response);
++    AuthenticationToken token = Mockito.mock(AuthenticationToken.class);
++    Mockito.when(token.getUserName()).thenReturn("user");
++    Assert.assertFalse(handler.managementOperation(token, request, response));
++    Mockito.verify(response).sendError(
++      Mockito.eq(HttpServletResponse.SC_BAD_REQUEST),
++      Mockito.contains("requires the parameter [token]"));
++
++    Mockito.reset(response);
++    StringWriter writer = new StringWriter();
++    PrintWriter pwriter = new PrintWriter(writer);
++    Mockito.when(response.getWriter()).thenReturn(pwriter);
++    Token<DelegationTokenIdentifier> dToken =
++      HttpFSServerWebApp.get().get(DelegationTokenManager.class).createToken(
++        UserGroupInformation.getCurrentUser(), "user");
++    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.TOKEN_PARAM)).
++      thenReturn(dToken.encodeToUrlString());
++    Assert.assertFalse(handler.managementOperation(token, request, response));
++    Mockito.verify(response).setStatus(HttpServletResponse.SC_OK);
++    pwriter.close();
++    Assert.assertTrue(writer.toString().contains("long"));
++    HttpFSServerWebApp.get().get(DelegationTokenManager.class).verifyToken(dToken);
++  }
++
++  @Test
++  @TestDir
++  public void testAuthenticate() throws Exception {
++    String dir = TestDirHelper.getTestDir().getAbsolutePath();
++
++    Configuration httpfsConf = new Configuration(false);
++    HttpFSServerWebApp server =
++      new HttpFSServerWebApp(dir, dir, dir, dir, httpfsConf);
++    server.setAuthority(new InetSocketAddress(InetAddress.getLocalHost(),
++                                              14000));
++    AuthenticationHandler handler =
++      new HttpFSKerberosAuthenticationHandlerForTesting();
++    try {
++      server.init();
++      handler.init(null);
++
++      testValidDelegationToken(handler);
++      testInvalidDelegationToken(handler);
++    } finally {
++      if (handler != null) {
++        handler.destroy();
++      }
++    server.destroy();
++    }
++  }
++
++  private void testValidDelegationToken(AuthenticationHandler handler)
++    throws Exception {
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    Token<DelegationTokenIdentifier> dToken =
++      HttpFSServerWebApp.get().get(DelegationTokenManager.class).createToken(
++        UserGroupInformation.getCurrentUser(), "user");
++    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.DELEGATION_PARAM)).
++      thenReturn(dToken.encodeToUrlString());
++
++    AuthenticationToken token = handler.authenticate(request, response);
++    Assert.assertEquals(UserGroupInformation.getCurrentUser().getShortUserName(),
++                        token.getUserName());
++    Assert.assertEquals(0, token.getExpires());
++    Assert.assertEquals(HttpFSKerberosAuthenticationHandler.TYPE,
++                        token.getType());
++    Assert.assertTrue(token.isExpired());
++  }
++
++  private void testInvalidDelegationToken(AuthenticationHandler handler)
++    throws Exception {
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.DELEGATION_PARAM)).
++      thenReturn("invalid");
++
++    try {
++      handler.authenticate(request, response);
++      Assert.fail();
++    } catch (AuthenticationException ex) {
++      //NOP
++    } catch (Exception ex) {
++      Assert.fail();
++    }
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenManager.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenManager.java
+new file mode 100644
+index 0000000..da588e0
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestDelegationTokenManager.java
+@@ -0,0 +1,89 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.lib.service.security;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.http.server.HttpFSServerWebApp;
++import org.apache.hadoop.lib.server.Server;
++import org.apache.hadoop.lib.service.DelegationTokenManager;
++import org.apache.hadoop.lib.service.DelegationTokenManagerException;
++import org.apache.hadoop.lib.service.hadoop.FileSystemAccessService;
++import org.apache.hadoop.lib.service.instrumentation.InstrumentationService;
++import org.apache.hadoop.lib.service.scheduler.SchedulerService;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.test.HTestCase;
++import org.apache.hadoop.test.TestDir;
++import org.apache.hadoop.test.TestDirHelper;
++import org.apache.hadoop.util.StringUtils;
++import org.junit.Assert;
++import org.junit.Test;
++
++import java.net.InetAddress;
++import java.net.InetSocketAddress;
++import java.util.Arrays;
++
++public class TestDelegationTokenManagerService extends HTestCase {
++
++  @Test
++  @TestDir
++  public void service() throws Exception {
++    String dir = TestDirHelper.getTestDir().getAbsolutePath();
++    Configuration conf = new Configuration(false);
++    conf.set("httpfs.services", StringUtils.join(",",
++      Arrays.asList(InstrumentationService.class.getName(),
++          SchedulerService.class.getName(),
++          FileSystemAccessService.class.getName(),
++          DelegationTokenManagerService.class.getName())));
++    Server server = new HttpFSServerWebApp(dir, dir, dir, dir, conf);
++    server.init();
++    DelegationTokenManager tm = server.get(DelegationTokenManager.class);
++    Assert.assertNotNull(tm);
++    server.destroy();
++  }
++
++  @Test
++  @TestDir
++  @SuppressWarnings("unchecked")
++  public void tokens() throws Exception {
++    String dir = TestDirHelper.getTestDir().getAbsolutePath();
++    Configuration conf = new Configuration(false);
++    conf.set("server.services", StringUtils.join(",",
++      Arrays.asList(DelegationTokenManagerService.class.getName())));
++    HttpFSServerWebApp server = new HttpFSServerWebApp(dir, dir, dir, dir, conf);
++    server.setAuthority(new InetSocketAddress(InetAddress.getLocalHost(), 14000));
++    server.init();
++    DelegationTokenManager tm = server.get(DelegationTokenManager.class);
++    Token token = tm.createToken(UserGroupInformation.getCurrentUser(), "foo");
++    Assert.assertNotNull(token);
++    tm.verifyToken(token);
++    Assert.assertTrue(tm.renewToken(token, "foo") > System.currentTimeMillis());
++    tm.cancelToken(token, "foo");
++    try {
++      tm.verifyToken(token);
++      Assert.fail();
++    } catch (DelegationTokenManagerException ex) {
++      //NOP
++    } catch (Exception ex) {
++      Assert.fail();
++    }
++    server.destroy();
++  }
++
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSKerberosAuthenticator.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSKerberosAuthenticator.java
+deleted file mode 100644
+index a6f7c54..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSKerberosAuthenticator.java
++++ /dev/null
+@@ -1,188 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.fs.http.client;
+-
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.fs.Path;
+-import org.apache.hadoop.security.SecurityUtil;
+-import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+-import org.apache.hadoop.security.authentication.client.AuthenticationException;
+-import org.apache.hadoop.security.authentication.client.Authenticator;
+-import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
+-import org.apache.hadoop.security.token.Token;
+-import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
+-import org.json.simple.JSONObject;
+-
+-import java.io.IOException;
+-import java.net.HttpURLConnection;
+-import java.net.InetSocketAddress;
+-import java.net.URI;
+-import java.net.URL;
+-import java.util.HashMap;
+-import java.util.Map;
+-
+-/**
+- * A <code>KerberosAuthenticator</code> subclass that fallback to
+- * {@link HttpFSPseudoAuthenticator}.
+- */
+-@InterfaceAudience.Private
+-public class HttpFSKerberosAuthenticator extends KerberosAuthenticator {
+-
+-  /**
+-   * Returns the fallback authenticator if the server does not use
+-   * Kerberos SPNEGO HTTP authentication.
+-   *
+-   * @return a {@link HttpFSPseudoAuthenticator} instance.
+-   */
+-  @Override
+-  protected Authenticator getFallBackAuthenticator() {
+-    return new HttpFSPseudoAuthenticator();
+-  }
+-
+-  private static final String HTTP_GET = "GET";
+-  private static final String HTTP_PUT = "PUT";
+-
+-  public static final String DELEGATION_PARAM = "delegation";
+-  public static final String TOKEN_PARAM = "token";
+-  public static final String RENEWER_PARAM = "renewer";
+-  public static final String DELEGATION_TOKEN_JSON = "Token";
+-  public static final String DELEGATION_TOKEN_URL_STRING_JSON = "urlString";
+-  public static final String RENEW_DELEGATION_TOKEN_JSON = "long";
+-
+-  /**
+-   * DelegationToken operations.
+-   */
+-  @InterfaceAudience.Private
+-  public static enum DelegationTokenOperation {
+-    GETDELEGATIONTOKEN(HTTP_GET, true),
+-    RENEWDELEGATIONTOKEN(HTTP_PUT, true),
+-    CANCELDELEGATIONTOKEN(HTTP_PUT, false);
+-
+-    private String httpMethod;
+-    private boolean requiresKerberosCredentials;
+-
+-    private DelegationTokenOperation(String httpMethod,
+-                                     boolean requiresKerberosCredentials) {
+-      this.httpMethod = httpMethod;
+-      this.requiresKerberosCredentials = requiresKerberosCredentials;
+-    }
+-
+-    public String getHttpMethod() {
+-      return httpMethod;
+-    }
+-
+-    public boolean requiresKerberosCredentials() {
+-      return requiresKerberosCredentials;
+-    }
+-
+-  }
+-
+-  public static void injectDelegationToken(Map<String, String> params,
+-                                          Token<?> dtToken)
+-    throws IOException {
+-    if (dtToken != null) {
+-      params.put(DELEGATION_PARAM, dtToken.encodeToUrlString());
+-    }
+-  }
+-
+-  private boolean hasDelegationToken(URL url) {
+-    return url.getQuery().contains(DELEGATION_PARAM + "=");
+-  }
+-
+-  @Override
+-  public void authenticate(URL url, AuthenticatedURL.Token token)
+-    throws IOException, AuthenticationException {
+-    if (!hasDelegationToken(url)) {
+-      super.authenticate(url, token);
+-    }
+-  }
+-
+-  public static final String OP_PARAM = "op";
+-
+-  public static Token<?> getDelegationToken(URI fsURI,
+-    InetSocketAddress httpFSAddr, AuthenticatedURL.Token token,
+-    String renewer) throws IOException {
+-    DelegationTokenOperation op = 
+-      DelegationTokenOperation.GETDELEGATIONTOKEN;
+-    Map<String, String> params = new HashMap<String, String>();
+-    params.put(OP_PARAM, op.toString());
+-    params.put(RENEWER_PARAM,renewer);
+-    URL url = HttpFSUtils.createURL(new Path(fsURI), params);
+-    AuthenticatedURL aUrl =
+-      new AuthenticatedURL(new HttpFSKerberosAuthenticator());
+-    try {
+-      HttpURLConnection conn = aUrl.openConnection(url, token);
+-      conn.setRequestMethod(op.getHttpMethod());
+-      HttpFSUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+-      JSONObject json = (JSONObject) ((JSONObject)
+-        HttpFSUtils.jsonParse(conn)).get(DELEGATION_TOKEN_JSON);
+-      String tokenStr = (String)
+-        json.get(DELEGATION_TOKEN_URL_STRING_JSON);
+-      Token<AbstractDelegationTokenIdentifier> dToken =
+-        new Token<AbstractDelegationTokenIdentifier>();
+-      dToken.decodeFromUrlString(tokenStr);
+-      SecurityUtil.setTokenService(dToken, httpFSAddr);
+-      return dToken;
+-    } catch (AuthenticationException ex) {
+-      throw new IOException(ex.toString(), ex);
+-    }
+-  }
+-
+-  public static long renewDelegationToken(URI fsURI,
+-    AuthenticatedURL.Token token, Token<?> dToken) throws IOException {
+-    Map<String, String> params = new HashMap<String, String>();
+-    params.put(OP_PARAM,
+-               DelegationTokenOperation.RENEWDELEGATIONTOKEN.toString());
+-    params.put(TOKEN_PARAM, dToken.encodeToUrlString());
+-    URL url = HttpFSUtils.createURL(new Path(fsURI), params);
+-    AuthenticatedURL aUrl =
+-      new AuthenticatedURL(new HttpFSKerberosAuthenticator());
+-    try {
+-      HttpURLConnection conn = aUrl.openConnection(url, token);
+-      conn.setRequestMethod(
+-        DelegationTokenOperation.RENEWDELEGATIONTOKEN.getHttpMethod());
+-      HttpFSUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+-      JSONObject json = (JSONObject) ((JSONObject)
+-        HttpFSUtils.jsonParse(conn)).get(DELEGATION_TOKEN_JSON);
+-      return (Long)(json.get(RENEW_DELEGATION_TOKEN_JSON));
+-    } catch (AuthenticationException ex) {
+-      throw new IOException(ex.toString(), ex);
+-    }
+-  }
+-
+-  public static void cancelDelegationToken(URI fsURI,
+-    AuthenticatedURL.Token token, Token<?> dToken) throws IOException {
+-    Map<String, String> params = new HashMap<String, String>();
+-    params.put(OP_PARAM,
+-               DelegationTokenOperation.CANCELDELEGATIONTOKEN.toString());
+-    params.put(TOKEN_PARAM, dToken.encodeToUrlString());
+-    URL url = HttpFSUtils.createURL(new Path(fsURI), params);
+-    AuthenticatedURL aUrl =
+-      new AuthenticatedURL(new HttpFSKerberosAuthenticator());
+-    try {
+-      HttpURLConnection conn = aUrl.openConnection(url, token);
+-      conn.setRequestMethod(
+-        DelegationTokenOperation.CANCELDELEGATIONTOKEN.getHttpMethod());
+-      HttpFSUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+-    } catch (AuthenticationException ex) {
+-      throw new IOException(ex.toString(), ex);
+-    }
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSPseudoAuthenticator.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSPseudoAuthenticator.java
+deleted file mode 100644
+index 180149c..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSPseudoAuthenticator.java
++++ /dev/null
+@@ -1,47 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.fs.http.client;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.authentication.client.PseudoAuthenticator;
+-
+-import java.io.IOException;
+-
+-/**
+- * A <code>PseudoAuthenticator</code> subclass that uses FileSystemAccess's
+- * <code>UserGroupInformation</code> to obtain the client user name (the UGI's login user).
+- */
+-@InterfaceAudience.Private
+-public class HttpFSPseudoAuthenticator extends PseudoAuthenticator {
+-
+-  /**
+-   * Return the client user name.
+-   *
+-   * @return the client user name.
+-   */
+-  @Override
+-  protected String getUserName() {
+-    try {
+-      return UserGroupInformation.getLoginUser().getUserName();
+-    } catch (IOException ex) {
+-      throw new SecurityException("Could not obtain current user, " + ex.getMessage(), ex);
+-    }
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSAuthenticationFilter.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSAuthenticationFilter.java
+deleted file mode 100644
+index 545654c..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSAuthenticationFilter.java
++++ /dev/null
+@@ -1,93 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.fs.http.server;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
+-import javax.servlet.FilterConfig;
+-import java.io.FileReader;
+-import java.io.IOException;
+-import java.io.Reader;
+-import java.util.Map;
+-import java.util.Properties;
+-
+-/**
+- * Subclass of hadoop-auth <code>AuthenticationFilter</code> that obtains its configuration
+- * from HttpFSServer's server configuration.
+- */
+-@InterfaceAudience.Private
+-public class HttpFSAuthenticationFilter extends AuthenticationFilter {
+-  private static final String CONF_PREFIX = "httpfs.authentication.";
+-
+-  private static final String SIGNATURE_SECRET_FILE = SIGNATURE_SECRET + ".file";
+-
+-  /**
+-   * Returns the hadoop-auth configuration from HttpFSServer's configuration.
+-   * <p/>
+-   * It returns all HttpFSServer's configuration properties prefixed with
+-   * <code>httpfs.authentication</code>. The <code>httpfs.authentication</code>
+-   * prefix is removed from the returned property names.
+-   *
+-   * @param configPrefix parameter not used.
+-   * @param filterConfig parameter not used.
+-   *
+-   * @return hadoop-auth configuration read from HttpFSServer's configuration.
+-   */
+-  @Override
+-  protected Properties getConfiguration(String configPrefix, FilterConfig filterConfig) {
+-    Properties props = new Properties();
+-    Configuration conf = HttpFSServerWebApp.get().getConfig();
+-
+-    props.setProperty(AuthenticationFilter.COOKIE_PATH, "/");
+-    for (Map.Entry<String, String> entry : conf) {
+-      String name = entry.getKey();
+-      if (name.startsWith(CONF_PREFIX)) {
+-        String value = conf.get(name);
+-        name = name.substring(CONF_PREFIX.length());
+-        props.setProperty(name, value);
+-      }
+-    }
+-
+-    if (props.getProperty(AUTH_TYPE).equals("kerberos")) {
+-      props.setProperty(AUTH_TYPE,
+-                        HttpFSKerberosAuthenticationHandler.class.getName());
+-    }
+-
+-    String signatureSecretFile = props.getProperty(SIGNATURE_SECRET_FILE, null);
+-    if (signatureSecretFile == null) {
+-      throw new RuntimeException("Undefined property: " + SIGNATURE_SECRET_FILE);
+-    }
+-
+-    try {
+-      StringBuilder secret = new StringBuilder();
+-      Reader reader = new FileReader(signatureSecretFile);
+-      int c = reader.read();
+-      while (c > -1) {
+-        secret.append((char)c);
+-        c = reader.read();
+-      }
+-      reader.close();
+-      props.setProperty(AuthenticationFilter.SIGNATURE_SECRET, secret.toString());
+-    } catch (IOException ex) {
+-      throw new RuntimeException("Could not read HttpFS signature secret file: " + signatureSecretFile);
+-    }
+-    return props;
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSKerberosAuthenticationHandler.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSKerberosAuthenticationHandler.java
+deleted file mode 100644
+index fc2649c..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/server/HttpFSKerberosAuthenticationHandler.java
++++ /dev/null
+@@ -1,230 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.fs.http.server;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.fs.http.client.HttpFSFileSystem;
+-import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator;
+-import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator.DelegationTokenOperation;
+-import org.apache.hadoop.lib.service.DelegationTokenIdentifier;
+-import org.apache.hadoop.lib.service.DelegationTokenManager;
+-import org.apache.hadoop.lib.service.DelegationTokenManagerException;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.authentication.client.AuthenticationException;
+-import org.apache.hadoop.security.authentication.server.AuthenticationToken;
+-import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
+-import org.apache.hadoop.security.token.Token;
+-import org.json.simple.JSONObject;
+-
+-import javax.servlet.http.HttpServletRequest;
+-import javax.servlet.http.HttpServletResponse;
+-import javax.ws.rs.core.MediaType;
+-import java.io.IOException;
+-import java.io.Writer;
+-import java.text.MessageFormat;
+-import java.util.HashMap;
+-import java.util.HashSet;
+-import java.util.LinkedHashMap;
+-import java.util.Map;
+-import java.util.Set;
+-
+-/**
+- * Server side <code>AuthenticationHandler</code> that authenticates requests
+- * using the incoming delegation token as a 'delegation' query string parameter.
+- * <p/>
+- * If not delegation token is present in the request it delegates to the
+- * {@link KerberosAuthenticationHandler}
+- */
+-@InterfaceAudience.Private
+-public class HttpFSKerberosAuthenticationHandler
+-  extends KerberosAuthenticationHandler {
+-
+-  static final Set<String> DELEGATION_TOKEN_OPS =
+-    new HashSet<String>();
+-
+-  static {
+-    DELEGATION_TOKEN_OPS.add(
+-      DelegationTokenOperation.GETDELEGATIONTOKEN.toString());
+-    DELEGATION_TOKEN_OPS.add(
+-      DelegationTokenOperation.RENEWDELEGATIONTOKEN.toString());
+-    DELEGATION_TOKEN_OPS.add(
+-      DelegationTokenOperation.CANCELDELEGATIONTOKEN.toString());
+-  }
+-
+-  public static final String TYPE = "kerberos-dt";
+-
+-  /**
+-   * Returns authentication type of the handler.
+-   *
+-   * @return <code>delegationtoken-kerberos</code>
+-   */
+-  @Override
+-  public String getType() {
+-    return TYPE;
+-  }
+-
+-  private static final String ENTER = System.getProperty("line.separator");
+-
+-  @Override
+-  @SuppressWarnings("unchecked")
+-  public boolean managementOperation(AuthenticationToken token,
+-      HttpServletRequest request, HttpServletResponse response)
+-    throws IOException, AuthenticationException {
+-    boolean requestContinues = true;
+-    String op = request.getParameter(HttpFSFileSystem.OP_PARAM);
+-    op = (op != null) ? op.toUpperCase() : null;
+-    if (DELEGATION_TOKEN_OPS.contains(op) &&
+-        !request.getMethod().equals("OPTIONS")) {
+-      DelegationTokenOperation dtOp =
+-        DelegationTokenOperation.valueOf(op);
+-      if (dtOp.getHttpMethod().equals(request.getMethod())) {
+-        if (dtOp.requiresKerberosCredentials() && token == null) {
+-          response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
+-            MessageFormat.format(
+-              "Operation [{0}] requires SPNEGO authentication established",
+-              dtOp));
+-          requestContinues = false;
+-        } else {
+-          DelegationTokenManager tokenManager =
+-            HttpFSServerWebApp.get().get(DelegationTokenManager.class);
+-          try {
+-            Map map = null;
+-            switch (dtOp) {
+-              case GETDELEGATIONTOKEN:
+-                String renewerParam =
+-                  request.getParameter(HttpFSKerberosAuthenticator.RENEWER_PARAM);
+-                if (renewerParam == null) {
+-                  renewerParam = token.getUserName();
+-                }
+-                Token<?> dToken = tokenManager.createToken(
+-                  UserGroupInformation.getCurrentUser(), renewerParam);
+-                map = delegationTokenToJSON(dToken);
+-                break;
+-              case RENEWDELEGATIONTOKEN:
+-              case CANCELDELEGATIONTOKEN:
+-                String tokenParam =
+-                  request.getParameter(HttpFSKerberosAuthenticator.TOKEN_PARAM);
+-                if (tokenParam == null) {
+-                  response.sendError(HttpServletResponse.SC_BAD_REQUEST,
+-                    MessageFormat.format(
+-                      "Operation [{0}] requires the parameter [{1}]",
+-                      dtOp, HttpFSKerberosAuthenticator.TOKEN_PARAM));
+-                  requestContinues = false;
+-                } else {
+-                  if (dtOp == DelegationTokenOperation.CANCELDELEGATIONTOKEN) {
+-                    Token<DelegationTokenIdentifier> dt =
+-                      new Token<DelegationTokenIdentifier>();
+-                    dt.decodeFromUrlString(tokenParam);
+-                    tokenManager.cancelToken(dt,
+-                      UserGroupInformation.getCurrentUser().getUserName());
+-                  } else {
+-                    Token<DelegationTokenIdentifier> dt =
+-                      new Token<DelegationTokenIdentifier>();
+-                    dt.decodeFromUrlString(tokenParam);
+-                    long expirationTime =
+-                      tokenManager.renewToken(dt, token.getUserName());
+-                    map = new HashMap();
+-                    map.put("long", expirationTime);
+-                  }
+-                }
+-                break;
+-            }
+-            if (requestContinues) {
+-              response.setStatus(HttpServletResponse.SC_OK);
+-              if (map != null) {
+-                response.setContentType(MediaType.APPLICATION_JSON);
+-                Writer writer = response.getWriter();
+-                JSONObject.writeJSONString(map, writer);
+-                writer.write(ENTER);
+-                writer.flush();
+-
+-              }
+-              requestContinues = false;
+-            }
+-          } catch (DelegationTokenManagerException ex) {
+-            throw new AuthenticationException(ex.toString(), ex);
+-          }
+-        }
+-      } else {
+-        response.sendError(HttpServletResponse.SC_BAD_REQUEST,
+-          MessageFormat.format(
+-            "Wrong HTTP method [{0}] for operation [{1}], it should be [{2}]",
+-            request.getMethod(), dtOp, dtOp.getHttpMethod()));
+-        requestContinues = false;
+-      }
+-    }
+-    return requestContinues;
+-  }
+-
+-  @SuppressWarnings("unchecked")
+-  private static Map delegationTokenToJSON(Token token) throws IOException {
+-    Map json = new LinkedHashMap();
+-    json.put(HttpFSKerberosAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON,
+-             token.encodeToUrlString());
+-    Map response = new LinkedHashMap();
+-    response.put(HttpFSKerberosAuthenticator.DELEGATION_TOKEN_JSON, json);
+-    return response;
+-  }
+-  
+-  /**
+-   * Authenticates a request looking for the <code>delegation</code>
+-   * query-string parameter and verifying it is a valid token. If there is not
+-   * <code>delegation</code> query-string parameter, it delegates the
+-   * authentication to the {@link KerberosAuthenticationHandler} unless it is
+-   * disabled.
+-   *
+-   * @param request the HTTP client request.
+-   * @param response the HTTP client response.
+-   *
+-   * @return the authentication token for the authenticated request.
+-   * @throws IOException thrown if an IO error occurred.
+-   * @throws AuthenticationException thrown if the authentication failed.
+-   */
+-  @Override
+-  public AuthenticationToken authenticate(HttpServletRequest request,
+-                                          HttpServletResponse response)
+-    throws IOException, AuthenticationException {
+-    AuthenticationToken token;
+-    String delegationParam =
+-      request.getParameter(HttpFSKerberosAuthenticator.DELEGATION_PARAM);
+-    if (delegationParam != null) {
+-      try {
+-        Token<DelegationTokenIdentifier> dt =
+-          new Token<DelegationTokenIdentifier>();
+-        dt.decodeFromUrlString(delegationParam);
+-        DelegationTokenManager tokenManager =
+-          HttpFSServerWebApp.get().get(DelegationTokenManager.class);
+-        UserGroupInformation ugi = tokenManager.verifyToken(dt);
+-        final String shortName = ugi.getShortUserName();
+-
+-        // creating a ephemeral token
+-        token = new AuthenticationToken(shortName, ugi.getUserName(),
+-                                        getType());
+-        token.setExpires(0);
+-      } catch (Throwable ex) {
+-        throw new AuthenticationException("Could not verify DelegationToken, " +
+-                                          ex.toString(), ex);
+-      }
+-    } else {
+-      token = super.authenticate(request, response);
+-    }
+-    return token;
+-  }
+-
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenIdentifier.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenIdentifier.java
+deleted file mode 100644
+index baa4603..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenIdentifier.java
++++ /dev/null
+@@ -1,61 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.lib.service;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+-import org.apache.hadoop.io.Text;
+-import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
+-
+-/**
+- * HttpFS <code>DelegationTokenIdentifier</code> implementation.
+- */
+-@InterfaceAudience.Private
+-public class DelegationTokenIdentifier
+-  extends AbstractDelegationTokenIdentifier {
+-
+-  private Text kind = WebHdfsFileSystem.TOKEN_KIND;
+-
+-  public DelegationTokenIdentifier(Text kind) {
+-    this.kind = kind;
+-  }
+-
+-  /**
+-   * Create a new delegation token identifier
+-   *
+-   * @param kind token kind
+-   * @param owner the effective username of the token owner
+-   * @param renewer the username of the renewer
+-   * @param realUser the real username of the token owner
+-   */
+-  public DelegationTokenIdentifier(Text kind, Text owner, Text renewer,
+-      Text realUser) {
+-    super(owner, renewer, realUser);
+-    this.kind = kind;
+-  }
+-
+-  /**
+-   * Returns the kind, <code>TOKEN_KIND</code>.
+-   * @return returns <code>TOKEN_KIND</code>.
+-   */
+-  @Override
+-  public Text getKind() {
+-    return kind;
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManager.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManager.java
+deleted file mode 100644
+index a163baf..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManager.java
++++ /dev/null
+@@ -1,78 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.lib.service;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.token.Token;
+-
+-/**
+- * Service interface to manage HttpFS delegation tokens.
+- */
+-@InterfaceAudience.Private
+-public interface DelegationTokenManager {
+-
+-  /**
+-   * Creates a delegation token.
+-   *
+-   * @param ugi UGI creating the token.
+-   * @param renewer token renewer.
+-   * @return new delegation token.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * created.
+-   */
+-  public Token<DelegationTokenIdentifier> createToken(UserGroupInformation ugi,
+-                                                      String renewer)
+-    throws DelegationTokenManagerException;
+-
+-  /**
+-   * Renews a delegation token.
+-   *
+-   * @param token delegation token to renew.
+-   * @param renewer token renewer.
+-   * @return epoc expiration time.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * renewed.
+-   */
+-  public long renewToken(Token<DelegationTokenIdentifier> token, String renewer)
+-    throws DelegationTokenManagerException;
+-
+-  /**
+-   * Cancels a delegation token.
+-   *
+-   * @param token delegation token to cancel.
+-   * @param canceler token canceler.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * canceled.
+-   */
+-  public void cancelToken(Token<DelegationTokenIdentifier> token,
+-                          String canceler)
+-    throws DelegationTokenManagerException;
+-
+-  /**
+-   * Verifies a delegation token.
+-   *
+-   * @param token delegation token to verify.
+-   * @return the UGI for the token.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * verified.
+-   */
+-  public UserGroupInformation verifyToken(Token<DelegationTokenIdentifier> token)
+-    throws DelegationTokenManagerException;
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManagerException.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManagerException.java
+deleted file mode 100644
+index 62ec2f9..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/DelegationTokenManagerException.java
++++ /dev/null
+@@ -1,51 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.lib.service;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.lib.lang.XException;
+-
+-/**
+- * Exception thrown by the {@link DelegationTokenManager} service implementation.
+- */
+-@InterfaceAudience.Private
+-public class DelegationTokenManagerException extends XException {
+-
+-  public enum ERROR implements XException.ERROR {
+-    DT01("Could not verify delegation token, {0}"),
+-    DT02("Could not renew delegation token, {0}"),
+-    DT03("Could not cancel delegation token, {0}"),
+-    DT04("Could not create delegation token, {0}");
+-
+-    private String template;
+-
+-    ERROR(String template) {
+-      this.template = template;
+-    }
+-
+-    @Override
+-    public String getTemplate() {
+-      return template;
+-    }
+-  }
+-
+-  public DelegationTokenManagerException(ERROR error, Object... params) {
+-    super(error, params);
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/security/DelegationTokenManagerService.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/security/DelegationTokenManagerService.java
+deleted file mode 100644
+index dca13d4..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/lib/service/security/DelegationTokenManagerService.java
++++ /dev/null
+@@ -1,242 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.lib.service.security;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.fs.http.server.HttpFSServerWebApp;
+-import org.apache.hadoop.hdfs.web.SWebHdfsFileSystem;
+-import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+-import org.apache.hadoop.io.Text;
+-import org.apache.hadoop.lib.server.BaseService;
+-import org.apache.hadoop.lib.server.ServerException;
+-import org.apache.hadoop.lib.server.ServiceException;
+-import org.apache.hadoop.lib.service.DelegationTokenIdentifier;
+-import org.apache.hadoop.lib.service.DelegationTokenManager;
+-import org.apache.hadoop.lib.service.DelegationTokenManagerException;
+-import org.apache.hadoop.security.SecurityUtil;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.token.Token;
+-import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
+-
+-import java.io.ByteArrayInputStream;
+-import java.io.DataInputStream;
+-import java.io.IOException;
+-
+-/**
+- * DelegationTokenManager service implementation.
+- */
+-@InterfaceAudience.Private
+-public class DelegationTokenManagerService extends BaseService
+-  implements DelegationTokenManager {
+-
+-  private static final String PREFIX = "delegation.token.manager";
+-
+-  private static final String UPDATE_INTERVAL = "update.interval";
+-
+-  private static final String MAX_LIFETIME = "max.lifetime";
+-
+-  private static final String RENEW_INTERVAL = "renew.interval";
+-
+-  private static final long HOUR = 60 * 60 * 1000;
+-  private static final long DAY = 24 * HOUR;
+-
+-  DelegationTokenSecretManager secretManager = null;
+-
+-  private Text tokenKind;
+-
+-  public DelegationTokenManagerService() {
+-    super(PREFIX);
+-  }
+-
+-  /**
+-   * Initializes the service.
+-   *
+-   * @throws ServiceException thrown if the service could not be initialized.
+-   */
+-  @Override
+-  protected void init() throws ServiceException {
+-
+-    long updateInterval = getServiceConfig().getLong(UPDATE_INTERVAL, DAY);
+-    long maxLifetime = getServiceConfig().getLong(MAX_LIFETIME, 7 * DAY);
+-    long renewInterval = getServiceConfig().getLong(RENEW_INTERVAL, DAY);
+-    tokenKind = (HttpFSServerWebApp.get().isSslEnabled())
+-                ? SWebHdfsFileSystem.TOKEN_KIND : WebHdfsFileSystem.TOKEN_KIND;
+-    secretManager = new DelegationTokenSecretManager(tokenKind, updateInterval,
+-                                                     maxLifetime,
+-                                                     renewInterval, HOUR);
+-    try {
+-      secretManager.startThreads();
+-    } catch (IOException ex) {
+-      throw new ServiceException(ServiceException.ERROR.S12,
+-                                 DelegationTokenManager.class.getSimpleName(),
+-                                 ex.toString(), ex);
+-    }
+-  }
+-
+-  /**
+-   * Destroys the service.
+-   */
+-  @Override
+-  public void destroy() {
+-    secretManager.stopThreads();
+-    super.destroy();
+-  }
+-
+-  /**
+-   * Returns the service interface.
+-   *
+-   * @return the service interface.
+-   */
+-  @Override
+-  public Class getInterface() {
+-    return DelegationTokenManager.class;
+-  }
+-
+-  /**
+-   * Creates a delegation token.
+-   *
+-   * @param ugi UGI creating the token.
+-   * @param renewer token renewer.
+-   * @return new delegation token.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * created.
+-   */
+-  @Override
+-  public Token<DelegationTokenIdentifier> createToken(UserGroupInformation ugi,
+-                                                      String renewer)
+-    throws DelegationTokenManagerException {
+-    renewer = (renewer == null) ? ugi.getShortUserName() : renewer;
+-    String user = ugi.getUserName();
+-    Text owner = new Text(user);
+-    Text realUser = null;
+-    if (ugi.getRealUser() != null) {
+-      realUser = new Text(ugi.getRealUser().getUserName());
+-    }
+-    DelegationTokenIdentifier tokenIdentifier =
+-      new DelegationTokenIdentifier(tokenKind, owner, new Text(renewer), realUser);
+-    Token<DelegationTokenIdentifier> token =
+-      new Token<DelegationTokenIdentifier>(tokenIdentifier, secretManager);
+-    try {
+-      SecurityUtil.setTokenService(token,
+-                                   HttpFSServerWebApp.get().getAuthority());
+-    } catch (ServerException ex) {
+-      throw new DelegationTokenManagerException(
+-        DelegationTokenManagerException.ERROR.DT04, ex.toString(), ex);
+-    }
+-    return token;
+-  }
+-
+-  /**
+-   * Renews a delegation token.
+-   *
+-   * @param token delegation token to renew.
+-   * @param renewer token renewer.
+-   * @return epoc expiration time.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * renewed.
+-   */
+-  @Override
+-  public long renewToken(Token<DelegationTokenIdentifier> token, String renewer)
+-    throws DelegationTokenManagerException {
+-    try {
+-      return secretManager.renewToken(token, renewer);
+-    } catch (IOException ex) {
+-      throw new DelegationTokenManagerException(
+-        DelegationTokenManagerException.ERROR.DT02, ex.toString(), ex);
+-    }
+-  }
+-
+-  /**
+-   * Cancels a delegation token.
+-   *
+-   * @param token delegation token to cancel.
+-   * @param canceler token canceler.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * canceled.
+-   */
+-  @Override
+-  public void cancelToken(Token<DelegationTokenIdentifier> token,
+-                          String canceler)
+-    throws DelegationTokenManagerException {
+-    try {
+-      secretManager.cancelToken(token, canceler);
+-    } catch (IOException ex) {
+-      throw new DelegationTokenManagerException(
+-        DelegationTokenManagerException.ERROR.DT03, ex.toString(), ex);
+-    }
+-  }
+-
+-  /**
+-   * Verifies a delegation token.
+-   *
+-   * @param token delegation token to verify.
+-   * @return the UGI for the token.
+-   * @throws DelegationTokenManagerException thrown if the token could not be
+-   * verified.
+-   */
+-  @Override
+-  public UserGroupInformation verifyToken(Token<DelegationTokenIdentifier> token)
+-    throws DelegationTokenManagerException {
+-    ByteArrayInputStream buf = new ByteArrayInputStream(token.getIdentifier());
+-    DataInputStream dis = new DataInputStream(buf);
+-    DelegationTokenIdentifier id = new DelegationTokenIdentifier(tokenKind);
+-    try {
+-      id.readFields(dis);
+-      dis.close();
+-      secretManager.verifyToken(id, token.getPassword());
+-    } catch (Exception ex) {
+-      throw new DelegationTokenManagerException(
+-        DelegationTokenManagerException.ERROR.DT01, ex.toString(), ex);
+-    }
+-    return id.getUser();
+-  }
+-
+-  private static class DelegationTokenSecretManager
+-    extends AbstractDelegationTokenSecretManager<DelegationTokenIdentifier> {
+-
+-    private Text tokenKind;
+-
+-    /**
+-     * Create a secret manager
+-     *
+-     * @param delegationKeyUpdateInterval the number of seconds for rolling new
+-     * secret keys.
+-     * @param delegationTokenMaxLifetime the maximum lifetime of the delegation
+-     * tokens
+-     * @param delegationTokenRenewInterval how often the tokens must be renewed
+-     * @param delegationTokenRemoverScanInterval how often the tokens are
+-     * scanned
+-     * for expired tokens
+-     */
+-    public DelegationTokenSecretManager(Text tokenKind, long delegationKeyUpdateInterval,
+-                                        long delegationTokenMaxLifetime,
+-                                        long delegationTokenRenewInterval,
+-                                        long delegationTokenRemoverScanInterval) {
+-      super(delegationKeyUpdateInterval, delegationTokenMaxLifetime,
+-            delegationTokenRenewInterval, delegationTokenRemoverScanInterval);
+-      this.tokenKind = tokenKind;
+-    }
+-
+-    @Override
+-    public DelegationTokenIdentifier createIdentifier() {
+-      return new DelegationTokenIdentifier(tokenKind);
+-    }
+-
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSCustomUserName.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSCustomUserName.java
+deleted file mode 100644
+index e8407fc..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSCustomUserName.java
++++ /dev/null
+@@ -1,94 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.fs.http.server;
+-
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+-import org.apache.hadoop.fs.FileSystem;
+-import org.apache.hadoop.fs.Path;
+-import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator;
+-import org.apache.hadoop.lib.server.Service;
+-import org.apache.hadoop.lib.server.ServiceException;
+-import org.apache.hadoop.lib.service.Groups;
+-import org.apache.hadoop.lib.wsrs.UserProvider;
+-import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+-import org.apache.hadoop.security.authentication.server.AuthenticationToken;
+-import org.apache.hadoop.security.authentication.util.Signer;
+-import org.apache.hadoop.test.HFSTestCase;
+-import org.apache.hadoop.test.HadoopUsersConfTestHelper;
+-import org.apache.hadoop.test.TestDir;
+-import org.apache.hadoop.test.TestDirHelper;
+-import org.apache.hadoop.test.TestHdfs;
+-import org.apache.hadoop.test.TestHdfsHelper;
+-import org.apache.hadoop.test.TestJetty;
+-import org.apache.hadoop.test.TestJettyHelper;
+-import org.json.simple.JSONObject;
+-import org.json.simple.parser.JSONParser;
+-import org.junit.Assert;
+-import org.junit.Test;
+-import org.mortbay.jetty.Server;
+-import org.mortbay.jetty.webapp.WebAppContext;
+-
+-import java.io.BufferedReader;
+-import java.io.File;
+-import java.io.FileOutputStream;
+-import java.io.FileWriter;
+-import java.io.IOException;
+-import java.io.InputStream;
+-import java.io.InputStreamReader;
+-import java.io.OutputStream;
+-import java.io.Writer;
+-import java.net.HttpURLConnection;
+-import java.net.URL;
+-import java.text.MessageFormat;
+-import java.util.Arrays;
+-import java.util.List;
+-
+-public class TestHttpFSCustomUserName extends HFSTestCase {
+-
+-  @Test
+-  @TestDir
+-  @TestJetty
+-  public void defaultUserName() throws Exception {
+-    String dir = TestDirHelper.getTestDir().getAbsolutePath();
+-
+-    Configuration httpfsConf = new Configuration(false);
+-    HttpFSServerWebApp server = 
+-      new HttpFSServerWebApp(dir, dir, dir, dir, httpfsConf);
+-    server.init();
+-    Assert.assertEquals(UserProvider.USER_PATTERN_DEFAULT, 
+-      UserProvider.getUserPattern().pattern());
+-    server.destroy();
+-  }
+-
+-  @Test
+-  @TestDir
+-  @TestJetty
+-  public void customUserName() throws Exception {
+-    String dir = TestDirHelper.getTestDir().getAbsolutePath();
+-
+-    Configuration httpfsConf = new Configuration(false);
+-    httpfsConf.set(UserProvider.USER_PATTERN_KEY, "1");
+-    HttpFSServerWebApp server =
+-      new HttpFSServerWebApp(dir, dir, dir, dir, httpfsConf);
+-    server.init();
+-    Assert.assertEquals("1", UserProvider.getUserPattern().pattern());
+-    server.destroy();
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSKerberosAuthenticationHandler.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSKerberosAuthenticationHandler.java
+deleted file mode 100644
+index 25612a0..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSKerberosAuthenticationHandler.java
++++ /dev/null
+@@ -1,316 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.fs.http.server;
+-
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.fs.http.client.HttpFSFileSystem;
+-import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator;
+-import org.apache.hadoop.fs.http.client.HttpFSKerberosAuthenticator.DelegationTokenOperation;
+-import org.apache.hadoop.hdfs.web.SWebHdfsFileSystem;
+-import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+-import org.apache.hadoop.io.Text;
+-import org.apache.hadoop.lib.service.DelegationTokenIdentifier;
+-import org.apache.hadoop.lib.service.DelegationTokenManager;
+-import org.apache.hadoop.lib.service.DelegationTokenManagerException;
+-import org.apache.hadoop.lib.servlet.ServerWebApp;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.authentication.client.AuthenticationException;
+-import org.apache.hadoop.security.authentication.server.AuthenticationHandler;
+-import org.apache.hadoop.security.authentication.server.AuthenticationToken;
+-import org.apache.hadoop.security.token.Token;
+-import org.apache.hadoop.test.HFSTestCase;
+-import org.apache.hadoop.test.TestDir;
+-import org.apache.hadoop.test.TestDirHelper;
+-import org.json.simple.JSONObject;
+-import org.json.simple.parser.JSONParser;
+-import org.junit.Assert;
+-import org.junit.Test;
+-import org.mockito.Mockito;
+-
+-import javax.servlet.http.HttpServletRequest;
+-import javax.servlet.http.HttpServletResponse;
+-import javax.ws.rs.core.MediaType;
+-import java.io.PrintWriter;
+-import java.io.StringWriter;
+-import java.net.InetAddress;
+-import java.net.InetSocketAddress;
+-
+-public class TestHttpFSKerberosAuthenticationHandler extends HFSTestCase {
+-
+-  @Test
+-  @TestDir
+-  public void testManagementOperationsWebHdfsFileSystem() throws Exception {
+-    testManagementOperations(WebHdfsFileSystem.TOKEN_KIND);
+-  }
+-
+-  @Test
+-  @TestDir
+-  public void testManagementOperationsSWebHdfsFileSystem() throws Exception {
+-    try {
+-      System.setProperty(HttpFSServerWebApp.NAME +
+-          ServerWebApp.SSL_ENABLED, "true");
+-      testManagementOperations(SWebHdfsFileSystem.TOKEN_KIND);
+-    } finally {
+-      System.getProperties().remove(HttpFSServerWebApp.NAME +
+-          ServerWebApp.SSL_ENABLED);
+-    }
+-  }
+-
+-  private void testManagementOperations(Text expectedTokenKind) throws Exception {
+-    String dir = TestDirHelper.getTestDir().getAbsolutePath();
+-
+-    Configuration httpfsConf = new Configuration(false);
+-    HttpFSServerWebApp server =
+-      new HttpFSServerWebApp(dir, dir, dir, dir, httpfsConf);
+-    server.setAuthority(new InetSocketAddress(InetAddress.getLocalHost(), 
+-                                              14000));
+-    AuthenticationHandler handler =
+-      new HttpFSKerberosAuthenticationHandlerForTesting();
+-    try {
+-      server.init();
+-      handler.init(null);
+-
+-      testNonManagementOperation(handler);
+-      testManagementOperationErrors(handler);
+-      testGetToken(handler, null, expectedTokenKind);
+-      testGetToken(handler, "foo", expectedTokenKind);
+-      testCancelToken(handler);
+-      testRenewToken(handler);
+-
+-    } finally {
+-      if (handler != null) {
+-        handler.destroy();
+-      }
+-    server.destroy();
+-    }
+-  }
+-
+-  private void testNonManagementOperation(AuthenticationHandler handler)
+-    throws Exception {
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
+-      thenReturn(null);
+-    Assert.assertTrue(handler.managementOperation(null, request, null));
+-    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
+-      thenReturn(HttpFSFileSystem.Operation.CREATE.toString());
+-    Assert.assertTrue(handler.managementOperation(null, request, null));
+-  }
+-
+-  private void testManagementOperationErrors(AuthenticationHandler handler)
+-    throws Exception {
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
+-      thenReturn(DelegationTokenOperation.GETDELEGATIONTOKEN.toString());
+-    Mockito.when(request.getMethod()).thenReturn("FOO");
+-    Assert.assertFalse(handler.managementOperation(null, request, response));
+-    Mockito.verify(response).sendError(
+-      Mockito.eq(HttpServletResponse.SC_BAD_REQUEST),
+-      Mockito.startsWith("Wrong HTTP method"));
+-
+-    Mockito.reset(response);
+-    Mockito.when(request.getMethod()).
+-      thenReturn(DelegationTokenOperation.GETDELEGATIONTOKEN.getHttpMethod());
+-    Assert.assertFalse(handler.managementOperation(null, request, response));
+-    Mockito.verify(response).sendError(
+-      Mockito.eq(HttpServletResponse.SC_UNAUTHORIZED),
+-      Mockito.contains("requires SPNEGO"));
+-  }
+-
+-  private void testGetToken(AuthenticationHandler handler, String renewer,
+-      Text expectedTokenKind) throws Exception {
+-    DelegationTokenOperation op = DelegationTokenOperation.GETDELEGATIONTOKEN;
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
+-      thenReturn(op.toString());
+-    Mockito.when(request.getMethod()).
+-      thenReturn(op.getHttpMethod());
+-
+-    AuthenticationToken token = Mockito.mock(AuthenticationToken.class);
+-    Mockito.when(token.getUserName()).thenReturn("user");
+-    Assert.assertFalse(handler.managementOperation(null, request, response));
+-    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.RENEWER_PARAM)).
+-      thenReturn(renewer);
+-
+-    Mockito.reset(response);
+-    StringWriter writer = new StringWriter();
+-    PrintWriter pwriter = new PrintWriter(writer);
+-    Mockito.when(response.getWriter()).thenReturn(pwriter);
+-    Assert.assertFalse(handler.managementOperation(token, request, response));
+-    if (renewer == null) {
+-      Mockito.verify(token).getUserName();
+-    } else {
+-      Mockito.verify(token, Mockito.never()).getUserName();
+-    }
+-    Mockito.verify(response).setStatus(HttpServletResponse.SC_OK);
+-    Mockito.verify(response).setContentType(MediaType.APPLICATION_JSON);
+-    pwriter.close();
+-    String responseOutput = writer.toString();
+-    String tokenLabel = HttpFSKerberosAuthenticator.DELEGATION_TOKEN_JSON;
+-    Assert.assertTrue(responseOutput.contains(tokenLabel));
+-    Assert.assertTrue(responseOutput.contains(
+-      HttpFSKerberosAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON));
+-    JSONObject json = (JSONObject) new JSONParser().parse(responseOutput);
+-    json = (JSONObject) json.get(tokenLabel);
+-    String tokenStr;
+-    tokenStr = (String)
+-      json.get(HttpFSKerberosAuthenticator.DELEGATION_TOKEN_URL_STRING_JSON);
+-    Token<DelegationTokenIdentifier> dt = new Token<DelegationTokenIdentifier>();
+-    dt.decodeFromUrlString(tokenStr);
+-    HttpFSServerWebApp.get().get(DelegationTokenManager.class).verifyToken(dt);
+-    Assert.assertEquals(expectedTokenKind, dt.getKind());
+-  }
+-
+-  private void testCancelToken(AuthenticationHandler handler)
+-    throws Exception {
+-    DelegationTokenOperation op =
+-      DelegationTokenOperation.CANCELDELEGATIONTOKEN;
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
+-      thenReturn(op.toString());
+-    Mockito.when(request.getMethod()).
+-      thenReturn(op.getHttpMethod());
+-
+-    Assert.assertFalse(handler.managementOperation(null, request, response));
+-    Mockito.verify(response).sendError(
+-      Mockito.eq(HttpServletResponse.SC_BAD_REQUEST),
+-      Mockito.contains("requires the parameter [token]"));
+-
+-    Mockito.reset(response);
+-    Token<DelegationTokenIdentifier> token =
+-      HttpFSServerWebApp.get().get(DelegationTokenManager.class).createToken(
+-        UserGroupInformation.getCurrentUser(), "foo");
+-    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.TOKEN_PARAM)).
+-      thenReturn(token.encodeToUrlString());
+-    Assert.assertFalse(handler.managementOperation(null, request, response));
+-    Mockito.verify(response).setStatus(HttpServletResponse.SC_OK);
+-    try {
+-      HttpFSServerWebApp.get().get(DelegationTokenManager.class).verifyToken(token);
+-      Assert.fail();
+-    }
+-    catch (DelegationTokenManagerException ex) {
+-      Assert.assertTrue(ex.toString().contains("DT01"));
+-    }
+-  }
+-
+-  private void testRenewToken(AuthenticationHandler handler)
+-    throws Exception {
+-    DelegationTokenOperation op =
+-      DelegationTokenOperation.RENEWDELEGATIONTOKEN;
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-    Mockito.when(request.getParameter(HttpFSFileSystem.OP_PARAM)).
+-      thenReturn(op.toString());
+-    Mockito.when(request.getMethod()).
+-      thenReturn(op.getHttpMethod());
+-
+-    Assert.assertFalse(handler.managementOperation(null, request, response));
+-    Mockito.verify(response).sendError(
+-      Mockito.eq(HttpServletResponse.SC_UNAUTHORIZED),
+-      Mockito.contains("equires SPNEGO authentication established"));
+-
+-    Mockito.reset(response);
+-    AuthenticationToken token = Mockito.mock(AuthenticationToken.class);
+-    Mockito.when(token.getUserName()).thenReturn("user");
+-    Assert.assertFalse(handler.managementOperation(token, request, response));
+-    Mockito.verify(response).sendError(
+-      Mockito.eq(HttpServletResponse.SC_BAD_REQUEST),
+-      Mockito.contains("requires the parameter [token]"));
+-
+-    Mockito.reset(response);
+-    StringWriter writer = new StringWriter();
+-    PrintWriter pwriter = new PrintWriter(writer);
+-    Mockito.when(response.getWriter()).thenReturn(pwriter);
+-    Token<DelegationTokenIdentifier> dToken =
+-      HttpFSServerWebApp.get().get(DelegationTokenManager.class).createToken(
+-        UserGroupInformation.getCurrentUser(), "user");
+-    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.TOKEN_PARAM)).
+-      thenReturn(dToken.encodeToUrlString());
+-    Assert.assertFalse(handler.managementOperation(token, request, response));
+-    Mockito.verify(response).setStatus(HttpServletResponse.SC_OK);
+-    pwriter.close();
+-    Assert.assertTrue(writer.toString().contains("long"));
+-    HttpFSServerWebApp.get().get(DelegationTokenManager.class).verifyToken(dToken);
+-  }
+-
+-  @Test
+-  @TestDir
+-  public void testAuthenticate() throws Exception {
+-    String dir = TestDirHelper.getTestDir().getAbsolutePath();
+-
+-    Configuration httpfsConf = new Configuration(false);
+-    HttpFSServerWebApp server =
+-      new HttpFSServerWebApp(dir, dir, dir, dir, httpfsConf);
+-    server.setAuthority(new InetSocketAddress(InetAddress.getLocalHost(),
+-                                              14000));
+-    AuthenticationHandler handler =
+-      new HttpFSKerberosAuthenticationHandlerForTesting();
+-    try {
+-      server.init();
+-      handler.init(null);
+-
+-      testValidDelegationToken(handler);
+-      testInvalidDelegationToken(handler);
+-    } finally {
+-      if (handler != null) {
+-        handler.destroy();
+-      }
+-    server.destroy();
+-    }
+-  }
+-
+-  private void testValidDelegationToken(AuthenticationHandler handler)
+-    throws Exception {
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-    Token<DelegationTokenIdentifier> dToken =
+-      HttpFSServerWebApp.get().get(DelegationTokenManager.class).createToken(
+-        UserGroupInformation.getCurrentUser(), "user");
+-    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.DELEGATION_PARAM)).
+-      thenReturn(dToken.encodeToUrlString());
+-
+-    AuthenticationToken token = handler.authenticate(request, response);
+-    Assert.assertEquals(UserGroupInformation.getCurrentUser().getShortUserName(),
+-                        token.getUserName());
+-    Assert.assertEquals(0, token.getExpires());
+-    Assert.assertEquals(HttpFSKerberosAuthenticationHandler.TYPE,
+-                        token.getType());
+-    Assert.assertTrue(token.isExpired());
+-  }
+-
+-  private void testInvalidDelegationToken(AuthenticationHandler handler)
+-    throws Exception {
+-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-    Mockito.when(request.getParameter(HttpFSKerberosAuthenticator.DELEGATION_PARAM)).
+-      thenReturn("invalid");
+-
+-    try {
+-      handler.authenticate(request, response);
+-      Assert.fail();
+-    } catch (AuthenticationException ex) {
+-      //NOP
+-    } catch (Exception ex) {
+-      Assert.fail();
+-    }
+-  }
+-
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/lib/service/security/TestDelegationTokenManagerService.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/lib/service/security/TestDelegationTokenManagerService.java
+deleted file mode 100644
+index da588e0..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/lib/service/security/TestDelegationTokenManagerService.java
++++ /dev/null
+@@ -1,89 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.lib.service.security;
+-
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.fs.http.server.HttpFSServerWebApp;
+-import org.apache.hadoop.lib.server.Server;
+-import org.apache.hadoop.lib.service.DelegationTokenManager;
+-import org.apache.hadoop.lib.service.DelegationTokenManagerException;
+-import org.apache.hadoop.lib.service.hadoop.FileSystemAccessService;
+-import org.apache.hadoop.lib.service.instrumentation.InstrumentationService;
+-import org.apache.hadoop.lib.service.scheduler.SchedulerService;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.token.Token;
+-import org.apache.hadoop.test.HTestCase;
+-import org.apache.hadoop.test.TestDir;
+-import org.apache.hadoop.test.TestDirHelper;
+-import org.apache.hadoop.util.StringUtils;
+-import org.junit.Assert;
+-import org.junit.Test;
+-
+-import java.net.InetAddress;
+-import java.net.InetSocketAddress;
+-import java.util.Arrays;
+-
+-public class TestDelegationTokenManagerService extends HTestCase {
+-
+-  @Test
+-  @TestDir
+-  public void service() throws Exception {
+-    String dir = TestDirHelper.getTestDir().getAbsolutePath();
+-    Configuration conf = new Configuration(false);
+-    conf.set("httpfs.services", StringUtils.join(",",
+-      Arrays.asList(InstrumentationService.class.getName(),
+-          SchedulerService.class.getName(),
+-          FileSystemAccessService.class.getName(),
+-          DelegationTokenManagerService.class.getName())));
+-    Server server = new HttpFSServerWebApp(dir, dir, dir, dir, conf);
+-    server.init();
+-    DelegationTokenManager tm = server.get(DelegationTokenManager.class);
+-    Assert.assertNotNull(tm);
+-    server.destroy();
+-  }
+-
+-  @Test
+-  @TestDir
+-  @SuppressWarnings("unchecked")
+-  public void tokens() throws Exception {
+-    String dir = TestDirHelper.getTestDir().getAbsolutePath();
+-    Configuration conf = new Configuration(false);
+-    conf.set("server.services", StringUtils.join(",",
+-      Arrays.asList(DelegationTokenManagerService.class.getName())));
+-    HttpFSServerWebApp server = new HttpFSServerWebApp(dir, dir, dir, dir, conf);
+-    server.setAuthority(new InetSocketAddress(InetAddress.getLocalHost(), 14000));
+-    server.init();
+-    DelegationTokenManager tm = server.get(DelegationTokenManager.class);
+-    Token token = tm.createToken(UserGroupInformation.getCurrentUser(), "foo");
+-    Assert.assertNotNull(token);
+-    tm.verifyToken(token);
+-    Assert.assertTrue(tm.renewToken(token, "foo") > System.currentTimeMillis());
+-    tm.cancelToken(token, "foo");
+-    try {
+-      tm.verifyToken(token);
+-      Assert.fail();
+-    } catch (DelegationTokenManagerException ex) {
+-      //NOP
+-    } catch (Exception ex) {
+-      Assert.fail();
+-    }
+-    server.destroy();
+-  }
+-
+-}
+-- 
+1.7.9.5
+

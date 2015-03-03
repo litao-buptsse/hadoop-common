@@ -1,0 +1,60 @@
+From 080d56d6e05202bd423989c4414ca214e69291aa Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 11 Sep 2014 13:53:31 -0700
+Subject: [PATCH 342/813] HADOOP-11083. After refactoring of HTTP proxyuser to
+ common, doAs param is case sensitive. (tucu)
+
+(cherry picked from commit c656d7d6e53436bf082f76e5988e39d8e18ed64f)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../web/DelegationTokenAuthenticationFilter.java   |    3 ++-
+ .../delegation/web/TestWebDelegationToken.java     |   17 +++++++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java
+index 37474e9..64a5622 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticationFilter.java
+@@ -188,7 +188,8 @@ static String getDoAs(HttpServletRequest request) {
+         UTF8_CHARSET);
+     if (list != null) {
+       for (NameValuePair nv : list) {
+-        if (DelegationTokenAuthenticatedURL.DO_AS.equals(nv.getName())) {
++        if (DelegationTokenAuthenticatedURL.DO_AS.
++            equalsIgnoreCase(nv.getName())) {
+           return nv.getValue();
+         }
+       }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestWebDelegationToken.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestWebDelegationToken.java
+index 118abff..ce5e34a 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestWebDelegationToken.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/web/TestWebDelegationToken.java
+@@ -795,6 +795,23 @@ public void testProxyUser() throws Exception {
+       jetty.start();
+       final URL url = new URL(getJettyURL() + "/foo/bar");
+ 
++      // proxyuser using raw HTTP, verifying doAs is case insensitive
++      String strUrl = String.format("%s?user.name=%s&doas=%s",
++          url.toExternalForm(), FOO_USER, OK_USER);
++      HttpURLConnection conn =
++          (HttpURLConnection) new URL(strUrl).openConnection();
++      Assert.assertEquals(HttpURLConnection.HTTP_OK, conn.getResponseCode());
++      List<String> ret = IOUtils.readLines(conn.getInputStream());
++      Assert.assertEquals(1, ret.size());
++      Assert.assertEquals(OK_USER, ret.get(0));
++      strUrl = String.format("%s?user.name=%s&DOAS=%s", url.toExternalForm(),
++          FOO_USER, OK_USER);
++      conn = (HttpURLConnection) new URL(strUrl).openConnection();
++      Assert.assertEquals(HttpURLConnection.HTTP_OK, conn.getResponseCode());
++      ret = IOUtils.readLines(conn.getInputStream());
++      Assert.assertEquals(1, ret.size());
++      Assert.assertEquals(OK_USER, ret.get(0));
++
+       UserGroupInformation ugi = UserGroupInformation.createRemoteUser(FOO_USER);
+       ugi.doAs(new PrivilegedExceptionAction<Void>() {
+         @Override
+-- 
+1.7.9.5
+

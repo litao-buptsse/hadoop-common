@@ -1,0 +1,108 @@
+From fb7541ec45594ac5979367f3f2298752f1cbb3ac Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 18 Sep 2014 20:13:16 +0000
+Subject: [PATCH 479/813] YARN-2363. Submitted applications occasionally lack
+ a tracking URL. Contributed by Jason Lowe (cherry
+ picked from commit
+ 9ea7b6c063c0bdd4551962e21d0173f671e9df03) (cherry
+ picked from commit
+ 44c22c3d8d9966e72e5f350c933c5d3ea9eb9465)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+---
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |   19 +++++++++++++++++++
+ .../rmapp/TestRMAppTransitions.java                |    6 ++++--
+ 2 files changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 708be5e..6ecd403 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -19,6 +19,8 @@
+ package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
+ 
+ import java.io.IOException;
++import java.net.URI;
++import java.net.URISyntaxException;
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.EnumSet;
+@@ -78,12 +80,14 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAddedSchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppRemovedSchedulerEvent;
+ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
++import org.apache.hadoop.yarn.server.webproxy.ProxyUriUtils;
+ import org.apache.hadoop.yarn.state.InvalidStateTransitonException;
+ import org.apache.hadoop.yarn.state.MultipleArcTransition;
+ import org.apache.hadoop.yarn.state.SingleArcTransition;
+ import org.apache.hadoop.yarn.state.StateMachine;
+ import org.apache.hadoop.yarn.state.StateMachineFactory;
+ import org.apache.hadoop.yarn.util.resource.Resources;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ 
+ @SuppressWarnings({ "rawtypes", "unchecked" })
+ public class RMAppImpl implements RMApp, Recoverable {
+@@ -536,6 +540,7 @@ public ApplicationReport createAndGetApplicationReport(String clientUserName,
+       float progress = 0.0f;
+       org.apache.hadoop.yarn.api.records.Token amrmToken = null;
+       if (allowAccess) {
++        trackingUrl = getDefaultProxyTrackingUrl();
+         if (this.currentAttempt != null) {
+           currentApplicationAttemptId = this.currentAttempt.getAppAttemptId();
+           trackingUrl = this.currentAttempt.getTrackingUrl();
+@@ -592,6 +597,20 @@ public ApplicationReport createAndGetApplicationReport(String clientUserName,
+     }
+   }
+ 
++  private String getDefaultProxyTrackingUrl() {
++    try {
++      final String scheme = WebAppUtils.getHttpSchemePrefix(conf);
++      String proxy = WebAppUtils.getProxyHostAndPort(conf);
++      URI proxyUri = ProxyUriUtils.getUriFromAMUrl(scheme, proxy);
++      URI result = ProxyUriUtils.getProxyUri(null, proxyUri, applicationId);
++      return result.toASCIIString();
++    } catch (URISyntaxException e) {
++      LOG.warn("Could not generate default proxy tracking URL for "
++          + applicationId);
++      return UNAVAILABLE;
++    }
++  }
++
+   @Override
+   public long getFinishTime() {
+     this.readLock.lock();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+index 0ec9826..3c55fe1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+@@ -29,8 +29,6 @@
+ import java.util.Collection;
+ import java.util.Map;
+ 
+-import org.junit.Assert;
+-
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+@@ -72,6 +70,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
++import org.junit.Assert;
+ import org.junit.Before;
+ import org.junit.Rule;
+ import org.junit.Test;
+@@ -969,6 +968,9 @@ public void testGetAppReport() {
+     Assert.assertEquals(report.getApplicationResourceUsageReport(),RMServerUtils.DUMMY_APPLICATION_RESOURCE_USAGE_REPORT);
+     report = app.createAndGetApplicationReport("clientuser", true);
+     Assert.assertNotNull(report.getApplicationResourceUsageReport());
++    Assert.assertTrue("bad proxy url for app",
++        report.getTrackingUrl().endsWith("/proxy/" + app.getApplicationId()
++            + "/"));
+   }
+ 
+   private void verifyApplicationFinished(RMAppState state) {
+-- 
+1.7.9.5
+

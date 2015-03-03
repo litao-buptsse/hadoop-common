@@ -1,0 +1,137 @@
+From c9189945e0a9400aa4827f2fc1b201397f069365 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 25 Sep 2014 22:39:57 +0000
+Subject: [PATCH 693/813] YARN-2523. ResourceManager UI showing negative value
+ for "Decommissioned Nodes" field. Contributed by
+ Rohith (cherry picked from commit
+ 8269bfa613999f71767de3c0369817b58cfe1416)
+
+(cherry picked from commit e4d46e5ff609858e7c76b0eda7fab3882092396d)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceTrackerService.java
+---
+ .../server/resourcemanager/NodesListManager.java   |    1 -
+ .../server/resourcemanager/rmnode/RMNodeImpl.java  |   13 ----------
+ .../yarn/server/resourcemanager/TestRMRestart.java |    2 ++
+ .../TestResourceTrackerService.java                |   25 ++++++++++++++++++--
+ 4 files changed, 25 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/NodesListManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/NodesListManager.java
+index 6310a0f..786bf8c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/NodesListManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/NodesListManager.java
+@@ -124,7 +124,6 @@ public void refreshNodes(Configuration yarnConf) throws IOException,
+                   this.conf, includesFile), excludesFile.isEmpty() ? null
+               : this.rmContext.getConfigurationProvider()
+                   .getConfigurationInputStream(this.conf, excludesFile));
+-      setDecomissionedNMsMetrics();
+       printConfiguredHosts();
+     }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmnode/RMNodeImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmnode/RMNodeImpl.java
+index 851d31f..c960b50 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmnode/RMNodeImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmnode/RMNodeImpl.java
+@@ -463,22 +463,9 @@ private void updateMetricsForDeactivatedNode(NodeState initialState,
+         break;
+     }
+ 
+-    // Decomissioned NMs equals to the nodes missing in include list (if
+-    // include list not empty) or the nodes listed in excluded list.
+-    // DecomissionedNMs as per exclude list is set upfront when the
+-    // exclude list is read so that RM restart can also reflect the
+-    // decomissionedNMs. Note that RM is still not able to know decomissionedNMs
+-    // as per include list after it restarts as they are known when those nodes
+-    // come for registration.
+-    // DecomissionedNMs as per include list is incremented in this transition.
+     switch (finalState) {
+     case DECOMMISSIONED:
+-      Set<String> ecludedHosts =
+-          context.getNodesListManager().getHostsReader().getExcludedHosts();
+-      if (!ecludedHosts.contains(hostName)
+-          && !ecludedHosts.contains(NetUtils.normalizeHostName(hostName))) {
+         metrics.incrDecommisionedNMs();
+-      }
+       break;
+     case LOST:
+       metrics.incrNumLostNMs();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index d2018a3..94a8068 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -78,6 +78,8 @@
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.event.Dispatcher;
++import org.apache.hadoop.yarn.event.DrainDispatcher;
+ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceTrackerService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceTrackerService.java
+index e7027b2..db48954 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceTrackerService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestResourceTrackerService.java
+@@ -157,18 +157,27 @@ public void testDecommissionWithExcludeHosts() throws Exception {
+         .getAbsolutePath());
+ 
+     writeToHostsFile("");
+-    rm = new MockRM(conf);
++    final DrainDispatcher dispatcher = new DrainDispatcher();
++    rm = new MockRM(conf) {
++      @Override
++      protected Dispatcher createDispatcher() {
++        return dispatcher;
++      }
++    };
+     rm.start();
+ 
+     MockNM nm1 = rm.registerNode("host1:1234", 5120);
+     MockNM nm2 = rm.registerNode("host2:5678", 10240);
+     MockNM nm3 = rm.registerNode("localhost:4433", 1024);
+ 
++    dispatcher.await();
++
+     int metricCount = ClusterMetrics.getMetrics().getNumDecommisionedNMs();
+     NodeHeartbeatResponse nodeHeartbeat = nm1.nodeHeartbeat(true);
+     Assert.assertTrue(NodeAction.NORMAL.equals(nodeHeartbeat.getNodeAction()));
+     nodeHeartbeat = nm2.nodeHeartbeat(true);
+     Assert.assertTrue(NodeAction.NORMAL.equals(nodeHeartbeat.getNodeAction()));
++    dispatcher.await();
+ 
+     // To test that IPs also work
+     String ip = NetUtils.normalizeHostName("localhost");
+@@ -176,7 +185,6 @@ public void testDecommissionWithExcludeHosts() throws Exception {
+ 
+     rm.getNodesListManager().refreshNodes(conf);
+ 
+-    checkDecommissionedNMCount(rm, metricCount + 2);
+ 
+     nodeHeartbeat = nm1.nodeHeartbeat(true);
+     Assert.assertTrue(NodeAction.NORMAL.equals(nodeHeartbeat.getNodeAction()));
+@@ -187,6 +195,19 @@ public void testDecommissionWithExcludeHosts() throws Exception {
+     nodeHeartbeat = nm3.nodeHeartbeat(true);
+     Assert.assertTrue("The decommisioned metrics are not updated",
+         NodeAction.SHUTDOWN.equals(nodeHeartbeat.getNodeAction()));
++    dispatcher.await();
++    checkDecommissionedNMCount(rm, metricCount + 2);
++    writeToHostsFile("");
++    rm.getNodesListManager().refreshNodes(conf);
++
++    nm3 = rm.registerNode("localhost:4433", 1024);
++    dispatcher.await();
++    nodeHeartbeat = nm3.nodeHeartbeat(true);
++    dispatcher.await();
++    Assert.assertTrue(NodeAction.NORMAL.equals(nodeHeartbeat.getNodeAction()));
++    // decommissined node is 1 since 1 node is rejoined after updating exclude
++    // file
++    checkDecommissionedNMCount(rm, metricCount + 1);
+   }
+ 
+   /**
+-- 
+1.7.9.5
+

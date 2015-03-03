@@ -1,0 +1,100 @@
+From 311fc317d9dfe0419f548cd6b0b177c2b284050b Mon Sep 17 00:00:00 2001
+From: Todd Lipcon <todd@apache.org>
+Date: Wed, 23 Jul 2014 00:28:57 +0000
+Subject: [PATCH 306/813] HADOOP-10855. Allow Text to be read with a known
+ Length. Contributed by Todd Lipcon.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1612731 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d6172be8d3a11d5137a40212a1253ea868ce246d)
+---
+ .../src/main/java/org/apache/hadoop/io/Text.java   |   19 +++++++++++------
+ .../test/java/org/apache/hadoop/io/TestText.java   |   22 ++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/Text.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/Text.java
+index e4490f1..3dc5076 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/Text.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/Text.java
+@@ -288,9 +288,7 @@ public String toString() {
+   @Override
+   public void readFields(DataInput in) throws IOException {
+     int newLength = WritableUtils.readVInt(in);
+-    setCapacity(newLength, false);
+-    in.readFully(bytes, 0, newLength);
+-    length = newLength;
++    readWithKnownLength(in, newLength);
+   }
+   
+   public void readFields(DataInput in, int maxLength) throws IOException {
+@@ -302,9 +300,7 @@ public void readFields(DataInput in, int maxLength) throws IOException {
+       throw new IOException("tried to deserialize " + newLength +
+           " bytes of data, but maxLength = " + maxLength);
+     }
+-    setCapacity(newLength, false);
+-    in.readFully(bytes, 0, newLength);
+-    length = newLength;
++    readWithKnownLength(in, newLength);
+   }
+ 
+   /** Skips over one Text in the input. */
+@@ -313,6 +309,17 @@ public static void skip(DataInput in) throws IOException {
+     WritableUtils.skipFully(in, length);
+   }
+ 
++  /**
++   * Read a Text object whose length is already known.
++   * This allows creating Text from a stream which uses a different serialization
++   * format.
++   */
++  public void readWithKnownLength(DataInput in, int len) throws IOException {
++    setCapacity(len, false);
++    in.readFully(bytes, 0, len);
++    length = len;
++  }
++
+   /** serialize
+    * write this object to out
+    * length uses zero-compressed encoding
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java
+index 4b04931..56b199a 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java
+@@ -24,6 +24,7 @@
+ import java.nio.ByteBuffer;
+ import java.nio.charset.CharacterCodingException;
+ import java.util.Random;
++import com.google.common.base.Charsets;
+ import com.google.common.primitives.Bytes;
+ 
+ /** Unit tests for LargeUTF8. */
+@@ -363,6 +364,27 @@ public void testReadWriteOperations() {
+       fail("testReadWriteOperations error !!!");
+     }        
+   }
++
++  public void testReadWithKnownLength() throws IOException {
++    String line = "hello world";
++    byte[] inputBytes = line.getBytes(Charsets.UTF_8);
++    DataInputBuffer in = new DataInputBuffer();
++    Text text = new Text();
++
++    in.reset(inputBytes, inputBytes.length);
++    text.readWithKnownLength(in, 5);
++    assertEquals("hello", text.toString());
++
++    // Read longer length, make sure it lengthens
++    in.reset(inputBytes, inputBytes.length);
++    text.readWithKnownLength(in, 7);
++    assertEquals("hello w", text.toString());
++
++    // Read shorter length, make sure it shortens
++    in.reset(inputBytes, inputBytes.length);
++    text.readWithKnownLength(in, 2);
++    assertEquals("he", text.toString());
++  }
+   
+   /**
+    * test {@code Text.bytesToCodePoint(bytes) } 
+-- 
+1.7.9.5
+

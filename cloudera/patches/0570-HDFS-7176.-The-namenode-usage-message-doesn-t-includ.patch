@@ -1,0 +1,28 @@
+From 0a7f6e9eb31b80d29e6a153b0e6083366ced6e01 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Wed, 1 Oct 2014 14:53:44 -0700
+Subject: [PATCH 570/813] HDFS-7176. The namenode usage message doesn't
+ include "-rollingupgrade started" (cmccabe)
+
+(cherry picked from commit dd1b8f2ed8a86871517c730a9f370aca4b763514)
+---
+ .../hadoop/hdfs/server/namenode/NameNode.java      |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index 2211556..6934a45 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -212,7 +212,8 @@
+       + StartupOption.ROLLBACK.getName() + "] | \n\t["
+       + StartupOption.ROLLINGUPGRADE.getName() + " <"
+       + RollingUpgradeStartupOption.DOWNGRADE.name().toLowerCase() + "|"
+-      + RollingUpgradeStartupOption.ROLLBACK.name().toLowerCase() + "> ] | \n\t["
++      + RollingUpgradeStartupOption.ROLLBACK.name().toLowerCase() + "|"
++      + RollingUpgradeStartupOption.STARTED.name().toLowerCase() + "> ] | \n\t["
+       + StartupOption.FINALIZE.getName() + "] | \n\t["
+       + StartupOption.IMPORT.getName() + "] | \n\t["
+       + StartupOption.INITIALIZESHAREDEDITS.getName() + "] | \n\t["
+-- 
+1.7.9.5
+

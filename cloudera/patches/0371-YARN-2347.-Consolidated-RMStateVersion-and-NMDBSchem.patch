@@ -1,0 +1,1262 @@
+From bb3ee9499335e936fef125904fdf43eab45ca876 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Thu, 31 Jul 2014 09:31:22 +0000
+Subject: [PATCH 371/813] YARN-2347. Consolidated RMStateVersion and
+ NMDBSchemaVersion into Version in
+ yarn-server-common. Contributed by Junping Du. svn
+ merge --ignore-ancestry -c 1614838 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1614839 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 170ef7657aca92f71cdfd9190bab0a30c575e1e8)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../org/apache/hadoop/mapred/ShuffleHandler.java   |   28 +++----
+ .../apache/hadoop/mapred/TestShuffleHandler.java   |    8 +-
+ ...arn_server_resourcemanager_service_protos.proto |    5 --
+ .../apache/hadoop/yarn/server/records/Version.java |   84 ++++++++++++++++++++
+ .../yarn/server/records/impl/pb/VersionPBImpl.java |   77 ++++++++++++++++++
+ .../src/main/proto/yarn_server_common_protos.proto |    8 +-
+ .../recovery/NMLeveldbStateStoreService.java       |   28 +++----
+ .../recovery/records/NMDBSchemaVersion.java        |   80 -------------------
+ .../records/impl/pb/NMDBSchemaVersionPBImpl.java   |   81 -------------------
+ .../proto/yarn_server_nodemanager_recovery.proto   |    5 --
+ .../recovery/TestNMLeveldbStateStoreService.java   |   12 +--
+ .../recovery/FileSystemRMStateStore.java           |   18 ++---
+ .../recovery/MemoryRMStateStore.java               |    6 +-
+ .../resourcemanager/recovery/NullRMStateStore.java |    6 +-
+ .../resourcemanager/recovery/RMStateStore.java     |   10 +--
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   18 ++---
+ .../recovery/records/RMStateVersion.java           |   80 -------------------
+ .../records/impl/pb/RMStateVersionPBImpl.java      |   76 ------------------
+ .../recovery/RMStateStoreTestBase.java             |   16 ++--
+ .../recovery/TestFSRMStateStore.java               |   12 +--
+ .../recovery/TestZKRMStateStore.java               |   12 +--
+ 21 files changed, 255 insertions(+), 415 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/Version.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/impl/pb/VersionPBImpl.java
+ delete mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/NMDBSchemaVersion.java
+ delete mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/impl/pb/NMDBSchemaVersionPBImpl.java
+ delete mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/RMStateVersion.java
+ delete mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/RMStateVersionPBImpl.java
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/main/java/org/apache/hadoop/mapred/ShuffleHandler.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/main/java/org/apache/hadoop/mapred/ShuffleHandler.java
+index 1d781be..33220c6 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/main/java/org/apache/hadoop/mapred/ShuffleHandler.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/main/java/org/apache/hadoop/mapred/ShuffleHandler.java
+@@ -82,13 +82,13 @@
+ import org.apache.hadoop.util.Shell;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+-import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.NMDBSchemaVersionProto;
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
+ import org.apache.hadoop.yarn.server.api.ApplicationInitializationContext;
+ import org.apache.hadoop.yarn.server.api.ApplicationTerminationContext;
+ import org.apache.hadoop.yarn.server.api.AuxiliaryService;
+ import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.NMDBSchemaVersion;
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.impl.pb.NMDBSchemaVersionPBImpl;
++import org.apache.hadoop.yarn.server.records.Version;
++import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+ import org.apache.hadoop.yarn.server.utils.LeveldbIterator;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.fusesource.leveldbjni.JniDBFactory;
+@@ -151,8 +151,8 @@
+ 
+   private static final String STATE_DB_NAME = "mapreduce_shuffle_state";
+   private static final String STATE_DB_SCHEMA_VERSION_KEY = "shuffle-schema-version";
+-  protected static final NMDBSchemaVersion CURRENT_VERSION_INFO = 
+-      NMDBSchemaVersion.newInstance(1, 0);
++  protected static final Version CURRENT_VERSION_INFO = 
++      Version.newInstance(1, 0);
+ 
+   private int port;
+   private ChannelFactory selector;
+@@ -491,21 +491,21 @@ private void startStore(Path recoveryRoot) throws IOException {
+   }
+   
+   @VisibleForTesting
+-  NMDBSchemaVersion loadVersion() throws IOException {
++  Version loadVersion() throws IOException {
+     byte[] data = stateDb.get(bytes(STATE_DB_SCHEMA_VERSION_KEY));
+     // if version is not stored previously, treat it as 1.0.
+     if (data == null || data.length == 0) {
+-      return NMDBSchemaVersion.newInstance(1, 0);
++      return Version.newInstance(1, 0);
+     }
+-    NMDBSchemaVersion version =
+-        new NMDBSchemaVersionPBImpl(NMDBSchemaVersionProto.parseFrom(data));
++    Version version =
++        new VersionPBImpl(VersionProto.parseFrom(data));
+     return version;
+   }
+ 
+-  private void storeSchemaVersion(NMDBSchemaVersion version) throws IOException {
++  private void storeSchemaVersion(Version version) throws IOException {
+     String key = STATE_DB_SCHEMA_VERSION_KEY;
+     byte[] data = 
+-        ((NMDBSchemaVersionPBImpl) version).getProto().toByteArray();
++        ((VersionPBImpl) version).getProto().toByteArray();
+     try {
+       stateDb.put(bytes(key), data);
+     } catch (DBException e) {
+@@ -519,11 +519,11 @@ private void storeVersion() throws IOException {
+   
+   // Only used for test
+   @VisibleForTesting
+-  void storeVersion(NMDBSchemaVersion version) throws IOException {
++  void storeVersion(Version version) throws IOException {
+     storeSchemaVersion(version);
+   }
+ 
+-  protected NMDBSchemaVersion getCurrentVersion() {
++  protected Version getCurrentVersion() {
+     return CURRENT_VERSION_INFO;
+   }
+   
+@@ -538,7 +538,7 @@ protected NMDBSchemaVersion getCurrentVersion() {
+    *    upgrade shuffle info or remove incompatible old state.
+    */
+   private void checkVersion() throws IOException {
+-    NMDBSchemaVersion loadedVersion = loadVersion();
++    Version loadedVersion = loadVersion();
+     LOG.info("Loaded state DB schema version info " + loadedVersion);
+     if (loadedVersion.equals(getCurrentVersion())) {
+       return;
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/test/java/org/apache/hadoop/mapred/TestShuffleHandler.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/test/java/org/apache/hadoop/mapred/TestShuffleHandler.java
+index 8f142ff..1a0688f 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/test/java/org/apache/hadoop/mapred/TestShuffleHandler.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-shuffle/src/test/java/org/apache/hadoop/mapred/TestShuffleHandler.java
+@@ -75,7 +75,7 @@
+ import org.apache.hadoop.yarn.server.api.ApplicationInitializationContext;
+ import org.apache.hadoop.yarn.server.api.ApplicationTerminationContext;
+ import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.NMDBSchemaVersion;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.jboss.netty.channel.Channel;
+ import org.jboss.netty.channel.ChannelFuture;
+ import org.jboss.netty.channel.ChannelHandlerContext;
+@@ -764,11 +764,11 @@ public void testRecoveryFromOtherVersions() throws IOException {
+       // verify we are still authorized to shuffle to the old application
+       rc = getShuffleResponseCode(shuffle, jt);
+       Assert.assertEquals(HttpURLConnection.HTTP_OK, rc);
+-      NMDBSchemaVersion version = NMDBSchemaVersion.newInstance(1, 0);
++      Version version = Version.newInstance(1, 0);
+       Assert.assertEquals(version, shuffle.getCurrentVersion());
+     
+       // emulate shuffle handler restart with compatible version
+-      NMDBSchemaVersion version11 = NMDBSchemaVersion.newInstance(1, 1);
++      Version version11 = Version.newInstance(1, 1);
+       // update version info before close shuffle
+       shuffle.storeVersion(version11);
+       Assert.assertEquals(version11, shuffle.loadVersion());
+@@ -785,7 +785,7 @@ public void testRecoveryFromOtherVersions() throws IOException {
+       Assert.assertEquals(HttpURLConnection.HTTP_OK, rc);
+     
+       // emulate shuffle handler restart with incompatible version
+-      NMDBSchemaVersion version21 = NMDBSchemaVersion.newInstance(2, 1);
++      Version version21 = Version.newInstance(2, 1);
+       shuffle.storeVersion(version21);
+       Assert.assertEquals(version21, shuffle.loadVersion());
+       shuffle.close();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto
+index 2eb6148..08c937f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/server/yarn_server_resourcemanager_service_protos.proto
+@@ -130,11 +130,6 @@ message ApplicationAttemptStateDataProto {
+   optional int32 am_container_exit_status = 9 [default = -1000];
+ }
+ 
+-message RMStateVersionProto {
+-  optional int32 major_version = 1;
+-  optional int32 minor_version = 2;
+-}
+-
+ message EpochProto {
+   optional int64 epoch = 1;
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/Version.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/Version.java
+new file mode 100644
+index 0000000..66042ea
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/Version.java
+@@ -0,0 +1,84 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.records;
++
++import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
++import org.apache.hadoop.yarn.util.Records;
++
++/**
++ * The version information for state get stored in YARN components,
++ * i.e. RMState, NMState, etc., which include: majorVersion and 
++ * minorVersion.
++ * The major version update means incompatible changes happen while
++ * minor version update indicates compatible changes.
++ */
++@LimitedPrivate({"YARN", "MapReduce"})
++@Unstable
++public abstract class Version {
++
++  public static Version newInstance(int majorVersion, int minorVersion) {
++    Version version = Records.newRecord(Version.class);
++    version.setMajorVersion(majorVersion);
++    version.setMinorVersion(minorVersion);
++    return version;
++  }
++
++  public abstract int getMajorVersion();
++
++  public abstract void setMajorVersion(int majorVersion);
++
++  public abstract int getMinorVersion();
++
++  public abstract void setMinorVersion(int minorVersion);
++
++  public String toString() {
++    return getMajorVersion() + "." + getMinorVersion();
++  }
++
++  public boolean isCompatibleTo(Version version) {
++    return getMajorVersion() == version.getMajorVersion();
++  }
++
++  @Override
++  public int hashCode() {
++    final int prime = 31;
++    int result = 1;
++    result = prime * result + getMajorVersion();
++    result = prime * result + getMinorVersion();
++    return result;
++  }
++
++  @Override
++  public boolean equals(Object obj) {
++    if (this == obj)
++      return true;
++    if (obj == null)
++      return false;
++    if (getClass() != obj.getClass())
++      return false;
++    Version other = (Version) obj;
++    if (this.getMajorVersion() == other.getMajorVersion()
++        && this.getMinorVersion() == other.getMinorVersion()) {
++      return true;
++    } else {
++      return false;
++    }
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/impl/pb/VersionPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/impl/pb/VersionPBImpl.java
+new file mode 100644
+index 0000000..a99f22a
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/records/impl/pb/VersionPBImpl.java
+@@ -0,0 +1,77 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.records.impl.pb;
++
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProtoOrBuilder;
++
++import org.apache.hadoop.yarn.server.records.Version;
++
++public class VersionPBImpl extends Version {
++
++  VersionProto proto = VersionProto.getDefaultInstance();
++  VersionProto.Builder builder = null;
++  boolean viaProto = false;
++
++  public VersionPBImpl() {
++    builder = VersionProto.newBuilder();
++  }
++
++  public VersionPBImpl(VersionProto proto) {
++    this.proto = proto;
++    viaProto = true;
++  }
++
++  public VersionProto getProto() {
++    proto = viaProto ? proto : builder.build();
++    viaProto = true;
++    return proto;
++  }
++
++  private void maybeInitBuilder() {
++    if (viaProto || builder == null) {
++      builder = VersionProto.newBuilder(proto);
++    }
++    viaProto = false;
++  }
++
++  @Override
++  public int getMajorVersion() {
++    VersionProtoOrBuilder p = viaProto ? proto : builder;
++    return p.getMajorVersion();
++  }
++
++  @Override
++  public void setMajorVersion(int major) {
++    maybeInitBuilder();
++    builder.setMajorVersion(major);
++  }
++
++  @Override
++  public int getMinorVersion() {
++    VersionProtoOrBuilder p = viaProto ? proto : builder;
++    return p.getMinorVersion();
++  }
++
++  @Override
++  public void setMinorVersion(int minor) {
++    maybeInitBuilder();
++    builder.setMinorVersion(minor);
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/proto/yarn_server_common_protos.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/proto/yarn_server_common_protos.proto
+index 4f5d168..01fac32 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/proto/yarn_server_common_protos.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/proto/yarn_server_common_protos.proto
+@@ -47,4 +47,10 @@ message NodeHealthStatusProto {
+   optional bool is_node_healthy = 1;
+   optional string health_report = 2;
+   optional int64 last_health_report_time = 3;
+-}
+\ No newline at end of file
++}
++
++message VersionProto {
++  optional int32 major_version = 1;
++  optional int32 minor_version = 2;
++}
++
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java
+index 008da7a..cc7656c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/NMLeveldbStateStoreService.java
+@@ -41,13 +41,13 @@
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
+ import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.MasterKeyProto;
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
+ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
+-import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.NMDBSchemaVersionProto;
+ import org.apache.hadoop.yarn.server.api.records.MasterKey;
+ import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.NMDBSchemaVersion;
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.impl.pb.NMDBSchemaVersionPBImpl;
++import org.apache.hadoop.yarn.server.records.Version;
++import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+ import org.apache.hadoop.yarn.server.utils.LeveldbIterator;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.fusesource.leveldbjni.JniDBFactory;
+@@ -68,7 +68,7 @@
+   private static final String DB_NAME = "yarn-nm-state";
+   private static final String DB_SCHEMA_VERSION_KEY = "nm-schema-version";
+   
+-  private static final NMDBSchemaVersion CURRENT_VERSION_INFO = NMDBSchemaVersion
++  private static final Version CURRENT_VERSION_INFO = Version
+       .newInstance(1, 0);
+ 
+   private static final String DELETION_TASK_KEY_PREFIX =
+@@ -617,14 +617,14 @@ public void log(String message) {
+   }
+ 
+ 
+-  NMDBSchemaVersion loadVersion() throws IOException {
++  Version loadVersion() throws IOException {
+     byte[] data = db.get(bytes(DB_SCHEMA_VERSION_KEY));
+     // if version is not stored previously, treat it as 1.0.
+     if (data == null || data.length == 0) {
+-      return NMDBSchemaVersion.newInstance(1, 0);
++      return Version.newInstance(1, 0);
+     }
+-    NMDBSchemaVersion version =
+-        new NMDBSchemaVersionPBImpl(NMDBSchemaVersionProto.parseFrom(data));
++    Version version =
++        new VersionPBImpl(VersionProto.parseFrom(data));
+     return version;
+   }
+ 
+@@ -634,14 +634,14 @@ private void storeVersion() throws IOException {
+   
+   // Only used for test
+   @VisibleForTesting
+-  void storeVersion(NMDBSchemaVersion state) throws IOException {
++  void storeVersion(Version state) throws IOException {
+     dbStoreVersion(state);
+   }
+   
+-  private void dbStoreVersion(NMDBSchemaVersion state) throws IOException {
++  private void dbStoreVersion(Version state) throws IOException {
+     String key = DB_SCHEMA_VERSION_KEY;
+     byte[] data = 
+-        ((NMDBSchemaVersionPBImpl) state).getProto().toByteArray();
++        ((VersionPBImpl) state).getProto().toByteArray();
+     try {
+       db.put(bytes(key), data);
+     } catch (DBException e) {
+@@ -649,7 +649,7 @@ private void dbStoreVersion(NMDBSchemaVersion state) throws IOException {
+     }
+   }
+ 
+-  NMDBSchemaVersion getCurrentVersion() {
++  Version getCurrentVersion() {
+     return CURRENT_VERSION_INFO;
+   }
+   
+@@ -664,9 +664,9 @@ NMDBSchemaVersion getCurrentVersion() {
+    *    upgrade NM state or remove incompatible old state.
+    */
+   private void checkVersion() throws IOException {
+-    NMDBSchemaVersion loadedVersion = loadVersion();
++    Version loadedVersion = loadVersion();
+     LOG.info("Loaded NM state version info " + loadedVersion);
+-    if (loadedVersion != null && loadedVersion.equals(getCurrentVersion())) {
++    if (loadedVersion.equals(getCurrentVersion())) {
+       return;
+     }
+     if (loadedVersion.isCompatibleTo(getCurrentVersion())) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/NMDBSchemaVersion.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/NMDBSchemaVersion.java
+deleted file mode 100644
+index 1ee59ea..0000000
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/NMDBSchemaVersion.java
++++ /dev/null
+@@ -1,80 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.yarn.server.nodemanager.recovery.records;
+-
+-import org.apache.hadoop.classification.InterfaceAudience.Private;
+-import org.apache.hadoop.classification.InterfaceStability.Unstable;
+-import org.apache.hadoop.yarn.util.Records;
+-
+-/**
+- * The version information of DB Schema for NM.
+- */
+-@Private
+-@Unstable
+-public abstract class NMDBSchemaVersion {
+-
+-  public static NMDBSchemaVersion newInstance(int majorVersion, int minorVersion) {
+-    NMDBSchemaVersion version = Records.newRecord(NMDBSchemaVersion.class);
+-    version.setMajorVersion(majorVersion);
+-    version.setMinorVersion(minorVersion);
+-    return version;
+-  }
+-
+-  public abstract int getMajorVersion();
+-
+-  public abstract void setMajorVersion(int majorVersion);
+-
+-  public abstract int getMinorVersion();
+-
+-  public abstract void setMinorVersion(int minorVersion);
+-
+-  public String toString() {
+-    return getMajorVersion() + "." + getMinorVersion();
+-  }
+-
+-  public boolean isCompatibleTo(NMDBSchemaVersion version) {
+-    return getMajorVersion() == version.getMajorVersion();
+-  }
+-
+-  @Override
+-  public int hashCode() {
+-    final int prime = 31;
+-    int result = 1;
+-    result = prime * result + getMajorVersion();
+-    result = prime * result + getMinorVersion();
+-    return result;
+-  }
+-
+-  @Override
+-  public boolean equals(Object obj) {
+-    if (this == obj)
+-      return true;
+-    if (obj == null)
+-      return false;
+-    if (getClass() != obj.getClass())
+-      return false;
+-    NMDBSchemaVersion other = (NMDBSchemaVersion) obj;
+-    if (this.getMajorVersion() == other.getMajorVersion()
+-        && this.getMinorVersion() == other.getMinorVersion()) {
+-      return true;
+-    } else {
+-      return false;
+-    }
+-  }
+-
+-}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/impl/pb/NMDBSchemaVersionPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/impl/pb/NMDBSchemaVersionPBImpl.java
+deleted file mode 100644
+index f42c1be..0000000
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/recovery/records/impl/pb/NMDBSchemaVersionPBImpl.java
++++ /dev/null
+@@ -1,81 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.yarn.server.nodemanager.recovery.records.impl.pb;
+-
+-import org.apache.hadoop.classification.InterfaceAudience.Private;
+-import org.apache.hadoop.classification.InterfaceStability.Evolving;
+-import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.NMDBSchemaVersionProto;
+-import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.NMDBSchemaVersionProtoOrBuilder;
+-
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.NMDBSchemaVersion;
+-
+-@Private
+-@Evolving
+-public class NMDBSchemaVersionPBImpl extends NMDBSchemaVersion {
+-
+-  NMDBSchemaVersionProto proto = NMDBSchemaVersionProto.getDefaultInstance();
+-  NMDBSchemaVersionProto.Builder builder = null;
+-  boolean viaProto = false;
+-
+-  public NMDBSchemaVersionPBImpl() {
+-    builder = NMDBSchemaVersionProto.newBuilder();
+-  }
+-
+-  public NMDBSchemaVersionPBImpl(NMDBSchemaVersionProto proto) {
+-    this.proto = proto;
+-    viaProto = true;
+-  }
+-
+-  public NMDBSchemaVersionProto getProto() {
+-    proto = viaProto ? proto : builder.build();
+-    viaProto = true;
+-    return proto;
+-  }
+-
+-  private void maybeInitBuilder() {
+-    if (viaProto || builder == null) {
+-      builder = NMDBSchemaVersionProto.newBuilder(proto);
+-    }
+-    viaProto = false;
+-  }
+-  
+-  @Override
+-  public int getMajorVersion() {
+-    NMDBSchemaVersionProtoOrBuilder p = viaProto ? proto : builder;
+-    return p.getMajorVersion();
+-  }
+-
+-  @Override
+-  public void setMajorVersion(int majorVersion) {
+-    maybeInitBuilder();
+-    builder.setMajorVersion(majorVersion);
+-  }
+-
+-  @Override
+-  public int getMinorVersion() {
+-    NMDBSchemaVersionProtoOrBuilder p = viaProto ? proto : builder;
+-    return p.getMinorVersion();
+-  }
+-
+-  @Override
+-  public void setMinorVersion(int minorVersion) {
+-    maybeInitBuilder();
+-    builder.setMinorVersion(minorVersion);
+-  }
+-
+-}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/proto/yarn_server_nodemanager_recovery.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/proto/yarn_server_nodemanager_recovery.proto
+index a07e7ad..460c493 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/proto/yarn_server_nodemanager_recovery.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/proto/yarn_server_nodemanager_recovery.proto
+@@ -39,8 +39,3 @@ message LocalizedResourceProto {
+   optional int64 size = 3;
+ }
+ 
+-message NMDBSchemaVersionProto {
+-  optional int32 majorVersion = 1;
+-  optional int32 minorVersion = 2;
+-}
+-
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java
+index 833a062..294f424 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/recovery/TestNMLeveldbStateStoreService.java
+@@ -49,7 +49,7 @@
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredLocalizationState;
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredNMTokensState;
+ import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService.RecoveredUserResources;
+-import org.apache.hadoop.yarn.server.nodemanager.recovery.records.NMDBSchemaVersion;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.security.BaseContainerTokenSecretManager;
+ import org.apache.hadoop.yarn.server.security.BaseNMTokenSecretManager;
+ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
+@@ -114,12 +114,12 @@ public void testEmptyState() throws IOException {
+   @Test
+   public void testCheckVersion() throws IOException {
+     // default version
+-    NMDBSchemaVersion defaultVersion = stateStore.getCurrentVersion();
++    Version defaultVersion = stateStore.getCurrentVersion();
+     Assert.assertEquals(defaultVersion, stateStore.loadVersion());
+ 
+     // compatible version
+-    NMDBSchemaVersion compatibleVersion =
+-        NMDBSchemaVersion.newInstance(defaultVersion.getMajorVersion(),
++    Version compatibleVersion =
++        Version.newInstance(defaultVersion.getMajorVersion(),
+           defaultVersion.getMinorVersion() + 2);
+     stateStore.storeVersion(compatibleVersion);
+     Assert.assertEquals(compatibleVersion, stateStore.loadVersion());
+@@ -128,8 +128,8 @@ public void testCheckVersion() throws IOException {
+     Assert.assertEquals(defaultVersion, stateStore.loadVersion());
+ 
+     // incompatible version
+-    NMDBSchemaVersion incompatibleVersion =
+-      NMDBSchemaVersion.newInstance(defaultVersion.getMajorVersion() + 1,
++    Version incompatibleVersion =
++      Version.newInstance(defaultVersion.getMajorVersion() + 1,
+           defaultVersion.getMinorVersion());
+     stateStore.storeVersion(incompatibleVersion);
+     try {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+index 243c7a1..2f8a944 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+@@ -44,22 +44,22 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMStateVersionProto;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.records.Version;
++import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Epoch;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.AMRMTokenSecretManagerStatePBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationAttemptStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.RMStateVersionPBImpl;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+@@ -77,7 +77,7 @@
+   public static final Log LOG = LogFactory.getLog(FileSystemRMStateStore.class);
+ 
+   protected static final String ROOT_DIR_NAME = "FSRMStateRoot";
+-  protected static final RMStateVersion CURRENT_VERSION_INFO = RMStateVersion
++  protected static final Version CURRENT_VERSION_INFO = Version
+     .newInstance(1, 1);
+   protected static final String AMRMTOKEN_SECRET_MANAGER_NODE =
+       "AMRMTokenSecretManagerNode";
+@@ -130,18 +130,18 @@ protected synchronized void closeInternal() throws Exception {
+   }
+ 
+   @Override
+-  protected RMStateVersion getCurrentVersion() {
++  protected Version getCurrentVersion() {
+     return CURRENT_VERSION_INFO;
+   }
+ 
+   @Override
+-  protected synchronized RMStateVersion loadVersion() throws Exception {
++  protected synchronized Version loadVersion() throws Exception {
+     Path versionNodePath = getNodePath(rootDirPath, VERSION_NODE);
+     if (fs.exists(versionNodePath)) {
+       FileStatus status = fs.getFileStatus(versionNodePath);
+       byte[] data = readFile(versionNodePath, status.getLen());
+-      RMStateVersion version =
+-          new RMStateVersionPBImpl(RMStateVersionProto.parseFrom(data));
++      Version version =
++          new VersionPBImpl(VersionProto.parseFrom(data));
+       return version;
+     }
+     return null;
+@@ -151,7 +151,7 @@ protected synchronized RMStateVersion loadVersion() throws Exception {
+   protected synchronized void storeVersion() throws Exception {
+     Path versionNodePath = getNodePath(rootDirPath, VERSION_NODE);
+     byte[] data =
+-        ((RMStateVersionPBImpl) CURRENT_VERSION_INFO).getProto().toByteArray();
++        ((VersionPBImpl) CURRENT_VERSION_INFO).getProto().toByteArray();
+     if (fs.exists(versionNodePath)) {
+       updateFile(versionNodePath, data);
+     } else {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
+index 369f89a..f56517c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
+@@ -32,10 +32,10 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
+@@ -259,7 +259,7 @@ public synchronized void removeRMDTMasterKeyState(DelegationKey delegationKey)
+   }
+ 
+   @Override
+-  protected RMStateVersion loadVersion() throws Exception {
++  protected Version loadVersion() throws Exception {
+     return null;
+   }
+ 
+@@ -268,7 +268,7 @@ protected void storeVersion() throws Exception {
+   }
+ 
+   @Override
+-  protected RMStateVersion getCurrentVersion() {
++  protected Version getCurrentVersion() {
+     return null;
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
+index ea70871..e910c19 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
+@@ -25,10 +25,10 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ 
+ @Unstable
+ public class NullRMStateStore extends RMStateStore {
+@@ -123,7 +123,7 @@ public void checkVersion() throws Exception {
+   }
+ 
+   @Override
+-  protected RMStateVersion loadVersion() throws Exception {
++  protected Version loadVersion() throws Exception {
+     // Do nothing
+     return null;
+   }
+@@ -134,7 +134,7 @@ protected void storeVersion() throws Exception {
+   }
+ 
+   @Override
+-  protected RMStateVersion getCurrentVersion() {
++  protected Version getCurrentVersion() {
+     // Do nothing
+     return null;
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index e2c4e7e..da08d80 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -47,12 +47,12 @@
+ import org.apache.hadoop.yarn.event.EventHandler;
+ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppNewSavedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+@@ -493,14 +493,14 @@ protected void serviceStop() throws Exception {
+    *    upgrade RM state.
+    */
+   public void checkVersion() throws Exception {
+-    RMStateVersion loadedVersion = loadVersion();
++    Version loadedVersion = loadVersion();
+     LOG.info("Loaded RM state version info " + loadedVersion);
+     if (loadedVersion != null && loadedVersion.equals(getCurrentVersion())) {
+       return;
+     }
+     // if there is no version info, treat it as 1.0;
+     if (loadedVersion == null) {
+-      loadedVersion = RMStateVersion.newInstance(1, 0);
++      loadedVersion = Version.newInstance(1, 0);
+     }
+     if (loadedVersion.isCompatibleTo(getCurrentVersion())) {
+       LOG.info("Storing RM state version info " + getCurrentVersion());
+@@ -516,7 +516,7 @@ public void checkVersion() throws Exception {
+    * Derived class use this method to load the version information from state
+    * store.
+    */
+-  protected abstract RMStateVersion loadVersion() throws Exception;
++  protected abstract Version loadVersion() throws Exception;
+ 
+   /**
+    * Derived class use this method to store the version information.
+@@ -526,7 +526,7 @@ public void checkVersion() throws Exception {
+   /**
+    * Get the current version of the underlying state store.
+    */
+-  protected abstract RMStateVersion getCurrentVersion();
++  protected abstract Version getCurrentVersion();
+ 
+ 
+   /**
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 5644ad9..bb379c5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -44,23 +44,23 @@
+ import org.apache.hadoop.yarn.conf.HAUtil;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMStateVersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMZKUtils;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Epoch;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.AMRMTokenSecretManagerStatePBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationAttemptStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.RMStateVersionPBImpl;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.apache.zookeeper.CreateMode;
+ import org.apache.zookeeper.KeeperException;
+@@ -86,7 +86,7 @@
+   private final SecureRandom random = new SecureRandom();
+ 
+   protected static final String ROOT_ZNODE_NAME = "ZKRMStateRoot";
+-  protected static final RMStateVersion CURRENT_VERSION_INFO = RMStateVersion
++  protected static final Version CURRENT_VERSION_INFO = Version
+       .newInstance(1, 1);
+   private static final String RM_DELEGATION_TOKENS_ROOT_ZNODE_NAME =
+       "RMDelegationTokensRoot";
+@@ -377,7 +377,7 @@ protected synchronized void closeInternal() throws Exception {
+   }
+ 
+   @Override
+-  protected RMStateVersion getCurrentVersion() {
++  protected Version getCurrentVersion() {
+     return CURRENT_VERSION_INFO;
+   }
+ 
+@@ -385,7 +385,7 @@ protected RMStateVersion getCurrentVersion() {
+   protected synchronized void storeVersion() throws Exception {
+     String versionNodePath = getNodePath(zkRootNodePath, VERSION_NODE);
+     byte[] data =
+-        ((RMStateVersionPBImpl) CURRENT_VERSION_INFO).getProto().toByteArray();
++        ((VersionPBImpl) CURRENT_VERSION_INFO).getProto().toByteArray();
+     if (existsWithRetries(versionNodePath, true) != null) {
+       setDataWithRetries(versionNodePath, data, -1);
+     } else {
+@@ -394,13 +394,13 @@ protected synchronized void storeVersion() throws Exception {
+   }
+ 
+   @Override
+-  protected synchronized RMStateVersion loadVersion() throws Exception {
++  protected synchronized Version loadVersion() throws Exception {
+     String versionNodePath = getNodePath(zkRootNodePath, VERSION_NODE);
+ 
+     if (existsWithRetries(versionNodePath, true) != null) {
+       byte[] data = getDataWithRetries(versionNodePath, true);
+-      RMStateVersion version =
+-          new RMStateVersionPBImpl(RMStateVersionProto.parseFrom(data));
++      Version version =
++          new VersionPBImpl(VersionProto.parseFrom(data));
+       return version;
+     }
+     return null;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/RMStateVersion.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/RMStateVersion.java
+deleted file mode 100644
+index cfee512..0000000
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/RMStateVersion.java
++++ /dev/null
+@@ -1,80 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.yarn.server.resourcemanager.recovery.records;
+-
+-import org.apache.hadoop.classification.InterfaceAudience.Private;
+-import org.apache.hadoop.classification.InterfaceStability.Unstable;
+-import org.apache.hadoop.yarn.util.Records;
+-
+-/**
+- * The version information of RM state.
+- */
+-@Private
+-@Unstable
+-public abstract class RMStateVersion {
+-
+-  public static RMStateVersion newInstance(int majorVersion, int minorVersion) {
+-    RMStateVersion version = Records.newRecord(RMStateVersion.class);
+-    version.setMajorVersion(majorVersion);
+-    version.setMinorVersion(minorVersion);
+-    return version;
+-  }
+-
+-  public abstract int getMajorVersion();
+-
+-  public abstract void setMajorVersion(int majorVersion);
+-
+-  public abstract int getMinorVersion();
+-
+-  public abstract void setMinorVersion(int minorVersion);
+-
+-  public String toString() {
+-    return getMajorVersion() + "." + getMinorVersion();
+-  }
+-
+-  public boolean isCompatibleTo(RMStateVersion version) {
+-    return getMajorVersion() == version.getMajorVersion();
+-  }
+-
+-  @Override
+-  public int hashCode() {
+-    final int prime = 31;
+-    int result = 1;
+-    result = prime * result + getMajorVersion();
+-    result = prime * result + getMinorVersion();
+-    return result;
+-  }
+-
+-  @Override
+-  public boolean equals(Object obj) {
+-    if (this == obj)
+-      return true;
+-    if (obj == null)
+-      return false;
+-    if (getClass() != obj.getClass())
+-      return false;
+-    RMStateVersion other = (RMStateVersion) obj;
+-    if (this.getMajorVersion() == other.getMajorVersion()
+-        && this.getMinorVersion() == other.getMinorVersion()) {
+-      return true;
+-    } else {
+-      return false;
+-    }
+-  }
+-}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/RMStateVersionPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/RMStateVersionPBImpl.java
+deleted file mode 100644
+index f960413..0000000
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/RMStateVersionPBImpl.java
++++ /dev/null
+@@ -1,76 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb;
+-
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMStateVersionProto;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMStateVersionProtoOrBuilder;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+-
+-public class RMStateVersionPBImpl extends RMStateVersion {
+-
+-  RMStateVersionProto proto = RMStateVersionProto.getDefaultInstance();
+-  RMStateVersionProto.Builder builder = null;
+-  boolean viaProto = false;
+-
+-  public RMStateVersionPBImpl() {
+-    builder = RMStateVersionProto.newBuilder();
+-  }
+-
+-  public RMStateVersionPBImpl(RMStateVersionProto proto) {
+-    this.proto = proto;
+-    viaProto = true;
+-  }
+-
+-  public RMStateVersionProto getProto() {
+-    proto = viaProto ? proto : builder.build();
+-    viaProto = true;
+-    return proto;
+-  }
+-
+-  private void maybeInitBuilder() {
+-    if (viaProto || builder == null) {
+-      builder = RMStateVersionProto.newBuilder(proto);
+-    }
+-    viaProto = false;
+-  }
+-
+-  @Override
+-  public int getMajorVersion() {
+-    RMStateVersionProtoOrBuilder p = viaProto ? proto : builder;
+-    return p.getMajorVersion();
+-  }
+-
+-  @Override
+-  public void setMajorVersion(int major) {
+-    maybeInitBuilder();
+-    builder.setMajorVersion(major);
+-  }
+-
+-  @Override
+-  public int getMinorVersion() {
+-    RMStateVersionProtoOrBuilder p = viaProto ? proto : builder;
+-    return p.getMinorVersion();
+-  }
+-
+-  @Override
+-  public void setMinorVersion(int minor) {
+-    maybeInitBuilder();
+-    builder.setMinorVersion(minor);
+-  }
+-}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+index a61f23f..5d3e51a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+@@ -55,13 +55,13 @@
+ import org.apache.hadoop.yarn.event.EventHandler;
+ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.ApplicationAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.ApplicationState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMDTSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+@@ -111,8 +111,8 @@ public EventHandler getEventHandler() {
+   interface RMStateStoreHelper {
+     RMStateStore getRMStateStore() throws Exception;
+     boolean isFinalStateValid() throws Exception;
+-    void writeVersion(RMStateVersion version) throws Exception;
+-    RMStateVersion getCurrentVersion() throws Exception;
++    void writeVersion(Version version) throws Exception;
++    Version getCurrentVersion() throws Exception;
+     boolean appExists(RMApp app) throws Exception;
+   }
+ 
+@@ -477,13 +477,13 @@ public void testCheckVersion(RMStateStoreHelper stateStoreHelper)
+     store.setRMDispatcher(new TestDispatcher());
+ 
+     // default version
+-    RMStateVersion defaultVersion = stateStoreHelper.getCurrentVersion();
++    Version defaultVersion = stateStoreHelper.getCurrentVersion();
+     store.checkVersion();
+     Assert.assertEquals(defaultVersion, store.loadVersion());
+ 
+     // compatible version
+-    RMStateVersion compatibleVersion =
+-        RMStateVersion.newInstance(defaultVersion.getMajorVersion(),
++    Version compatibleVersion =
++        Version.newInstance(defaultVersion.getMajorVersion(),
+           defaultVersion.getMinorVersion() + 2);
+     stateStoreHelper.writeVersion(compatibleVersion);
+     Assert.assertEquals(compatibleVersion, store.loadVersion());
+@@ -492,8 +492,8 @@ public void testCheckVersion(RMStateStoreHelper stateStoreHelper)
+     Assert.assertEquals(defaultVersion, store.loadVersion());
+ 
+     // incompatible version
+-    RMStateVersion incompatibleVersion =
+-        RMStateVersion.newInstance(defaultVersion.getMajorVersion() + 2,
++    Version incompatibleVersion =
++        Version.newInstance(defaultVersion.getMajorVersion() + 2,
+           defaultVersion.getMinorVersion());
+     stateStoreHelper.writeVersion(incompatibleVersion);
+     try {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
+index f5b3e8a..88e5393 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
+@@ -36,9 +36,9 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
++import org.apache.hadoop.yarn.server.records.Version;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.RMStateVersionPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+@@ -70,7 +70,7 @@ public Path getVersionNode() {
+         return new Path(new Path(workingDirPathURI, ROOT_DIR_NAME), VERSION_NODE);
+       }
+ 
+-      public RMStateVersion getCurrentVersion() {
++      public Version getCurrentVersion() {
+         return CURRENT_VERSION_INFO;
+       }
+ 
+@@ -111,13 +111,13 @@ public boolean isFinalStateValid() throws Exception {
+     }
+ 
+     @Override
+-    public void writeVersion(RMStateVersion version) throws Exception {
+-      store.updateFile(store.getVersionNode(), ((RMStateVersionPBImpl) version)
++    public void writeVersion(Version version) throws Exception {
++      store.updateFile(store.getVersionNode(), ((VersionPBImpl) version)
+         .getProto().toByteArray());
+     }
+ 
+     @Override
+-    public RMStateVersion getCurrentVersion() throws Exception {
++    public Version getCurrentVersion() throws Exception {
+       return store.getCurrentVersion();
+     }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+index 1dee533..3c7170a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+@@ -32,9 +32,9 @@
+ import org.apache.hadoop.service.Service;
+ import org.apache.hadoop.yarn.conf.HAUtil;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.server.records.Version;
++import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.RMStateVersionPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.zookeeper.ZooKeeper;
+ import org.apache.zookeeper.data.Stat;
+@@ -69,7 +69,7 @@ public String getVersionNode() {
+         return znodeWorkingPath + "/" + ROOT_ZNODE_NAME + "/" + VERSION_NODE;
+       }
+ 
+-      public RMStateVersion getCurrentVersion() {
++      public Version getCurrentVersion() {
+         return CURRENT_VERSION_INFO;
+       }
+ 
+@@ -96,13 +96,13 @@ public boolean isFinalStateValid() throws Exception {
+     }
+ 
+     @Override
+-    public void writeVersion(RMStateVersion version) throws Exception {
+-      client.setData(store.getVersionNode(), ((RMStateVersionPBImpl) version)
++    public void writeVersion(Version version) throws Exception {
++      client.setData(store.getVersionNode(), ((VersionPBImpl) version)
+         .getProto().toByteArray(), -1);
+     }
+ 
+     @Override
+-    public RMStateVersion getCurrentVersion() throws Exception {
++    public Version getCurrentVersion() throws Exception {
+       return store.getCurrentVersion();
+     }
+ 
+-- 
+1.7.9.5
+

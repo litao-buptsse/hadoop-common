@@ -1,0 +1,78 @@
+From 195873cd846c3afc19b1296931f3c5664c699180 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 23 Sep 2014 17:07:32 -0700
+Subject: [PATCH 466/813] HADOOP-11017. Addendum to fix RM HA. KMS delegation
+ token secret manager should be able to use
+ zookeeper as store. (Arun Suresh via kasha)
+
+(cherry picked from commit ef784a2e08c2452026a85ae382a956ff7deecbd0)
+(cherry picked from commit b34858c1f88969a74accb7b45f63fd18da01b432)
+---
+ .../AbstractDelegationTokenSecretManager.java      |   16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java
+index f5e7bc9..ac1dd2d 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java
+@@ -133,7 +133,7 @@ public synchronized void reset() {
+   
+   /** 
+    * Add a previously used master key to cache (when NN restarts), 
+-   * should be called before activate().
++   * should be called before activate(). 
+    * */
+   public synchronized void addKey(DelegationKey key) throws IOException {
+     if (running) // a safety check
+@@ -141,7 +141,7 @@ public synchronized void addKey(DelegationKey key) throws IOException {
+     if (key.getKeyId() > currentId) {
+       currentId = key.getKeyId();
+     }
+-    storeDelegationKey(key);
++    allKeys.put(key.getKeyId(), key);
+   }
+ 
+   public synchronized DelegationKey[] getAllKeys() {
+@@ -268,6 +268,8 @@ protected void updateToken(TokenIdent ident,
+   /**
+    * This method is intended to be used for recovering persisted delegation
+    * tokens
++   * This method must be called before this secret manager is activated (before
++   * startThreads() is called)
+    * @param identifier identifier read from persistent storage
+    * @param renewDate token renew time
+    * @throws IOException
+@@ -280,18 +282,17 @@ public synchronized void addPersistedDelegationToken(
+           "Can't add persisted delegation token to a running SecretManager.");
+     }
+     int keyId = identifier.getMasterKeyId();
+-    DelegationKey dKey = getDelegationKey(keyId);
++    DelegationKey dKey = allKeys.get(keyId);
+     if (dKey == null) {
+       LOG.warn("No KEY found for persisted identifier " + identifier.toString());
+       return;
+     }
+     byte[] password = createPassword(identifier.getBytes(), dKey.getKey());
+-    int delegationTokenSeqNum = getDelegationTokenSeqNum();
+-    if (identifier.getSequenceNumber() > delegationTokenSeqNum) {
+-      setDelegationTokenSeqNum(identifier.getSequenceNumber());
++    if (identifier.getSequenceNumber() > delegationTokenSequenceNumber) {
++      delegationTokenSequenceNumber = identifier.getSequenceNumber();
+     }
+     if (getTokenInfo(identifier) == null) {
+-      storeToken(identifier, new DelegationTokenInformation(renewDate,
++      currentTokens.put(identifier, new DelegationTokenInformation(renewDate,
+           password, getTrackingIdIfEnabled(identifier)));
+     } else {
+       throw new IOException("Same delegation token being added twice.");
+@@ -315,7 +316,6 @@ private void updateCurrentKey() throws IOException {
+         + keyUpdateInterval + tokenMaxLifetime, generateSecret());
+     //Log must be invoked outside the lock on 'this'
+     logUpdateMasterKey(newKey);
+-    storeNewMasterKey(newKey);
+     synchronized (this) {
+       currentId = newKey.getKeyId();
+       currentKey = newKey;
+-- 
+1.7.9.5
+

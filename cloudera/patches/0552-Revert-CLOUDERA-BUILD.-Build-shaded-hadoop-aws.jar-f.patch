@@ -1,0 +1,37 @@
+From 2b6870c05bf74bbe233028a71b27dd3db8580171 Mon Sep 17 00:00:00 2001
+From: Lei Xu <lei@cloudera.com>
+Date: Thu, 2 Oct 2014 13:22:45 -0700
+Subject: [PATCH 552/813] Revert "CLOUDERA-BUILD. Build shaded hadoop-aws.jar
+ for CDH 5.2.0 (CDH-22019)"
+
+This reverts commit d9db379c05f8838f68ef8d3e08cb677baf808459.
+---
+ hadoop-tools/hadoop-aws/pom.xml |   12 ------------
+ 1 file changed, 12 deletions(-)
+
+diff --git a/hadoop-tools/hadoop-aws/pom.xml b/hadoop-tools/hadoop-aws/pom.xml
+index bbc2923..9444604 100644
+--- a/hadoop-tools/hadoop-aws/pom.xml
++++ b/hadoop-tools/hadoop-aws/pom.xml
+@@ -83,18 +83,6 @@
+           <dependencyLocationsEnabled>false</dependencyLocationsEnabled>
+         </configuration>
+       </plugin>
+-      <plugin>
+-        <groupId>org.apache.maven.plugins</groupId>
+-        <artifactId>maven-shade-plugin</artifactId>
+-          <executions>
+-            <execution>
+-               <phase>package</phase>
+-                <goals>
+-                  <goal>shade</goal>
+-                </goals>
+-            </execution>
+-          </executions>
+-      </plugin>
+     </plugins>
+   </build>
+ 
+-- 
+1.7.9.5
+

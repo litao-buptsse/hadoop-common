@@ -1,0 +1,484 @@
+From 48ed40fef88036251ce70dac06b638da18660b82 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:37 +0000
+Subject: [PATCH 195/813] HADOOP-10427. KeyProvider implementations should be
+ thread safe. (tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619512 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 3a8b2d0f1bb35f81891e4a79d29012e7bcb6e45e)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |  286 ++++++++++++--------
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |    2 +
+ .../org/apache/hadoop/crypto/key/UserProvider.java |   16 +-
+ 3 files changed, 177 insertions(+), 127 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index 6d77a1d..eeeaca1 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -43,6 +43,9 @@
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
++import java.util.concurrent.locks.Lock;
++import java.util.concurrent.locks.ReadWriteLock;
++import java.util.concurrent.locks.ReentrantReadWriteLock;
+ 
+ /**
+  * KeyProvider based on Java's KeyStore file format. The file may be stored in
+@@ -73,6 +76,8 @@
+   private final KeyStore keyStore;
+   private final char[] password;
+   private boolean changed = false;
++  private Lock readLock;
++  private Lock writeLock;
+ 
+   private final Map<String, Metadata> cache = new HashMap<String, Metadata>();
+ 
+@@ -107,138 +112,171 @@ private JavaKeyStoreProvider(URI uri, Configuration conf) throws IOException {
+     } catch (CertificateException e) {
+       throw new IOException("Can't load keystore " + path, e);
+     }
++    ReadWriteLock lock = new ReentrantReadWriteLock(true);
++    readLock = lock.readLock();
++    writeLock = lock.writeLock();
+   }
+ 
+   @Override
+   public KeyVersion getKeyVersion(String versionName) throws IOException {
+-    SecretKeySpec key = null;
++    readLock.lock();
+     try {
+-      if (!keyStore.containsAlias(versionName)) {
+-        return null;
++      SecretKeySpec key = null;
++      try {
++        if (!keyStore.containsAlias(versionName)) {
++          return null;
++        }
++        key = (SecretKeySpec) keyStore.getKey(versionName, password);
++      } catch (KeyStoreException e) {
++        throw new IOException("Can't get key " + versionName + " from " +
++                              path, e);
++      } catch (NoSuchAlgorithmException e) {
++        throw new IOException("Can't get algorithm for key " + key + " from " +
++                              path, e);
++      } catch (UnrecoverableKeyException e) {
++        throw new IOException("Can't recover key " + key + " from " + path, e);
+       }
+-      key = (SecretKeySpec) keyStore.getKey(versionName, password);
+-    } catch (KeyStoreException e) {
+-      throw new IOException("Can't get key " + versionName + " from " +
+-                            path, e);
+-    } catch (NoSuchAlgorithmException e) {
+-      throw new IOException("Can't get algorithm for key " + key + " from " +
+-                            path, e);
+-    } catch (UnrecoverableKeyException e) {
+-      throw new IOException("Can't recover key " + key + " from " + path, e);
++      return new KeyVersion(versionName, key.getEncoded());
++    } finally {
++      readLock.unlock();
+     }
+-    return new KeyVersion(versionName, key.getEncoded());
+   }
+ 
+   @Override
+   public List<String> getKeys() throws IOException {
+-    ArrayList<String> list = new ArrayList<String>();
+-    String alias = null;
++    readLock.lock();
+     try {
+-      Enumeration<String> e = keyStore.aliases();
+-      while (e.hasMoreElements()) {
+-         alias = e.nextElement();
+-         // only include the metadata key names in the list of names
+-         if (!alias.contains("@")) {
+-             list.add(alias);
+-         }
++      ArrayList<String> list = new ArrayList<String>();
++      String alias = null;
++      try {
++        Enumeration<String> e = keyStore.aliases();
++        while (e.hasMoreElements()) {
++           alias = e.nextElement();
++           // only include the metadata key names in the list of names
++           if (!alias.contains("@")) {
++               list.add(alias);
++           }
++        }
++      } catch (KeyStoreException e) {
++        throw new IOException("Can't get key " + alias + " from " + path, e);
+       }
+-    } catch (KeyStoreException e) {
+-      throw new IOException("Can't get key " + alias + " from " + path, e);
++      return list;
++    } finally {
++      readLock.unlock();
+     }
+-    return list;
+   }
+ 
+   @Override
+   public List<KeyVersion> getKeyVersions(String name) throws IOException {
+-    List<KeyVersion> list = new ArrayList<KeyVersion>();
+-    Metadata km = getMetadata(name);
+-    if (km != null) {
+-      int latestVersion = km.getVersions();
+-      KeyVersion v = null;
+-      String versionName = null;
+-      for (int i = 0; i < latestVersion; i++) {
+-        versionName = buildVersionName(name, i);
+-        v = getKeyVersion(versionName);
+-        if (v != null) {
+-          list.add(v);
++    readLock.lock();
++    try {
++      List<KeyVersion> list = new ArrayList<KeyVersion>();
++      Metadata km = getMetadata(name);
++      if (km != null) {
++        int latestVersion = km.getVersions();
++        KeyVersion v = null;
++        String versionName = null;
++        for (int i = 0; i < latestVersion; i++) {
++          versionName = buildVersionName(name, i);
++          v = getKeyVersion(versionName);
++          if (v != null) {
++            list.add(v);
++          }
+         }
+       }
++      return list;
++    } finally {
++      readLock.unlock();
+     }
+-    return list;
+   }
+ 
+   @Override
+   public Metadata getMetadata(String name) throws IOException {
+-    if (cache.containsKey(name)) {
+-      return cache.get(name);
+-    }
++    readLock.lock();
+     try {
+-      if (!keyStore.containsAlias(name)) {
+-        return null;
++      if (cache.containsKey(name)) {
++        return cache.get(name);
+       }
+-      Metadata meta = ((KeyMetadata) keyStore.getKey(name, password)).metadata;
+-      cache.put(name, meta);
+-      return meta;
+-    } catch (KeyStoreException e) {
+-      throw new IOException("Can't get metadata for " + name +
+-          " from keystore " + path, e);
+-    } catch (NoSuchAlgorithmException e) {
+-      throw new IOException("Can't get algorithm for " + name +
+-          " from keystore " + path, e);
+-    } catch (UnrecoverableKeyException e) {
+-      throw new IOException("Can't recover key for " + name +
+-          " from keystore " + path, e);
++      try {
++        if (!keyStore.containsAlias(name)) {
++          return null;
++        }
++        Metadata meta = ((KeyMetadata) keyStore.getKey(name, password)).metadata;
++        cache.put(name, meta);
++        return meta;
++      } catch (KeyStoreException e) {
++        throw new IOException("Can't get metadata for " + name +
++            " from keystore " + path, e);
++      } catch (NoSuchAlgorithmException e) {
++        throw new IOException("Can't get algorithm for " + name +
++            " from keystore " + path, e);
++      } catch (UnrecoverableKeyException e) {
++        throw new IOException("Can't recover key for " + name +
++            " from keystore " + path, e);
++      }
++    } finally {
++      readLock.unlock();
+     }
+   }
+ 
+   @Override
+   public KeyVersion createKey(String name, byte[] material,
+                                Options options) throws IOException {
++    writeLock.lock();
+     try {
+-      if (keyStore.containsAlias(name) || cache.containsKey(name)) {
+-        throw new IOException("Key " + name + " already exists in " + this);
++      try {
++        if (keyStore.containsAlias(name) || cache.containsKey(name)) {
++          throw new IOException("Key " + name + " already exists in " + this);
++        }
++      } catch (KeyStoreException e) {
++        throw new IOException("Problem looking up key " + name + " in " + this,
++            e);
+       }
+-    } catch (KeyStoreException e) {
+-      throw new IOException("Problem looking up key " + name + " in " + this,
+-          e);
+-    }
+-    Metadata meta = new Metadata(options.getCipher(), options.getBitLength(),
+-        new Date(), 1);
+-    if (options.getBitLength() != 8 * material.length) {
+-      throw new IOException("Wrong key length. Required " +
+-          options.getBitLength() + ", but got " + (8 * material.length));
++      Metadata meta = new Metadata(options.getCipher(), options.getBitLength(),
++          new Date(), 1);
++      if (options.getBitLength() != 8 * material.length) {
++        throw new IOException("Wrong key length. Required " +
++            options.getBitLength() + ", but got " + (8 * material.length));
++      }
++      cache.put(name, meta);
++      String versionName = buildVersionName(name, 0);
++      return innerSetKeyVersion(versionName, material, meta.getCipher());
++    } finally {
++      writeLock.unlock();
+     }
+-    cache.put(name, meta);
+-    String versionName = buildVersionName(name, 0);
+-    return innerSetKeyVersion(versionName, material, meta.getCipher());
+   }
+ 
+   @Override
+   public void deleteKey(String name) throws IOException {
+-    Metadata meta = getMetadata(name);
+-    if (meta == null) {
+-      throw new IOException("Key " + name + " does not exist in " + this);
+-    }
+-    for(int v=0; v < meta.getVersions(); ++v) {
+-      String versionName = buildVersionName(name, v);
++    writeLock.lock();
++    try {
++      Metadata meta = getMetadata(name);
++      if (meta == null) {
++        throw new IOException("Key " + name + " does not exist in " + this);
++      }
++      for(int v=0; v < meta.getVersions(); ++v) {
++        String versionName = buildVersionName(name, v);
++        try {
++          if (keyStore.containsAlias(versionName)) {
++            keyStore.deleteEntry(versionName);
++          }
++        } catch (KeyStoreException e) {
++          throw new IOException("Problem removing " + versionName + " from " +
++              this, e);
++        }
++      }
+       try {
+-        if (keyStore.containsAlias(versionName)) {
+-          keyStore.deleteEntry(versionName);
++        if (keyStore.containsAlias(name)) {
++          keyStore.deleteEntry(name);
+         }
+       } catch (KeyStoreException e) {
+-        throw new IOException("Problem removing " + versionName + " from " +
+-            this, e);
++        throw new IOException("Problem removing " + name + " from " + this, e);
+       }
++      cache.remove(name);
++      changed = true;
++    } finally {
++      writeLock.unlock();
+     }
+-    try {
+-      if (keyStore.containsAlias(name)) {
+-        keyStore.deleteEntry(name);
+-      }
+-    } catch (KeyStoreException e) {
+-      throw new IOException("Problem removing " + name + " from " + this, e);
+-    }
+-    cache.remove(name);
+-    changed = true;
+   }
+ 
+   KeyVersion innerSetKeyVersion(String versionName, byte[] material,
+@@ -257,47 +295,57 @@ KeyVersion innerSetKeyVersion(String versionName, byte[] material,
+   @Override
+   public KeyVersion rollNewVersion(String name,
+                                     byte[] material) throws IOException {
+-    Metadata meta = getMetadata(name);
+-    if (meta == null) {
+-      throw new IOException("Key " + name + " not found");
+-    }
+-    if (meta.getBitLength() != 8 * material.length) {
+-      throw new IOException("Wrong key length. Required " +
+-          meta.getBitLength() + ", but got " + (8 * material.length));
++    writeLock.lock();
++    try {
++      Metadata meta = getMetadata(name);
++      if (meta == null) {
++        throw new IOException("Key " + name + " not found");
++      }
++      if (meta.getBitLength() != 8 * material.length) {
++        throw new IOException("Wrong key length. Required " +
++            meta.getBitLength() + ", but got " + (8 * material.length));
++      }
++      int nextVersion = meta.addVersion();
++      String versionName = buildVersionName(name, nextVersion);
++      return innerSetKeyVersion(versionName, material, meta.getCipher());
++    } finally {
++      writeLock.unlock();
+     }
+-    int nextVersion = meta.addVersion();
+-    String versionName = buildVersionName(name, nextVersion);
+-    return innerSetKeyVersion(versionName, material, meta.getCipher());
+   }
+ 
+   @Override
+   public void flush() throws IOException {
+-    if (!changed) {
+-      return;
+-    }
+-    // put all of the updates into the keystore
+-    for(Map.Entry<String, Metadata> entry: cache.entrySet()) {
++    writeLock.lock();
++    try {
++      if (!changed) {
++        return;
++      }
++      // put all of the updates into the keystore
++      for(Map.Entry<String, Metadata> entry: cache.entrySet()) {
++        try {
++          keyStore.setKeyEntry(entry.getKey(), new KeyMetadata(entry.getValue()),
++              password, null);
++        } catch (KeyStoreException e) {
++          throw new IOException("Can't set metadata key " + entry.getKey(),e );
++        }
++      }
++      // write out the keystore
++      FSDataOutputStream out = FileSystem.create(fs, path, permissions);
+       try {
+-        keyStore.setKeyEntry(entry.getKey(), new KeyMetadata(entry.getValue()),
+-            password, null);
++        keyStore.store(out, password);
+       } catch (KeyStoreException e) {
+-        throw new IOException("Can't set metadata key " + entry.getKey(),e );
++        throw new IOException("Can't store keystore " + this, e);
++      } catch (NoSuchAlgorithmException e) {
++        throw new IOException("No such algorithm storing keystore " + this, e);
++      } catch (CertificateException e) {
++        throw new IOException("Certificate exception storing keystore " + this,
++            e);
+       }
++      out.close();
++      changed = false;
++    } finally {
++      writeLock.unlock();
+     }
+-    // write out the keystore
+-    FSDataOutputStream out = FileSystem.create(fs, path, permissions);
+-    try {
+-      keyStore.store(out, password);
+-    } catch (KeyStoreException e) {
+-      throw new IOException("Can't store keystore " + this, e);
+-    } catch (NoSuchAlgorithmException e) {
+-      throw new IOException("No such algorithm storing keystore " + this, e);
+-    } catch (CertificateException e) {
+-      throw new IOException("Certificate exception storing keystore " + this,
+-          e);
+-    }
+-    out.close();
+-    changed = false;
+   }
+ 
+   @Override
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index 6dd8063..993a447 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -42,6 +42,8 @@
+  * abstraction to separate key storage from users of encryption. It
+  * is intended to support getting or storing keys in a variety of ways,
+  * including third party bindings.
++ * <P/>
++ * <code>KeyProvider</code> implementations must be thread safe.
+  */
+ @InterfaceAudience.Public
+ @InterfaceStability.Unstable
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+index 89ecc42..df2c071 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+@@ -55,7 +55,7 @@ public boolean isTransient() {
+   }
+ 
+   @Override
+-  public KeyVersion getKeyVersion(String versionName) {
++  public synchronized KeyVersion getKeyVersion(String versionName) {
+     byte[] bytes = credentials.getSecretKey(new Text(versionName));
+     if (bytes == null) {
+       return null;
+@@ -64,7 +64,7 @@ public KeyVersion getKeyVersion(String versionName) {
+   }
+ 
+   @Override
+-  public Metadata getMetadata(String name) throws IOException {
++  public synchronized Metadata getMetadata(String name) throws IOException {
+     if (cache.containsKey(name)) {
+       return cache.get(name);
+     }
+@@ -78,7 +78,7 @@ public Metadata getMetadata(String name) throws IOException {
+   }
+ 
+   @Override
+-  public KeyVersion createKey(String name, byte[] material,
++  public synchronized KeyVersion createKey(String name, byte[] material,
+                                Options options) throws IOException {
+     Text nameT = new Text(name);
+     if (credentials.getSecretKey(nameT) != null) {
+@@ -98,7 +98,7 @@ public KeyVersion createKey(String name, byte[] material,
+   }
+ 
+   @Override
+-  public void deleteKey(String name) throws IOException {
++  public synchronized void deleteKey(String name) throws IOException {
+     Metadata meta = getMetadata(name);
+     if (meta == null) {
+       throw new IOException("Key " + name + " does not exist in " + this);
+@@ -111,7 +111,7 @@ public void deleteKey(String name) throws IOException {
+   }
+ 
+   @Override
+-  public KeyVersion rollNewVersion(String name,
++  public synchronized KeyVersion rollNewVersion(String name,
+                                     byte[] material) throws IOException {
+     Metadata meta = getMetadata(name);
+     if (meta == null) {
+@@ -134,7 +134,7 @@ public String toString() {
+   }
+ 
+   @Override
+-  public void flush() {
++  public synchronized void flush() {
+     user.addCredentials(credentials);
+   }
+ 
+@@ -151,7 +151,7 @@ public KeyProvider createProvider(URI providerName,
+   }
+ 
+   @Override
+-  public List<String> getKeys() throws IOException {
++  public synchronized List<String> getKeys() throws IOException {
+     List<String> list = new ArrayList<String>();
+     List<Text> keys = credentials.getAllSecretKeys();
+     for (Text key : keys) {
+@@ -163,7 +163,7 @@ public KeyProvider createProvider(URI providerName,
+   }
+ 
+   @Override
+-  public List<KeyVersion> getKeyVersions(String name) throws IOException {
++  public synchronized List<KeyVersion> getKeyVersions(String name) throws IOException {
+       List<KeyVersion> list = new ArrayList<KeyVersion>();
+       Metadata km = getMetadata(name);
+       if (km != null) {
+-- 
+1.7.9.5
+

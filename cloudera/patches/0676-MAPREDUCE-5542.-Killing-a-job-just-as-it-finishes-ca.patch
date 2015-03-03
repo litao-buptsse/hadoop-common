@@ -1,0 +1,152 @@
+From 14cf615ff718e475fdc0ca6a9cf989d3f7884589 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Fri, 17 Oct 2014 19:51:10 +0000
+Subject: [PATCH 676/813] MAPREDUCE-5542. Killing a job just as it finishes
+ can generate an NPE in client. Contributed by
+ Rohith (cherry picked from commit
+ 209b1699fcd150676d4cc47e8e817796086c1986) (cherry
+ picked from commit
+ 8885b75d78e63716e0b9b7b19bc6629819b87fe2) (cherry
+ picked from commit
+ 094a6cf77acc0a7c61a0546cfde1d8a015ed45d0)
+
+---
+ .../java/org/apache/hadoop/mapred/YARNRunner.java  |   76 ++++++++++++++------
+ .../org/apache/hadoop/mapred/TestYARNRunner.java   |   11 +++
+ 2 files changed, 66 insertions(+), 21 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java
+index c21d62b..47d2127 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java
+@@ -572,16 +572,50 @@ public JobStatus getJobStatus(JobID jobID) throws IOException,
+         .getTaskReports(jobID, taskType);
+   }
+ 
++  private void killUnFinishedApplication(ApplicationId appId)
++      throws IOException {
++    ApplicationReport application = null;
++    try {
++      application = resMgrDelegate.getApplicationReport(appId);
++    } catch (YarnException e) {
++      throw new IOException(e);
++    }
++    if (application.getYarnApplicationState() == YarnApplicationState.FINISHED
++        || application.getYarnApplicationState() == YarnApplicationState.FAILED
++        || application.getYarnApplicationState() == YarnApplicationState.KILLED) {
++      return;
++    }
++    killApplication(appId);
++  }
++
++  private void killApplication(ApplicationId appId) throws IOException {
++    try {
++      resMgrDelegate.killApplication(appId);
++    } catch (YarnException e) {
++      throw new IOException(e);
++    }
++  }
++
++  private boolean isJobInTerminalState(JobStatus status) {
++    return status.getState() == JobStatus.State.KILLED
++        || status.getState() == JobStatus.State.FAILED
++        || status.getState() == JobStatus.State.SUCCEEDED;
++  }
++
+   @Override
+   public void killJob(JobID arg0) throws IOException, InterruptedException {
+     /* check if the status is not running, if not send kill to RM */
+     JobStatus status = clientCache.getClient(arg0).getJobStatus(arg0);
++    ApplicationId appId = TypeConverter.toYarn(arg0).getAppId();
++
++    // get status from RM and return
++    if (status == null) {
++      killUnFinishedApplication(appId);
++      return;
++    }
++
+     if (status.getState() != JobStatus.State.RUNNING) {
+-      try {
+-        resMgrDelegate.killApplication(TypeConverter.toYarn(arg0).getAppId());
+-      } catch (YarnException e) {
+-        throw new IOException(e);
+-      }
++      killApplication(appId);
+       return;
+     }
+ 
+@@ -590,26 +624,26 @@ public void killJob(JobID arg0) throws IOException, InterruptedException {
+       clientCache.getClient(arg0).killJob(arg0);
+       long currentTimeMillis = System.currentTimeMillis();
+       long timeKillIssued = currentTimeMillis;
+-      while ((currentTimeMillis < timeKillIssued + 10000L) && (status.getState()
+-          != JobStatus.State.KILLED)) {
+-          try {
+-            Thread.sleep(1000L);
+-          } catch(InterruptedException ie) {
+-            /** interrupted, just break */
+-            break;
+-          }
+-          currentTimeMillis = System.currentTimeMillis();
+-          status = clientCache.getClient(arg0).getJobStatus(arg0);
++      while ((currentTimeMillis < timeKillIssued + 10000L)
++          && !isJobInTerminalState(status)) {
++        try {
++          Thread.sleep(1000L);
++        } catch (InterruptedException ie) {
++          /** interrupted, just break */
++          break;
++        }
++        currentTimeMillis = System.currentTimeMillis();
++        status = clientCache.getClient(arg0).getJobStatus(arg0);
++        if (status == null) {
++          killUnFinishedApplication(appId);
++          return;
++        }
+       }
+     } catch(IOException io) {
+       LOG.debug("Error when checking for application status", io);
+     }
+-    if (status.getState() != JobStatus.State.KILLED) {
+-      try {
+-        resMgrDelegate.killApplication(TypeConverter.toYarn(arg0).getAppId());
+-      } catch (YarnException e) {
+-        throw new IOException(e);
+-      }
++    if (status != null && !isJobInTerminalState(status)) {
++      killApplication(appId);
+     }
+   }
+ 
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestYARNRunner.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestYARNRunner.java
+index 2567785..420a95f 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestYARNRunner.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestYARNRunner.java
+@@ -86,6 +86,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationReport;
+ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+ import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
++import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
+ import org.apache.hadoop.yarn.api.records.QueueInfo;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+ import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
+@@ -188,6 +189,16 @@ public ClientServiceDelegate answer(InvocationOnMock invocation)
+             State.RUNNING, JobPriority.HIGH, "tmp", "tmp", "tmp", "tmp"));
+     yarnRunner.killJob(jobId);
+     verify(clientDelegate).killJob(jobId);
++
++    when(clientDelegate.getJobStatus(any(JobID.class))).thenReturn(null);
++    when(resourceMgrDelegate.getApplicationReport(any(ApplicationId.class)))
++        .thenReturn(
++            ApplicationReport.newInstance(appId, null, "tmp", "tmp", "tmp",
++                "tmp", 0, null, YarnApplicationState.FINISHED, "tmp", "tmp",
++                0l, 0l, FinalApplicationStatus.SUCCEEDED, null, null, 0f,
++                "tmp", null));
++    yarnRunner.killJob(jobId);
++    verify(clientDelegate).killJob(jobId);
+   }
+ 
+   @Test(timeout=20000)
+-- 
+1.7.9.5
+

@@ -1,0 +1,670 @@
+From 2ce7ac3b076a4aa182b0e70b7f5e103d290a81d2 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Tue, 16 Sep 2014 16:29:35 -0700
+Subject: [PATCH 400/813] HDFS-6851. Refactor EncryptionZoneWithId and
+ EncryptionZone. (clamb via wang)
+
+(cherry picked from commit 33ce887c20ec806ace02063e42599c3db76b536a)
+---
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    5 +-
+ .../hadoop/hdfs/protocol/ClientProtocol.java       |    4 +-
+ .../hadoop/hdfs/protocol/EncryptionZone.java       |   18 ++++-
+ .../hdfs/protocol/EncryptionZoneIterator.java      |   20 ++---
+ .../hadoop/hdfs/protocol/EncryptionZoneWithId.java |   81 --------------------
+ .../protocol/EncryptionZoneWithIdIterator.java     |   53 -------------
+ ...ientNamenodeProtocolServerSideTranslatorPB.java |    6 +-
+ .../ClientNamenodeProtocolTranslatorPB.java        |   14 ++--
+ .../apache/hadoop/hdfs/protocolPB/PBHelper.java    |   12 +--
+ .../server/namenode/EncryptionZoneManager.java     |   24 +++---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    6 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    9 +--
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |    6 +-
+ .../hadoop-hdfs/src/main/proto/encryption.proto    |    6 +-
+ 14 files changed, 70 insertions(+), 194 deletions(-)
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithId.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithIdIterator.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index a392ce7..b24694c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -154,7 +154,6 @@
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+ import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.EncryptionZoneIterator;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+ import org.apache.hadoop.hdfs.protocol.HdfsBlocksMetadata;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+@@ -2877,8 +2876,8 @@ public EncryptionZone getEZForPath(String src)
+           throws IOException {
+     checkOpen();
+     try {
+-      final EncryptionZoneWithId ezi = namenode.getEZForPath(src);
+-      return (ezi.getId() < 0) ? null : ezi;
++      final EncryptionZone ez = namenode.getEZForPath(src);
++      return (ez.getId() < 0) ? null : ez;
+     } catch (RemoteException re) {
+       throw re.unwrapRemoteException(AccessControlException.class,
+                                      UnresolvedPathException.class);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+index 093afcf..d8b7a79 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+@@ -1282,7 +1282,7 @@ public void createEncryptionZone(String src, String keyName)
+    * Get the encryption zone for a path.
+    */
+   @Idempotent
+-  public EncryptionZoneWithId getEZForPath(String src)
++  public EncryptionZone getEZForPath(String src)
+     throws IOException;
+ 
+   /**
+@@ -1293,7 +1293,7 @@ public EncryptionZoneWithId getEZForPath(String src)
+    * @return Batch of encryption zones.
+    */
+   @Idempotent
+-  public BatchedEntries<EncryptionZoneWithId> listEncryptionZones(
++  public BatchedEntries<EncryptionZone> listEncryptionZones(
+       long prevId) throws IOException;
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
+index a20e93c..a20513a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
+@@ -24,7 +24,8 @@
+ 
+ /**
+  * A simple class for representing an encryption zone. Presently an encryption
+- * zone only has a path (the root of the encryption zone) and a key name.
++ * zone only has a path (the root of the encryption zone), a key name, and a
++ * unique id. The id is used to implement batched listing of encryption zones.
+  */
+ @InterfaceAudience.Public
+ @InterfaceStability.Evolving
+@@ -32,10 +33,12 @@
+ 
+   private final String path;
+   private final String keyName;
++  private final long id;
+ 
+-  public EncryptionZone(String path, String keyName) {
++  public EncryptionZone(String path, String keyName, long id) {
+     this.path = path;
+     this.keyName = keyName;
++    this.id = id;
+   }
+ 
+   public String getPath() {
+@@ -46,10 +49,14 @@ public String getKeyName() {
+     return keyName;
+   }
+ 
++  public long getId() {
++    return id;
++  }
++
+   @Override
+   public int hashCode() {
+     return new HashCodeBuilder(13, 31).
+-      append(path).append(keyName).
++      append(path).append(keyName).append(id).
+       toHashCode();
+   }
+ 
+@@ -69,11 +76,14 @@ public boolean equals(Object obj) {
+     return new EqualsBuilder().
+       append(path, rhs.path).
+       append(keyName, rhs.keyName).
++      append(id, rhs.id).
+       isEquals();
+   }
+ 
+   @Override
+   public String toString() {
+-    return "EncryptionZone [path=" + path + ", keyName=" + keyName + "]";
++    return "EncryptionZone [path=" + path +
++        ", keyName=" + keyName +
++        ", id=" + id + "]";
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneIterator.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneIterator.java
+index ff308da..b8c21b0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneIterator.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneIterator.java
+@@ -22,7 +22,7 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+-import org.apache.hadoop.fs.RemoteIterator;
++import org.apache.hadoop.fs.BatchedRemoteIterator;
+ 
+ /**
+  * EncryptionZoneIterator is a remote iterator that iterates over encryption
+@@ -30,22 +30,24 @@
+  */
+ @InterfaceAudience.Private
+ @InterfaceStability.Evolving
+-public class EncryptionZoneIterator implements RemoteIterator<EncryptionZone> {
++public class EncryptionZoneIterator
++    extends BatchedRemoteIterator<Long, EncryptionZone> {
+ 
+-  private final EncryptionZoneWithIdIterator iterator;
++  private final ClientProtocol namenode;
+ 
+   public EncryptionZoneIterator(ClientProtocol namenode) {
+-    iterator = new EncryptionZoneWithIdIterator(namenode);
++    super(Long.valueOf(0));
++    this.namenode = namenode;
+   }
+ 
+   @Override
+-  public boolean hasNext() throws IOException {
+-    return iterator.hasNext();
++  public BatchedEntries<EncryptionZone> makeRequest(Long prevId)
++      throws IOException {
++    return namenode.listEncryptionZones(prevId);
+   }
+ 
+   @Override
+-  public EncryptionZone next() throws IOException {
+-    EncryptionZoneWithId ezwi = iterator.next();
+-    return ezwi.toEncryptionZone();
++  public Long elementToPrevKey(EncryptionZone entry) {
++    return entry.getId();
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithId.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithId.java
+deleted file mode 100644
+index e7fd2ae..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithId.java
++++ /dev/null
+@@ -1,81 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs.protocol;
+-
+-import org.apache.commons.lang.builder.HashCodeBuilder;
+-import org.apache.hadoop.classification.InterfaceAudience;
+-
+-/**
+- * Internal class similar to an {@link EncryptionZone} which also holds a
+- * unique id. Used to implement batched listing of encryption zones.
+- */
+-@InterfaceAudience.Private
+-public class EncryptionZoneWithId extends EncryptionZone {
+-
+-  final long id;
+-
+-  public EncryptionZoneWithId(String path, String keyName, long id) {
+-    super(path, keyName);
+-    this.id = id;
+-  }
+-
+-  public long getId() {
+-    return id;
+-  }
+-
+-  EncryptionZone toEncryptionZone() {
+-    return new EncryptionZone(getPath(), getKeyName());
+-  }
+-
+-  @Override
+-  public int hashCode() {
+-    return new HashCodeBuilder(17, 29)
+-        .append(super.hashCode())
+-        .append(id)
+-        .toHashCode();
+-  }
+-
+-  @Override
+-  public boolean equals(Object o) {
+-    if (this == o) {
+-      return true;
+-    }
+-    if (o == null || getClass() != o.getClass()) {
+-      return false;
+-    }
+-    if (!super.equals(o)) {
+-      return false;
+-    }
+-
+-    EncryptionZoneWithId that = (EncryptionZoneWithId) o;
+-
+-    if (id != that.id) {
+-      return false;
+-    }
+-
+-    return true;
+-  }
+-
+-  @Override
+-  public String toString() {
+-    return "EncryptionZoneWithId [" +
+-        "id=" + id +
+-        ", " + super.toString() +
+-        ']';
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithIdIterator.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithIdIterator.java
+deleted file mode 100644
+index 78c7b62..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZoneWithIdIterator.java
++++ /dev/null
+@@ -1,53 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.hdfs.protocol;
+-
+-import java.io.IOException;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.classification.InterfaceStability;
+-import org.apache.hadoop.fs.BatchedRemoteIterator;
+-
+-/**
+- * Used on the client-side to iterate over the list of encryption zones
+- * stored on the namenode.
+- */
+-@InterfaceAudience.Private
+-@InterfaceStability.Evolving
+-public class EncryptionZoneWithIdIterator
+-    extends BatchedRemoteIterator<Long, EncryptionZoneWithId> {
+-
+-  private final ClientProtocol namenode;
+-
+-  EncryptionZoneWithIdIterator(ClientProtocol namenode) {
+-    super(Long.valueOf(0));
+-    this.namenode = namenode;
+-  }
+-
+-  @Override
+-  public BatchedEntries<EncryptionZoneWithId> makeRequest(Long prevId)
+-      throws IOException {
+-    return namenode.listEncryptionZones(prevId);
+-  }
+-
+-  @Override
+-  public Long elementToPrevKey(EncryptionZoneWithId entry) {
+-    return entry.getId();
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
+index a162ec5..5af349e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
+@@ -32,7 +32,7 @@
+ import org.apache.hadoop.hdfs.protocol.ClientProtocol;
+ import org.apache.hadoop.hdfs.protocol.CorruptFileBlocks;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
++import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+@@ -1331,7 +1331,7 @@ public GetEZForPathResponseProto getEZForPath(
+     try {
+       GetEZForPathResponseProto.Builder builder =
+           GetEZForPathResponseProto.newBuilder();
+-      final EncryptionZoneWithId ret = server.getEZForPath(req.getSrc());
++      final EncryptionZone ret = server.getEZForPath(req.getSrc());
+       builder.setZone(PBHelper.convert(ret));
+       return builder.build();
+     } catch (IOException e) {
+@@ -1344,7 +1344,7 @@ public ListEncryptionZonesResponseProto listEncryptionZones(
+     RpcController controller, ListEncryptionZonesRequestProto req)
+     throws ServiceException {
+     try {
+-      BatchedEntries<EncryptionZoneWithId> entries = server
++      BatchedEntries<EncryptionZone> entries = server
+           .listEncryptionZones(req.getId());
+       ListEncryptionZonesResponseProto.Builder builder =
+           ListEncryptionZonesResponseProto.newBuilder();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
+index 79c4fcf..17e4439 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
+@@ -55,7 +55,7 @@
+ import org.apache.hadoop.hdfs.protocol.DatanodeID;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
++import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
+@@ -186,7 +186,7 @@
+ 
+ import static org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
+ import static org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos
+-    .EncryptionZoneWithIdProto;
++    .EncryptionZoneProto;
+ 
+ /**
+  * This class forwards NN's ClientProtocol calls as RPC calls to the NN server
+@@ -1331,7 +1331,7 @@ public void createEncryptionZone(String src, String keyName)
+   }
+ 
+   @Override
+-  public EncryptionZoneWithId getEZForPath(String src)
++  public EncryptionZone getEZForPath(String src)
+       throws IOException {
+     final GetEZForPathRequestProto.Builder builder =
+         GetEZForPathRequestProto.newBuilder();
+@@ -1347,7 +1347,7 @@ public EncryptionZoneWithId getEZForPath(String src)
+   }
+ 
+   @Override
+-  public BatchedEntries<EncryptionZoneWithId> listEncryptionZones(long id)
++  public BatchedEntries<EncryptionZone> listEncryptionZones(long id)
+       throws IOException {
+     final ListEncryptionZonesRequestProto req =
+       ListEncryptionZonesRequestProto.newBuilder()
+@@ -1356,12 +1356,12 @@ public EncryptionZoneWithId getEZForPath(String src)
+     try {
+       EncryptionZonesProtos.ListEncryptionZonesResponseProto response =
+           rpcProxy.listEncryptionZones(null, req);
+-      List<EncryptionZoneWithId> elements =
++      List<EncryptionZone> elements =
+           Lists.newArrayListWithCapacity(response.getZonesCount());
+-      for (EncryptionZoneWithIdProto p : response.getZonesList()) {
++      for (EncryptionZoneProto p : response.getZonesList()) {
+         elements.add(PBHelper.convert(p));
+       }
+-      return new BatchedListEntries<EncryptionZoneWithId>(elements,
++      return new BatchedListEntries<EncryptionZone>(elements,
+           response.getHasMore());
+     } catch (ServiceException e) {
+       throw ProtobufHelper.getRemoteException(e);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index 720455e..14fea12 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -19,7 +19,7 @@
+ 
+ import static com.google.common.base.Preconditions.checkNotNull;
+ import static org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos
+-    .EncryptionZoneWithIdProto;
++    .EncryptionZoneProto;
+ 
+ import java.io.EOFException;
+ import java.io.IOException;
+@@ -62,7 +62,7 @@
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo.AdminStates;
+ import org.apache.hadoop.hdfs.protocol.DatanodeLocalInfo;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
++import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+ import org.apache.hadoop.fs.FileEncryptionInfo;
+ import org.apache.hadoop.hdfs.protocol.FsAclPermission;
+@@ -2298,15 +2298,15 @@ public static ListXAttrsResponseProto convertListXAttrsResponse(
+     return builder.build();
+   }
+ 
+-  public static EncryptionZoneWithIdProto convert(EncryptionZoneWithId zone) {
+-    return EncryptionZoneWithIdProto.newBuilder()
++  public static EncryptionZoneProto convert(EncryptionZone zone) {
++    return EncryptionZoneProto.newBuilder()
+         .setId(zone.getId())
+         .setKeyName(zone.getKeyName())
+         .setPath(zone.getPath()).build();
+   }
+ 
+-  public static EncryptionZoneWithId convert(EncryptionZoneWithIdProto proto) {
+-    return new EncryptionZoneWithId(proto.getPath(), proto.getKeyName(),
++  public static EncryptionZone convert(EncryptionZoneProto proto) {
++    return new EncryptionZone(proto.getPath(), proto.getKeyName(),
+         proto.getId());
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+index f00f132..e72ae12 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+@@ -31,7 +31,7 @@
+ import org.apache.hadoop.fs.XAttrSetFlag;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.XAttrHelper;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
++import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -53,8 +53,8 @@
+   public static Logger LOG = LoggerFactory.getLogger(EncryptionZoneManager
+       .class);
+ 
+-  private static final EncryptionZoneWithId NULL_EZ =
+-      new EncryptionZoneWithId("", "", -1);
++  private static final EncryptionZone NULL_EZ =
++      new EncryptionZone("", "", -1);
+ 
+   /**
+    * EncryptionZoneInt is the internal representation of an encryption zone. The
+@@ -196,18 +196,18 @@ private EncryptionZoneInt getEncryptionZoneForPath(INodesInPath iip) {
+   }
+ 
+   /**
+-   * Returns an EncryptionZoneWithId representing the ez for a given path.
+-   * Returns an empty marker EncryptionZoneWithId if path is not in an ez.
++   * Returns an EncryptionZone representing the ez for a given path.
++   * Returns an empty marker EncryptionZone if path is not in an ez.
+    *
+    * @param iip The INodesInPath of the path to check
+-   * @return the EncryptionZoneWithId representing the ez for the path.
++   * @return the EncryptionZone representing the ez for the path.
+    */
+-  EncryptionZoneWithId getEZINodeForPath(INodesInPath iip) {
++  EncryptionZone getEZINodeForPath(INodesInPath iip) {
+     final EncryptionZoneInt ezi = getEncryptionZoneForPath(iip);
+     if (ezi == null) {
+       return NULL_EZ;
+     } else {
+-      return new EncryptionZoneWithId(getFullPathName(ezi), ezi.getKeyName(),
++      return new EncryptionZone(getFullPathName(ezi), ezi.getKeyName(),
+           ezi.getINodeId());
+     }
+   }
+@@ -300,19 +300,19 @@ XAttr createEncryptionZone(String src, String keyName)
+    * <p/>
+    * Called while holding the FSDirectory lock.
+    */
+-  BatchedListEntries<EncryptionZoneWithId> listEncryptionZones(long prevId)
++  BatchedListEntries<EncryptionZone> listEncryptionZones(long prevId)
+       throws IOException {
+     assert dir.hasReadLock();
+     NavigableMap<Long, EncryptionZoneInt> tailMap = encryptionZones.tailMap
+         (prevId, false);
+     final int numResponses = Math.min(maxListEncryptionZonesResponses,
+         tailMap.size());
+-    final List<EncryptionZoneWithId> zones =
++    final List<EncryptionZone> zones =
+         Lists.newArrayListWithExpectedSize(numResponses);
+ 
+     int count = 0;
+     for (EncryptionZoneInt ezi : tailMap.values()) {
+-      zones.add(new EncryptionZoneWithId(getFullPathName(ezi),
++      zones.add(new EncryptionZone(getFullPathName(ezi),
+           ezi.getKeyName(), ezi.getINodeId()));
+       count++;
+       if (count >= numResponses) {
+@@ -320,6 +320,6 @@ XAttr createEncryptionZone(String src, String keyName)
+       }
+     }
+     final boolean hasMore = (numResponses < tailMap.size());
+-    return new BatchedListEntries<EncryptionZoneWithId>(zones, hasMore);
++    return new BatchedListEntries<EncryptionZone>(zones, hasMore);
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 0050e30..4df89bf 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -59,7 +59,7 @@
+ import org.apache.hadoop.hdfs.protocol.Block;
+ import org.apache.hadoop.hdfs.protocol.ClientProtocol;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
++import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.FSLimitException.MaxDirectoryItemsExceededException;
+ import org.apache.hadoop.hdfs.protocol.FSLimitException.PathComponentTooLongException;
+ import org.apache.hadoop.hdfs.protocol.FsAclPermission;
+@@ -2674,7 +2674,7 @@ XAttr createEncryptionZone(String src, String keyName)
+     }
+   }
+ 
+-  EncryptionZoneWithId getEZForPath(INodesInPath iip) {
++  EncryptionZone getEZForPath(INodesInPath iip) {
+     readLock();
+     try {
+       return ezManager.getEZINodeForPath(iip);
+@@ -2683,7 +2683,7 @@ EncryptionZoneWithId getEZForPath(INodesInPath iip) {
+     }
+   }
+ 
+-  BatchedListEntries<EncryptionZoneWithId> listEncryptionZones(long prevId)
++  BatchedListEntries<EncryptionZone> listEncryptionZones(long prevId)
+       throws IOException {
+     readLock();
+     try {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 1ba45e0..83cd697 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -189,7 +189,6 @@
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+ import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+@@ -8642,7 +8641,7 @@ private void createEncryptionZoneInt(final String srcArg, String keyName,
+    * @throws AccessControlException  if the caller is not the superuser.
+    * @throws UnresolvedLinkException if the path can't be resolved.
+    */
+-  EncryptionZoneWithId getEZForPath(final String srcArg)
++  EncryptionZone getEZForPath(final String srcArg)
+     throws AccessControlException, UnresolvedLinkException, IOException {
+     String src = srcArg;
+     HdfsFileStatus resultingStat = null;
+@@ -8659,7 +8658,7 @@ EncryptionZoneWithId getEZForPath(final String srcArg)
+       checkOperation(OperationCategory.READ);
+       src = resolvePath(src, pathComponents);
+       final INodesInPath iip = dir.getINodesInPath(src, true);
+-      final EncryptionZoneWithId ret = dir.getEZForPath(iip);
++      final EncryptionZone ret = dir.getEZForPath(iip);
+       resultingStat = getAuditFileInfo(src, false);
+       success = true;
+       return ret;
+@@ -8669,7 +8668,7 @@ EncryptionZoneWithId getEZForPath(final String srcArg)
+     }
+   }
+ 
+-  BatchedListEntries<EncryptionZoneWithId> listEncryptionZones(long prevId)
++  BatchedListEntries<EncryptionZone> listEncryptionZones(long prevId)
+       throws IOException {
+     boolean success = false;
+     checkSuperuserPrivilege();
+@@ -8678,7 +8677,7 @@ EncryptionZoneWithId getEZForPath(final String srcArg)
+     try {
+       checkSuperuserPrivilege();
+       checkOperation(OperationCategory.READ);
+-      final BatchedListEntries<EncryptionZoneWithId> ret =
++      final BatchedListEntries<EncryptionZone> ret =
+           dir.listEncryptionZones(prevId);
+       success = true;
+       return ret;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index e70fd45..25cf27f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -81,7 +81,7 @@
+ import org.apache.hadoop.hdfs.protocol.DatanodeID;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+-import org.apache.hadoop.hdfs.protocol.EncryptionZoneWithId;
++import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+ import org.apache.hadoop.hdfs.protocol.FSLimitException;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+@@ -1433,13 +1433,13 @@ public void createEncryptionZone(String src, String keyName)
+   }
+ 
+   @Override
+-  public EncryptionZoneWithId getEZForPath(String src)
++  public EncryptionZone getEZForPath(String src)
+     throws IOException {
+     return namesystem.getEZForPath(src);
+   }
+ 
+   @Override
+-  public BatchedEntries<EncryptionZoneWithId> listEncryptionZones(
++  public BatchedEntries<EncryptionZone> listEncryptionZones(
+       long prevId) throws IOException {
+     return namesystem.listEncryptionZones(prevId);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+index ecf0970..1a33cdc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+@@ -45,14 +45,14 @@ message ListEncryptionZonesRequestProto {
+   required int64 id = 1;
+ }
+ 
+-message EncryptionZoneWithIdProto {
++message EncryptionZoneProto {
+   required string path = 1;
+   required string keyName = 2;
+   required int64 id = 3;
+ }
+ 
+ message ListEncryptionZonesResponseProto {
+-  repeated EncryptionZoneWithIdProto zones = 1;
++  repeated EncryptionZoneProto zones = 1;
+   required bool hasMore = 2;
+ }
+ 
+@@ -61,5 +61,5 @@ message GetEZForPathRequestProto {
+ }
+ 
+ message GetEZForPathResponseProto {
+-    required EncryptionZoneWithIdProto zone = 1;
++    required EncryptionZoneProto zone = 1;
+ }
+-- 
+1.7.9.5
+

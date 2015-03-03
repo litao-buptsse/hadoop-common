@@ -1,0 +1,30 @@
+From 4cc495d7c9fc604a8b5296032e7cef8eeb2f6b89 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 18 Sep 2014 14:51:08 -0700
+Subject: [PATCH 413/813] HADOOP-11106. Document considerations of HAR and
+ Encryption. (clamb via wang)
+
+(cherry picked from commit fe2f54d4cbd4b02bc3b8f642d0689b17dbfe169b)
+---
+ .../src/site/markdown/HadoopArchives.md.vm         |    5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/HadoopArchives.md.vm b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/HadoopArchives.md.vm
+index 5507e22..2b2e13d 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/HadoopArchives.md.vm
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/HadoopArchives.md.vm
+@@ -58,6 +58,11 @@ How to Create an Archive
+ 
+   `hadoop archive -archiveName zoo.har -p /foo/bar -r 3 /outputdir`
+ 
++  If you specify source files that are in an encryption zone, they will be
++  decrypted and written into the archive. If the har file is not located in an
++  encryption zone, then they will be stored in clear (decrypted) form. If the
++  har file is located in an encryption zone they will stored in encrypted form.
++
+ How to Look Up Files in Archives
+ --------------------------------
+ 
+-- 
+1.7.9.5
+

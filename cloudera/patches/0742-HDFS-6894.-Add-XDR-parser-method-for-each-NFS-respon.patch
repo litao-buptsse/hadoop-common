@@ -1,0 +1,988 @@
+From e8e57c06ae8facfda285ead2607ad3a998e853fd Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 1 Oct 2014 13:18:56 -0700
+Subject: [PATCH 742/813] HDFS-6894. Add XDR parser method for each NFS
+ response. Contributed by Brandon Li.
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/nfs/nfs3/response/ACCESS3Response.java  |   16 ++++++-
+ .../hadoop/nfs/nfs3/response/COMMIT3Response.java  |   14 +++++-
+ .../hadoop/nfs/nfs3/response/CREATE3Response.java  |   20 ++++++++-
+ .../hadoop/nfs/nfs3/response/FSINFO3Response.java  |   37 +++++++++++++++-
+ .../hadoop/nfs/nfs3/response/FSSTAT3Response.java  |   30 ++++++++++++-
+ .../hadoop/nfs/nfs3/response/GETATTR3Response.java |   11 ++++-
+ .../hadoop/nfs/nfs3/response/LINK3Response.java    |   14 +++++-
+ .../hadoop/nfs/nfs3/response/LOOKUP3Response.java  |    4 +-
+ .../hadoop/nfs/nfs3/response/MKDIR3Response.java   |   20 ++++++++-
+ .../hadoop/nfs/nfs3/response/MKNOD3Response.java   |   20 ++++++++-
+ .../hadoop/nfs/nfs3/response/NFS3Response.java     |    4 +-
+ .../nfs/nfs3/response/PATHCONF3Response.java       |   27 +++++++++++-
+ .../hadoop/nfs/nfs3/response/READ3Response.java    |   24 ++++++++++-
+ .../hadoop/nfs/nfs3/response/READDIR3Response.java |   45 +++++++++++++++++---
+ .../nfs/nfs3/response/READDIRPLUS3Response.java    |   40 ++++++++++++++++-
+ .../nfs/nfs3/response/READLINK3Response.java       |   17 +++++++-
+ .../hadoop/nfs/nfs3/response/REMOVE3Response.java  |   12 +++++-
+ .../hadoop/nfs/nfs3/response/RENAME3Response.java  |   11 ++++-
+ .../hadoop/nfs/nfs3/response/RMDIR3Response.java   |   10 ++++-
+ .../hadoop/nfs/nfs3/response/SETATTR3Response.java |   10 ++++-
+ .../hadoop/nfs/nfs3/response/SYMLINK3Response.java |   20 ++++++++-
+ .../hadoop/nfs/nfs3/response/WRITE3Response.java   |   22 +++++++++-
+ .../apache/hadoop/nfs/nfs3/response/WccAttr.java   |    7 +++
+ .../apache/hadoop/nfs/nfs3/response/WccData.java   |    8 ++++
+ .../apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java   |   16 +++----
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    4 +-
+ .../apache/hadoop/hdfs/nfs/nfs3/WriteManager.java  |    8 ++--
+ 27 files changed, 410 insertions(+), 61 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java
+index 5720fc6..03c649c 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java
+@@ -43,9 +43,21 @@ public ACCESS3Response(int status, Nfs3FileAttributes postOpAttr, int access) {
+     this.access = access;
+   }
+ 
++  public static ACCESS3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    Nfs3FileAttributes postOpAttr = null;
++    int access = 0;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      postOpAttr = Nfs3FileAttributes.deserialize(xdr);
++      access = xdr.readInt();
++    }
++    return new ACCESS3Response(status, postOpAttr, access);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (this.getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeBoolean(true);
+       postOpAttr.serialize(out);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/COMMIT3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/COMMIT3Response.java
+index fd90b18..a2cb222 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/COMMIT3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/COMMIT3Response.java
+@@ -47,9 +47,19 @@ public long getVerf() {
+     return verf;
+   }
+ 
++  public static COMMIT3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    long verf = 0;
++    WccData fileWcc = WccData.deserialize(xdr);
++    if (status == Nfs3Status.NFS3_OK) {
++      verf = xdr.readHyper();
++    }
++    return new COMMIT3Response(status, fileWcc, verf);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     fileWcc.serialize(out);
+     if (getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeLongAsHyper(verf);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/CREATE3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/CREATE3Response.java
+index 593cd82..0b54187 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/CREATE3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/CREATE3Response.java
+@@ -55,9 +55,25 @@ public WccData getDirWcc() {
+     return dirWcc;
+   }
+ 
++  public static CREATE3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    FileHandle objHandle = new FileHandle();
++    Nfs3FileAttributes postOpObjAttr = null;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      xdr.readBoolean();
++      objHandle.deserialize(xdr);
++      xdr.readBoolean();
++      postOpObjAttr = Nfs3FileAttributes.deserialize(xdr);
++    }
++
++    WccData dirWcc = WccData.deserialize(xdr);
++    return new CREATE3Response(status, objHandle, postOpObjAttr, dirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeBoolean(true); // Handle follows
+       objHandle.serialize(out);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSINFO3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSINFO3Response.java
+index ed301ac..ebd54fe 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSINFO3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSINFO3Response.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
+ import org.apache.hadoop.nfs.NfsTime;
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Status;
+ import org.apache.hadoop.oncrpc.XDR;
+@@ -109,9 +110,41 @@ public FSINFO3Response(int status, Nfs3FileAttributes postOpAttr, int rtmax,
+     this.properties = properties;
+   }
+ 
++  public static FSINFO3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpObjAttr = Nfs3FileAttributes.deserialize(xdr);
++    int rtmax = 0;
++    int rtpref = 0;
++    int rtmult = 0;
++    int wtmax = 0;
++    int wtpref = 0;
++    int wtmult = 0;
++    int dtpref = 0;
++    long maxFileSize = 0;
++    NfsTime timeDelta = null;
++    int properties = 0;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      rtmax = xdr.readInt();
++      rtpref = xdr.readInt();
++      rtmult = xdr.readInt();
++      wtmax = xdr.readInt();
++      wtpref = xdr.readInt();
++      wtmult = xdr.readInt();
++      dtpref = xdr.readInt();
++      maxFileSize = xdr.readHyper();
++      timeDelta = NfsTime.deserialize(xdr);
++      properties = xdr.readInt();
++    }
++    return new FSINFO3Response(status, postOpObjAttr, rtmax, rtpref, rtmult,
++        wtmax, wtpref, wtmult, dtpref, maxFileSize, timeDelta, properties);
++
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     out.writeBoolean(true);
+     postOpAttr.serialize(out);
+ 
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSSTAT3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSSTAT3Response.java
+index 0dd3f73..c0d1a8a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSSTAT3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/FSSTAT3Response.java
+@@ -17,6 +17,7 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Status;
+ import org.apache.hadoop.oncrpc.XDR;
+@@ -90,9 +91,34 @@ public FSSTAT3Response(int status, Nfs3FileAttributes postOpAttr,
+     this.invarsec = invarsec;
+   }
+ 
++  public static FSSTAT3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpAttr = Nfs3FileAttributes.deserialize(xdr);
++    long tbytes = 0;
++    long fbytes = 0;
++    long abytes = 0;
++    long tfiles = 0;
++    long ffiles = 0;
++    long afiles = 0;
++    int invarsec = 0;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      tbytes = xdr.readHyper();
++      fbytes = xdr.readHyper();
++      abytes = xdr.readHyper();
++      tfiles = xdr.readHyper();
++      ffiles = xdr.readHyper();
++      afiles = xdr.readHyper();
++      invarsec = xdr.readInt();
++    }
++    return new FSSTAT3Response(status, postOpAttr, tbytes, fbytes, abytes,
++        tfiles, ffiles, afiles, invarsec);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     out.writeBoolean(true);
+     if (postOpAttr == null) {
+       postOpAttr = new Nfs3FileAttributes();
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/GETATTR3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/GETATTR3Response.java
+index b9bb3f0..092abbc 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/GETATTR3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/GETATTR3Response.java
+@@ -40,9 +40,16 @@ public void setPostOpAttr(Nfs3FileAttributes postOpAttr) {
+     this.postOpAttr = postOpAttr;
+   }
+   
++  public static GETATTR3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    Nfs3FileAttributes attr = (status == Nfs3Status.NFS3_OK) ? Nfs3FileAttributes
++        .deserialize(xdr) : new Nfs3FileAttributes();
++    return new GETATTR3Response(status, attr);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (getStatus() == Nfs3Status.NFS3_OK) {
+       postOpAttr.serialize(out);
+     }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java
+index 834ee3c..3893aa1 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
++import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
++import org.apache.hadoop.nfs.nfs3.Nfs3Status;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.Verifier;
+ 
+@@ -43,9 +45,17 @@ public WccData getLinkDirWcc() {
+     return linkDirWcc;
+   }
+ 
++  public static LINK3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    WccData fromDirWcc = WccData.deserialize(xdr);
++    WccData linkDirWcc = WccData.deserialize(xdr);
++    return new LINK3Response(status, fromDirWcc, linkDirWcc);
++  }
++
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     fromDirWcc.serialize(out);
+     linkDirWcc.serialize(out);
+     
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LOOKUP3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LOOKUP3Response.java
+index 5d33f98..9aa86b9 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LOOKUP3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LOOKUP3Response.java
+@@ -62,8 +62,8 @@ public LOOKUP3Response(XDR xdr) throws IOException {
+   }
+ 
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (this.status == Nfs3Status.NFS3_OK) {
+       fileHandle.serialize(out);
+       out.writeBoolean(true); // Attribute follows
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKDIR3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKDIR3Response.java
+index 0e0980a..a07a3da 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKDIR3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKDIR3Response.java
+@@ -55,9 +55,25 @@ public WccData getDirWcc() {
+     return dirWcc;
+   }
+ 
++  public static MKDIR3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    FileHandle objFileHandle = new FileHandle();
++    Nfs3FileAttributes objAttr = null;
++    WccData dirWcc;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      xdr.readBoolean();
++      objFileHandle.deserialize(xdr);
++      xdr.readBoolean();
++      objAttr = Nfs3FileAttributes.deserialize(xdr);
++    }
++    dirWcc = WccData.deserialize(xdr);
++    return new MKDIR3Response(status, objFileHandle, objAttr, dirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeBoolean(true); // Handle follows
+       objFileHandle.serialize(out);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java
+index 292094e..57faa55 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java
+@@ -52,9 +52,25 @@ public WccData getDirWcc() {
+     return dirWcc;
+   }
+ 
++  public static MKNOD3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    FileHandle objFileHandle = new FileHandle();
++    Nfs3FileAttributes objPostOpAttr = null;
++    WccData dirWcc;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      xdr.readBoolean();
++      objFileHandle.deserialize(xdr);
++      xdr.readBoolean();
++      objPostOpAttr = Nfs3FileAttributes.deserialize(xdr);
++    }
++    dirWcc = WccData.deserialize(xdr);
++    return new MKNOD3Response(status, objFileHandle, objPostOpAttr, dirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (this.getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeBoolean(true);
+       objFileHandle.serialize(out);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/NFS3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/NFS3Response.java
+index e30af82..2a2a1e4 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/NFS3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/NFS3Response.java
+@@ -39,12 +39,12 @@ public int getStatus() {
+   public void setStatus(int status) {
+     this.status = status;
+   }
+-  
++
+   /**
+    * Write the response, along with the rpc header (including verifier), to the
+    * XDR.
+    */
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
+     RpcAcceptedReply reply = RpcAcceptedReply.getAcceptInstance(xid, verifier);
+     reply.write(out);
+     out.writeInt(this.getStatus());
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/PATHCONF3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/PATHCONF3Response.java
+index e4578a0..cb5f31c 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/PATHCONF3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/PATHCONF3Response.java
+@@ -77,9 +77,32 @@ public PATHCONF3Response(int status, Nfs3FileAttributes postOpAttr,
+     this.casePreserving = casePreserving;
+   }
+ 
++  public static PATHCONF3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes objPostOpAttr = Nfs3FileAttributes.deserialize(xdr);
++    int linkMax = 0;
++    int nameMax = 0;
++    boolean noTrunc = false;
++    boolean chownRestricted = false;
++    boolean caseInsensitive = false;
++    boolean casePreserving = false;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      linkMax = xdr.readInt();
++      nameMax = xdr.readInt();
++      noTrunc = xdr.readBoolean();
++      chownRestricted = xdr.readBoolean();
++      caseInsensitive = xdr.readBoolean();
++      casePreserving = xdr.readBoolean();
++    }
++    return new PATHCONF3Response(status, objPostOpAttr, linkMax, nameMax,
++        noTrunc, chownRestricted, caseInsensitive, casePreserving);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     out.writeBoolean(true);
+     postOpAttr.serialize(out);
+ 
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READ3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READ3Response.java
+index 2524ca0..05eef5b 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READ3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READ3Response.java
+@@ -62,9 +62,29 @@ public ByteBuffer getData() {
+     return data;
+   }
+ 
++  public static READ3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpAttr = Nfs3FileAttributes.deserialize(xdr);
++    int count = 0;
++    boolean eof = false;
++    byte[] data = new byte[0];
++
++    if (status == Nfs3Status.NFS3_OK) {
++      count = xdr.readInt();
++      eof = xdr.readBoolean();
++      int len = xdr.readInt();
++      assert (len == count);
++      data = xdr.readFixedOpaque(count);
++    }
++
++    return new READ3Response(status, postOpAttr, count, eof,
++        ByteBuffer.wrap(data));
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     out.writeBoolean(true); // Attribute follows
+     postOpAttr.serialize(out);
+ 
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIR3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIR3Response.java
+index e0a0d96..5bde2c0 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIR3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIR3Response.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
++import java.nio.ByteBuffer;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.List;
+@@ -59,6 +61,19 @@ public String getName() {
+     long getCookie() {
+       return cookie;
+     }
++
++    static Entry3 deserialzie(XDR xdr) {
++      long fileId = xdr.readHyper();
++      String name = xdr.readString();
++      long cookie = xdr.readHyper();
++      return new Entry3(fileId, name, cookie);
++    }
++
++    void seralize(XDR xdr) {
++      xdr.writeLongAsHyper(getFileId());
++      xdr.writeString(getName());
++      xdr.writeLongAsHyper(getCookie());
++    }
+   }
+ 
+   public static class DirList3 {
+@@ -104,9 +119,31 @@ public DirList3 getDirList() {
+     return dirList;
+   }
+ 
++  public static READDIR3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpDirAttr = Nfs3FileAttributes.deserialize(xdr);
++    long cookieVerf = 0;
++    ArrayList<Entry3> entries = new ArrayList<Entry3>();
++    DirList3 dirList = null;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      cookieVerf = xdr.readHyper();
++      while (xdr.readBoolean()) {
++        Entry3 e =  Entry3.deserialzie(xdr);
++        entries.add(e);
++      }
++      boolean eof = xdr.readBoolean();
++      Entry3[] allEntries = new Entry3[entries.size()];
++      entries.toArray(allEntries);
++      dirList = new DirList3(allEntries, eof);
++    }
++    return new READDIR3Response(status, postOpDirAttr, cookieVerf, dirList);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR xdr, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(xdr, xid, verifier);
++  public XDR serialize(XDR xdr, int xid, Verifier verifier) {
++    super.serialize(xdr, xid, verifier);
+     xdr.writeBoolean(true); // Attributes follow
+     postOpDirAttr.serialize(xdr);
+ 
+@@ -114,9 +151,7 @@ public XDR writeHeaderAndResponse(XDR xdr, int xid, Verifier verifier) {
+       xdr.writeLongAsHyper(cookieVerf);
+       for (Entry3 e : dirList.entries) {
+         xdr.writeBoolean(true); // Value follows
+-        xdr.writeLongAsHyper(e.getFileId());
+-        xdr.writeString(e.getName());
+-        xdr.writeLongAsHyper(e.getCookie());
++        e.seralize(xdr);
+       }
+ 
+       xdr.writeBoolean(false);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIRPLUS3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIRPLUS3Response.java
+index eeda867..cf32bd1 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIRPLUS3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READDIRPLUS3Response.java
+@@ -17,6 +17,7 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.List;
+@@ -24,6 +25,8 @@
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Status;
++import org.apache.hadoop.nfs.nfs3.response.READDIR3Response.DirList3;
++import org.apache.hadoop.nfs.nfs3.response.READDIR3Response.Entry3;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.Verifier;
+ 
+@@ -58,6 +61,17 @@ public String getName() {
+       return name;
+     }
+     
++    static EntryPlus3 deseralize(XDR xdr) {
++      long fileId = xdr.readHyper();
++      String name = xdr.readString();
++      long cookie = xdr.readHyper();
++      xdr.readBoolean();
++      Nfs3FileAttributes nameAttr = Nfs3FileAttributes.deserialize(xdr);
++      FileHandle objFileHandle = new FileHandle();
++      objFileHandle.deserialize(xdr);
++      return new EntryPlus3(fileId, name, cookie, nameAttr, objFileHandle);
++    }
++
+     void seralize(XDR xdr) {
+       xdr.writeLongAsHyper(fileId);
+       xdr.writeString(name);
+@@ -105,9 +119,31 @@ public READDIRPLUS3Response(int status, Nfs3FileAttributes postOpDirAttr,
+     this.dirListPlus = dirListPlus;
+   }
+   
++  public static READDIRPLUS3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpDirAttr = Nfs3FileAttributes.deserialize(xdr);
++    long cookieVerf = 0;
++    ArrayList<EntryPlus3> entries = new ArrayList<EntryPlus3>();
++    DirListPlus3 dirList = null;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      cookieVerf = xdr.readHyper();
++      while (xdr.readBoolean()) {
++        EntryPlus3 e = EntryPlus3.deseralize(xdr);
++        entries.add(e);
++      }
++      boolean eof = xdr.readBoolean();
++      EntryPlus3[] allEntries = new EntryPlus3[entries.size()];
++      entries.toArray(allEntries);
++      dirList = new DirListPlus3(allEntries, eof);
++    }
++    return new READDIRPLUS3Response(status, postOpDirAttr, cookieVerf, dirList);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     out.writeBoolean(true); // attributes follow
+     if (postOpDirAttr == null) {
+       postOpDirAttr = new Nfs3FileAttributes();
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READLINK3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READLINK3Response.java
+index fe54296..9041d4a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READLINK3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/READLINK3Response.java
+@@ -41,9 +41,22 @@ public READLINK3Response(int status, Nfs3FileAttributes postOpAttr,
+     System.arraycopy(path, 0, this.path, 0, path.length);
+   }
+ 
++  public static READLINK3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpSymlinkAttr = Nfs3FileAttributes.deserialize(xdr);
++    byte path[] = new byte[0];
++
++    if (status == Nfs3Status.NFS3_OK) {
++      path = xdr.readVariableOpaque();
++    }
++
++    return new READLINK3Response(status, postOpSymlinkAttr, path);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     out.writeBoolean(true); // Attribute follows
+     postOpSymlinkAttr.serialize(out);
+     if (getStatus() == Nfs3Status.NFS3_OK) {
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/REMOVE3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/REMOVE3Response.java
+index 55b880b..f0fcb3d 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/REMOVE3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/REMOVE3Response.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
++import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
++import org.apache.hadoop.nfs.nfs3.Nfs3Status;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.Verifier;
+ 
+@@ -35,9 +37,15 @@ public REMOVE3Response(int status, WccData dirWcc) {
+     this.dirWcc = dirWcc;
+   }
+   
++  public static REMOVE3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    WccData dirWcc = WccData.deserialize(xdr);
++    return new REMOVE3Response(status, dirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (dirWcc == null) {
+       dirWcc = new WccData(null, null);
+     }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RENAME3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RENAME3Response.java
+index 4e0f4c0..3a8d68a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RENAME3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RENAME3Response.java
+@@ -45,9 +45,16 @@ public WccData getToDirWcc() {
+     return toDirWcc;
+   }
+ 
++  public static RENAME3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    WccData fromDirWcc = WccData.deserialize(xdr);
++    WccData toDirWcc = WccData.deserialize(xdr);
++    return new RENAME3Response(status, fromDirWcc, toDirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     fromDirWcc.serialize(out);
+     toDirWcc.serialize(out);
+     return out;
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RMDIR3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RMDIR3Response.java
+index e7b0664..229ab60 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RMDIR3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/RMDIR3Response.java
+@@ -39,9 +39,15 @@ public WccData getDirWcc() {
+     return dirWcc;
+   }
+ 
++  public static RMDIR3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    WccData dirWcc = WccData.deserialize(xdr);
++    return new RMDIR3Response(status, dirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     dirWcc.serialize(out);
+     return out;
+   }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SETATTR3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SETATTR3Response.java
+index eda06d4..aa6c934 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SETATTR3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SETATTR3Response.java
+@@ -39,9 +39,15 @@ public WccData getWccData() {
+     return wccData;
+   }
+ 
++  public static SETATTR3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    WccData wccData = WccData.deserialize(xdr);
++    return new SETATTR3Response(status, wccData);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     wccData.serialize(out);
+     return out;
+   }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SYMLINK3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SYMLINK3Response.java
+index d8e3441..3a0c188 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SYMLINK3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/SYMLINK3Response.java
+@@ -55,9 +55,25 @@ public WccData getDirWcc() {
+     return dirWcc;
+   }
+ 
++  public static SYMLINK3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    FileHandle objFileHandle = new FileHandle();
++    Nfs3FileAttributes objPostOpAttr = null;
++    WccData dirWcc;
++    if (status == Nfs3Status.NFS3_OK) {
++      xdr.readBoolean();
++      objFileHandle.deserialize(xdr);
++      xdr.readBoolean();
++      objPostOpAttr = Nfs3FileAttributes.deserialize(xdr);
++    }
++
++    dirWcc = WccData.deserialize(xdr);
++    return new SYMLINK3Response(status, objFileHandle, objPostOpAttr, dirWcc);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     if (this.getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeBoolean(true);
+       objFileHandle.serialize(out);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WRITE3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WRITE3Response.java
+index f33c4de..8d4b4d9 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WRITE3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WRITE3Response.java
+@@ -17,7 +17,9 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.response;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
++import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Status;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant.WriteStableHow;
+ import org.apache.hadoop.oncrpc.XDR;
+@@ -58,9 +60,25 @@ public long getVerifer() {
+     return verifer;
+   }
+ 
++  public static WRITE3Response deserialize(XDR xdr) {
++    int status = xdr.readInt();
++    WccData fileWcc = WccData.deserialize(xdr);
++    int count = 0;
++    WriteStableHow stableHow = null;
++    long verifier = 0;
++
++    if (status == Nfs3Status.NFS3_OK) {
++      count = xdr.readInt();
++      int how = xdr.readInt();
++      stableHow = WriteStableHow.values()[how];
++      verifier = xdr.readHyper();
++    }
++    return new WRITE3Response(status, fileWcc, count, stableHow, verifier);
++  }
++
+   @Override
+-  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+-    super.writeHeaderAndResponse(out, xid, verifier);
++  public XDR serialize(XDR out, int xid, Verifier verifier) {
++    super.serialize(out, xid, verifier);
+     fileWcc.serialize(out);
+     if (getStatus() == Nfs3Status.NFS3_OK) {
+       out.writeInt(count);
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccAttr.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccAttr.java
+index bf33f79..34df29a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccAttr.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccAttr.java
+@@ -52,6 +52,13 @@ public WccAttr(long size, NfsTime mtime, NfsTime ctime) {
+     this.ctime = ctime;
+   }
+ 
++  public static WccAttr deserialize(XDR xdr) {
++    long size = xdr.readHyper();
++    NfsTime mtime = NfsTime.deserialize(xdr);
++    NfsTime ctime = NfsTime.deserialize(xdr);
++    return new WccAttr(size, mtime, ctime);
++  }
++
+   public void serialize(XDR out) {
+     out.writeLongAsHyper(size);
+     if (mtime == null) {
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccData.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccData.java
+index 4a00a84..c868213 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccData.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/WccData.java
+@@ -49,6 +49,14 @@ public WccData(WccAttr preOpAttr, Nfs3FileAttributes postOpAttr) {
+         : postOpAttr;
+   }
+ 
++  public static WccData deserialize(XDR xdr) {
++    xdr.readBoolean();
++    WccAttr preOpAttr = WccAttr.deserialize(xdr);
++    xdr.readBoolean();
++    Nfs3FileAttributes postOpAttr = Nfs3FileAttributes.deserialize(xdr);
++    return new WccData(preOpAttr, postOpAttr);
++  }
++
+   public void serialize(XDR out) {
+     out.writeBoolean(true); // attributes follow
+     preOpAttr.serialize(out);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
+index 6a5368c..dc2f1b3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
+@@ -409,7 +409,7 @@ public void receivedNewWrite(DFSClient dfsClient, WRITE3Request request,
+       WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3ERR_IO,
+           fileWcc, 0, request.getStableHow(), Nfs3Constant.WRITE_COMMIT_VERF);
+       Nfs3Utils.writeChannel(channel,
+-          response.writeHeaderAndResponse(new XDR(), xid, new VerifierNone()),
++          response.serialize(new XDR(), xid, new VerifierNone()),
+           xid);
+     } else {
+       // Update the write time first
+@@ -435,7 +435,7 @@ public void receivedNewWrite(DFSClient dfsClient, WRITE3Request request,
+           WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3_OK,
+               fileWcc, request.getCount(), request.getStableHow(),
+               Nfs3Constant.WRITE_COMMIT_VERF);
+-          Nfs3Utils.writeChannel(channel, response.writeHeaderAndResponse(
++          Nfs3Utils.writeChannel(channel, response.serialize(
+               new XDR(), xid, new VerifierNone()), xid);
+         }
+       } else {
+@@ -572,7 +572,7 @@ private void processOverWrite(DFSClient dfsClient, WRITE3Request request,
+     }
+     updateLastAccessTime();
+     Nfs3Utils.writeChannel(channel,
+-        response.writeHeaderAndResponse(new XDR(), xid, new VerifierNone()),
++        response.serialize(new XDR(), xid, new VerifierNone()),
+         xid);
+   }
+   
+@@ -644,7 +644,7 @@ private void receivedNewWriteInternal(DFSClient dfsClient,
+         WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3_OK,
+             fileWcc, count, stableHow, Nfs3Constant.WRITE_COMMIT_VERF);
+         Nfs3Utils
+-            .writeChannel(channel, response.writeHeaderAndResponse(new XDR(),
++            .writeChannel(channel, response.serialize(new XDR(),
+                 xid, new VerifierNone()), xid);
+         writeCtx.setReplied(true);
+       }
+@@ -1026,7 +1026,7 @@ private void processCommits(long offset) {
+       COMMIT3Response response = new COMMIT3Response(status, wccData,
+           Nfs3Constant.WRITE_COMMIT_VERF);
+       Nfs3Utils.writeChannelCommit(commit.getChannel(), response
+-          .writeHeaderAndResponse(new XDR(), commit.getXid(),
++          .serialize(new XDR(), commit.getXid(),
+               new VerifierNone()), commit.getXid());
+       
+       if (LOG.isDebugEnabled()) {
+@@ -1107,7 +1107,7 @@ private void doSingleWrite(final WriteCtx writeCtx) {
+         }
+         WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3_OK,
+             fileWcc, count, stableHow, Nfs3Constant.WRITE_COMMIT_VERF);
+-        Nfs3Utils.writeChannel(channel, response.writeHeaderAndResponse(
++        Nfs3Utils.writeChannel(channel, response.serialize(
+             new XDR(), xid, new VerifierNone()), xid);
+       }
+       
+@@ -1119,7 +1119,7 @@ private void doSingleWrite(final WriteCtx writeCtx) {
+           + offset + " and length " + count, e);
+       if (!writeCtx.getReplied()) {
+         WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3ERR_IO);
+-        Nfs3Utils.writeChannel(channel, response.writeHeaderAndResponse(
++        Nfs3Utils.writeChannel(channel, response.serialize(
+             new XDR(), xid, new VerifierNone()), xid);
+         // Keep stream open. Either client retries or SteamMonitor closes it.
+       }
+@@ -1170,7 +1170,7 @@ synchronized void cleanup() {
+         WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3ERR_IO,
+             fileWcc, 0, writeCtx.getStableHow(), Nfs3Constant.WRITE_COMMIT_VERF);
+         Nfs3Utils.writeChannel(writeCtx.getChannel(), response
+-            .writeHeaderAndResponse(new XDR(), writeCtx.getXid(),
++            .serialize(new XDR(), writeCtx.getXid(),
+                 new VerifierNone()), writeCtx.getXid());
+       }
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 774f75e..63b0490 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -2041,7 +2041,7 @@ COMMIT3Response commit(XDR xdr, Channel channel, int xid,
+       WccData fileWcc = new WccData(Nfs3Utils.getWccAttr(preOpAttr), postOpAttr);
+       int status = mapErrorStatus(e);
+       return new COMMIT3Response(status, fileWcc,
+-        Nfs3Constant.WRITE_COMMIT_VERF);
++          Nfs3Constant.WRITE_COMMIT_VERF);
+     }
+   }
+ 
+@@ -2179,7 +2179,7 @@ public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+       return;
+     }
+     // TODO: currently we just return VerifierNone
+-    out = response.writeHeaderAndResponse(out, xid, new VerifierNone());
++    out = response.serialize(out, xid, new VerifierNone());
+     ChannelBuffer buf = ChannelBuffers.wrappedBuffer(out.asReadOnlyWrap()
+         .buffer());
+     RpcResponse rsp = new RpcResponse(buf, info.remoteAddress());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
+index 5f2ded7..7bddc44 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
+@@ -123,7 +123,7 @@ void handleWrite(DFSClient dfsClient, WRITE3Request request, Channel channel,
+     byte[] data = request.getData().array();
+     if (data.length < count) {
+       WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3ERR_INVAL);
+-      Nfs3Utils.writeChannel(channel, response.writeHeaderAndResponse(
++      Nfs3Utils.writeChannel(channel, response.serialize(
+           new XDR(), xid, new VerifierNone()), xid);
+       return;
+     }
+@@ -169,7 +169,7 @@ void handleWrite(DFSClient dfsClient, WRITE3Request request, Channel channel,
+         WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3ERR_IO,
+             fileWcc, count, request.getStableHow(),
+             Nfs3Constant.WRITE_COMMIT_VERF);
+-        Nfs3Utils.writeChannel(channel, response.writeHeaderAndResponse(
++        Nfs3Utils.writeChannel(channel, response.serialize(
+             new XDR(), xid, new VerifierNone()), xid);
+         return;
+       }
+@@ -192,7 +192,7 @@ void handleWrite(DFSClient dfsClient, WRITE3Request request, Channel channel,
+         WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3ERR_JUKEBOX,
+             fileWcc, 0, request.getStableHow(), Nfs3Constant.WRITE_COMMIT_VERF);
+         Nfs3Utils.writeChannel(channel,
+-            response.writeHeaderAndResponse(new XDR(), xid, new VerifierNone()),
++            response.serialize(new XDR(), xid, new VerifierNone()),
+             xid);
+         return;
+       }
+@@ -297,7 +297,7 @@ void handleCommit(DFSClient dfsClient, FileHandle fileHandle,
+     COMMIT3Response response = new COMMIT3Response(status, fileWcc,
+         Nfs3Constant.WRITE_COMMIT_VERF);
+     Nfs3Utils.writeChannelCommit(channel,
+-        response.writeHeaderAndResponse(new XDR(), xid, new VerifierNone()),
++        response.serialize(new XDR(), xid, new VerifierNone()),
+         xid);
+   }
+ 
+-- 
+1.7.9.5
+

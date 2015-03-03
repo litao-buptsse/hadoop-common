@@ -1,0 +1,84 @@
+From fbfe408b9476fe54cbffe51b8cf89453896ccad9 Mon Sep 17 00:00:00 2001
+From: Xuan <xgong@apache.org>
+Date: Mon, 10 Nov 2014 18:25:01 -0800
+Subject: [PATCH 719/813] YARN-2841. RMProxy should retry EOFException. 
+ Contributed by Jian He
+
+(cherry picked from commit 5c9a51f140ba76ddb25580aeb288db25e3f9653f)
+(cherry picked from commit b3badf935a150f2dc5ae28b63d3b42f9e38ed605)
+---
+ .../org/apache/hadoop/yarn/client/RMProxy.java     |    2 ++
+ .../org/apache/hadoop/yarn/client/ServerProxy.java |    2 ++
+ .../server/nodemanager/TestNodeStatusUpdater.java  |    7 +++++++
+ 3 files changed, 11 insertions(+)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/RMProxy.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/RMProxy.java
+index ee09973..fa8d642 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/RMProxy.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/RMProxy.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.client;
+ 
++import java.io.EOFException;
+ import java.io.IOException;
+ import java.net.ConnectException;
+ import java.net.InetSocketAddress;
+@@ -240,6 +241,7 @@ public static RetryPolicy createRetryPolicy(Configuration conf) {
+     Map<Class<? extends Exception>, RetryPolicy> exceptionToPolicyMap =
+         new HashMap<Class<? extends Exception>, RetryPolicy>();
+ 
++    exceptionToPolicyMap.put(EOFException.class, retryPolicy);
+     exceptionToPolicyMap.put(ConnectException.class, retryPolicy);
+     exceptionToPolicyMap.put(NoRouteToHostException.class, retryPolicy);
+     exceptionToPolicyMap.put(UnknownHostException.class, retryPolicy);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/ServerProxy.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/ServerProxy.java
+index 6c72dc0..b6fea62 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/ServerProxy.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/client/ServerProxy.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.client;
+ 
++import java.io.EOFException;
+ import java.net.ConnectException;
+ import java.net.InetSocketAddress;
+ import java.net.NoRouteToHostException;
+@@ -67,6 +68,7 @@ protected static RetryPolicy createRetryPolicy(Configuration conf,
+ 
+     Map<Class<? extends Exception>, RetryPolicy> exceptionToPolicyMap =
+         new HashMap<Class<? extends Exception>, RetryPolicy>();
++    exceptionToPolicyMap.put(EOFException.class, retryPolicy);
+     exceptionToPolicyMap.put(ConnectException.class, retryPolicy);
+     exceptionToPolicyMap.put(NoRouteToHostException.class, retryPolicy);
+     exceptionToPolicyMap.put(UnknownHostException.class, retryPolicy);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeStatusUpdater.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeStatusUpdater.java
+index 925a249..7a79d09 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeStatusUpdater.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeStatusUpdater.java
+@@ -21,6 +21,7 @@
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
+ 
++import java.io.EOFException;
+ import java.io.File;
+ import java.io.IOException;
+ import java.net.InetAddress;
+@@ -737,8 +738,14 @@ public RegisterNodeManagerResponse registerNodeManager(
+     public NodeHeartbeatResponse nodeHeartbeat(NodeHeartbeatRequest request)
+         throws YarnException, IOException {
+       heartBeatID++;
++      if(heartBeatID == 1) {
++        // EOFException should be retried as well.
++        throw new EOFException("NodeHeartbeat exception");
++      }
++      else {
+       throw new java.net.ConnectException(
+           "NodeHeartbeat exception");
++      }
+     }
+   }
+ 
+-- 
+1.7.9.5
+

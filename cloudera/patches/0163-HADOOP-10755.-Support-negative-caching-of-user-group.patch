@@ -1,0 +1,422 @@
+From b3a998af2029db4c21904ad078da9251f964506b Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 21 Jul 2014 21:52:17 +0000
+Subject: [PATCH 163/813] HADOOP-10755. Support negative caching of user-group
+ mapping. Contributed by Lei Xu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1612408 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ae81f76ba949f2d7c9e86153576a447f65023366)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+(cherry picked from commit b6769e0df0c3be52f750e38b45f53f0e7b79cf35)
+---
+ .../hadoop/fs/CommonConfigurationKeysPublic.java   |    6 +++
+ .../java/org/apache/hadoop/security/Groups.java    |   52 +++++++++++++++---
+ .../apache/hadoop/security/LdapGroupsMapping.java  |    6 ++-
+ .../security/ShellBasedUnixGroupsMapping.java      |    3 +-
+ .../main/java/org/apache/hadoop/util/Timer.java    |   51 ++++++++++++++++++
+ .../src/main/resources/core-default.xml            |   14 +++++
+ .../apache/hadoop/security/TestGroupsCaching.java  |   56 ++++++++++++++++++++
+ .../java/org/apache/hadoop/util/FakeTimer.java     |   52 ++++++++++++++++++
+ 8 files changed, 231 insertions(+), 9 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Timer.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/FakeTimer.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
+index 1cad082..6023eeb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
+@@ -250,6 +250,12 @@
+   public static final long HADOOP_SECURITY_GROUPS_CACHE_SECS_DEFAULT =
+     300;
+   /** See <a href="{@docRoot}/../core-default.html">core-default.xml</a> */
++  public static final String  HADOOP_SECURITY_GROUPS_NEGATIVE_CACHE_SECS =
++    "hadoop.security.groups.negative-cache.secs";
++  /** See <a href="{@docRoot}/../core-default.html">core-default.xml</a> */
++  public static final long HADOOP_SECURITY_GROUPS_NEGATIVE_CACHE_SECS_DEFAULT =
++    30;
++  /** See <a href="{@docRoot}/../core-default.html">core-default.xml</a> */
+   public static final String HADOOP_SECURITY_GROUPS_CACHE_WARN_AFTER_MS =
+     "hadoop.security.groups.cache.warn.after.ms";
+   public static final long HADOOP_SECURITY_GROUPS_CACHE_WARN_AFTER_MS_DEFAULT =
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java
+index ea18b94..c500419 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java
+@@ -33,7 +33,7 @@
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.util.ReflectionUtils;
+ import org.apache.hadoop.util.StringUtils;
+-import org.apache.hadoop.util.Time;
++import org.apache.hadoop.util.Timer;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -58,24 +58,35 @@
+   private final Map<String, List<String>> staticUserToGroupsMap = 
+       new HashMap<String, List<String>>();
+   private final long cacheTimeout;
++  private final long negativeCacheTimeout;
+   private final long warningDeltaMs;
++  private final Timer timer;
+ 
+   public Groups(Configuration conf) {
++    this(conf, new Timer());
++  }
++
++  public Groups(Configuration conf, Timer timer) {
+     impl = 
+       ReflectionUtils.newInstance(
+           conf.getClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING, 
+                         ShellBasedUnixGroupsMapping.class, 
+                         GroupMappingServiceProvider.class), 
+           conf);
+-    
++
+     cacheTimeout = 
+       conf.getLong(CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_CACHE_SECS, 
+           CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_CACHE_SECS_DEFAULT) * 1000;
++    negativeCacheTimeout =
++      conf.getLong(CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_NEGATIVE_CACHE_SECS,
++          CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_NEGATIVE_CACHE_SECS_DEFAULT) * 1000;
+     warningDeltaMs =
+       conf.getLong(CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_CACHE_WARN_AFTER_MS,
+         CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_CACHE_WARN_AFTER_MS_DEFAULT);
+     parseStaticMapping(conf);
+ 
++    this.timer = timer;
++
+     if(LOG.isDebugEnabled())
+       LOG.debug("Group mapping impl=" + impl.getClass().getName() + 
+           "; cacheTimeout=" + cacheTimeout + "; warningDeltaMs=" +
+@@ -111,7 +122,29 @@ private void parseStaticMapping(Configuration conf) {
+       staticUserToGroupsMap.put(user, groups);
+     }
+   }
++
++  /**
++   * Determine whether the CachedGroups is expired.
++   * @param groups cached groups for one user.
++   * @return true if groups is expired from useToGroupsMap.
++   */
++  private boolean hasExpired(CachedGroups groups, long startMs) {
++    if (groups == null) {
++      return true;
++    }
++    long timeout = cacheTimeout;
++    if (isNegativeCacheEnabled() && groups.getGroups().isEmpty()) {
++      // This CachedGroups is in the negative cache, thus it should expire
++      // sooner.
++      timeout = negativeCacheTimeout;
++    }
++    return groups.getTimestamp() + timeout <= startMs;
++  }
+   
++  private boolean isNegativeCacheEnabled() {
++    return negativeCacheTimeout > 0;
++  }
++
+   /**
+    * Get the group memberships of a given user.
+    * @param user User's name
+@@ -126,18 +159,22 @@ private void parseStaticMapping(Configuration conf) {
+     }
+     // Return cached value if available
+     CachedGroups groups = userToGroupsMap.get(user);
+-    long startMs = Time.monotonicNow();
+-    // if cache has a value and it hasn't expired
+-    if (groups != null && (groups.getTimestamp() + cacheTimeout > startMs)) {
++    long startMs = timer.monotonicNow();
++    if (!hasExpired(groups, startMs)) {
+       if(LOG.isDebugEnabled()) {
+         LOG.debug("Returning cached groups for '" + user + "'");
+       }
++      if (groups.getGroups().isEmpty()) {
++        // Even with enabling negative cache, getGroups() has the same behavior
++        // that throws IOException if the groups for the user is empty.
++        throw new IOException("No groups found for user " + user);
++      }
+       return groups.getGroups();
+     }
+ 
+     // Create and cache user's groups
+     List<String> groupList = impl.getGroups(user);
+-    long endMs = Time.monotonicNow();
++    long endMs = timer.monotonicNow();
+     long deltaMs = endMs - startMs ;
+     UserGroupInformation.metrics.addGetGroups(deltaMs);
+     if (deltaMs > warningDeltaMs) {
+@@ -146,6 +183,9 @@ private void parseStaticMapping(Configuration conf) {
+     }
+     groups = new CachedGroups(groupList, endMs);
+     if (groups.getGroups().isEmpty()) {
++      if (isNegativeCacheEnabled()) {
++        userToGroupsMap.put(user, groups);
++      }
+       throw new IOException("No groups found for user " + user);
+     }
+     userToGroupsMap.put(user, groups);
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java
+index a7ffc93..d92c469 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java
+@@ -201,7 +201,8 @@
+     } catch (CommunicationException e) {
+       LOG.warn("Connection is closed, will try to reconnect");
+     } catch (NamingException e) {
+-      LOG.warn("Exception trying to get groups for user " + user, e);
++      LOG.warn("Exception trying to get groups for user " + user + ": "
++          + e.getMessage());
+       return emptyResults;
+     }
+ 
+@@ -215,7 +216,8 @@
+       } catch (CommunicationException e) {
+         LOG.warn("Connection being closed, reconnecting failed, retryCount = " + retryCount);
+       } catch (NamingException e) {
+-        LOG.warn("Exception trying to get groups for user " + user, e);
++        LOG.warn("Exception trying to get groups for user " + user + ":"
++            + e.getMessage());
+         return emptyResults;
+       }
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java
+index 11056eb..da6e434 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java
+@@ -84,7 +84,8 @@ public void cacheGroupsAdd(List<String> groups) throws IOException {
+       result = Shell.execCommand(Shell.getGroupsForUserCommand(user));
+     } catch (ExitCodeException e) {
+       // if we didn't get the group - just return empty list;
+-      LOG.warn("got exception trying to get groups for user " + user, e);
++      LOG.warn("got exception trying to get groups for user " + user + ": "
++          + e.getMessage());
+       return new LinkedList<String>();
+     }
+     
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Timer.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Timer.java
+new file mode 100644
+index 0000000..e1e21a7
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Timer.java
+@@ -0,0 +1,51 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.util;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
++
++/**
++ * Utility methods for getting the time and computing intervals.
++ *
++ * It has the same behavior as {{@link Time}}, with the exception that its
++ * functions can be overridden for dependency injection purposes.
++ */
++@InterfaceAudience.Private
++@InterfaceStability.Unstable
++public class Timer {
++  /**
++   * Current system time.  Do not use this to calculate a duration or interval
++   * to sleep, because it will be broken by settimeofday.  Instead, use
++   * monotonicNow.
++   * @return current time in msec.
++   */
++  public long now() {
++    return Time.now();
++  }
++
++  /**
++   * Current time from some arbitrary time base in the past, counting in
++   * milliseconds, and not affected by settimeofday or similar system clock
++   * changes.  This is appropriate to use when computing how much longer to
++   * wait for an interval to expire.
++   * @return a monotonic clock that counts in milliseconds.
++   */
++  public long monotonicNow() { return Time.monotonicNow(); }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml b/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml
+index 2560056..bb5d327 100644
+--- a/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml
++++ b/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml
+@@ -198,6 +198,20 @@ for ldap providers in the same way as above does.
+ </property>
+ 
+ <property>
++  <name>hadoop.security.groups.negative-cache.secs</name>
++  <value>30</value>
++  <description>
++    Expiration time for entries in the the negative user-to-group mapping
++    caching, in seconds. This is useful when invalid users are retrying
++    frequently. It is suggested to set a small value for this expiration, since
++    a transient error in group lookup could temporarily lock out a legitimate
++    user.
++
++    Set this to zero or negative value to disable negative user-to-group caching.
++  </description>
++</property>
++
++<property>
+   <name>hadoop.security.groups.cache.warn.after.ms</name>
+   <value>5000</value>
+   <description>
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestGroupsCaching.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestGroupsCaching.java
+index 44134cc..a814b0d 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestGroupsCaching.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestGroupsCaching.java
+@@ -26,8 +26,11 @@
+ import java.util.List;
+ import java.util.Set;
+ 
++import org.apache.hadoop.test.GenericTestUtils;
++import org.apache.hadoop.util.FakeTimer;
+ import org.junit.Before;
+ import org.junit.Test;
++import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.fail;
+@@ -94,6 +97,9 @@ public static void addToBlackList(String user) throws IOException {
+ 
+   @Test
+   public void testGroupsCaching() throws Exception {
++    // Disable negative cache.
++    conf.setLong(
++        CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_NEGATIVE_CACHE_SECS, 0);
+     Groups groups = new Groups(conf);
+     groups.cacheGroupsAdd(Arrays.asList(myGroups));
+     groups.refresh();
+@@ -163,4 +169,54 @@ public void testGroupLookupForStaticUsers() throws Exception {
+         FakeunPrivilegedGroupMapping.invoked);
+ 
+   }
++
++  @Test
++  public void testNegativeGroupCaching() throws Exception {
++    final String user = "negcache";
++    final String failMessage = "Did not throw IOException: ";
++    conf.setLong(
++        CommonConfigurationKeys.HADOOP_SECURITY_GROUPS_NEGATIVE_CACHE_SECS, 2);
++    FakeTimer timer = new FakeTimer();
++    Groups groups = new Groups(conf, timer);
++    groups.cacheGroupsAdd(Arrays.asList(myGroups));
++    groups.refresh();
++    FakeGroupMapping.addToBlackList(user);
++
++    // In the first attempt, the user will be put in the negative cache.
++    try {
++      groups.getGroups(user);
++      fail(failMessage + "Failed to obtain groups from FakeGroupMapping.");
++    } catch (IOException e) {
++      // Expects to raise exception for the first time. But the user will be
++      // put into the negative cache
++      GenericTestUtils.assertExceptionContains("No groups found for user", e);
++    }
++
++    // The second time, the user is in the negative cache.
++    try {
++      groups.getGroups(user);
++      fail(failMessage + "The user is in the negative cache.");
++    } catch (IOException e) {
++      GenericTestUtils.assertExceptionContains("No groups found for user", e);
++    }
++
++    // Brings back the backend user-group mapping service.
++    FakeGroupMapping.clearBlackList();
++
++    // It should still get groups from the negative cache.
++    try {
++      groups.getGroups(user);
++      fail(failMessage + "The user is still in the negative cache, even " +
++          "FakeGroupMapping has resumed.");
++    } catch (IOException e) {
++      GenericTestUtils.assertExceptionContains("No groups found for user", e);
++    }
++
++    // Let the elements in the negative cache expire.
++    timer.advance(4 * 1000);
++
++    // The groups for the user is expired in the negative cache, a new copy of
++    // groups for the user is fetched.
++    assertEquals(Arrays.asList(myGroups), groups.getGroups(user));
++  }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/FakeTimer.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/FakeTimer.java
+new file mode 100644
+index 0000000..66386fd
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/FakeTimer.java
+@@ -0,0 +1,52 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.util;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
++
++/**
++ * FakeTimer can be used for test purposes to control the return values
++ * from {{@link Timer}}.
++ */
++@InterfaceAudience.Private
++@InterfaceStability.Unstable
++public class FakeTimer extends Timer {
++  private long nowMillis;
++
++  /** Constructs a FakeTimer with a non-zero value */
++  public FakeTimer() {
++    nowMillis = 1000;  // Initialize with a non-trivial value.
++  }
++
++  @Override
++  public long now() {
++    return nowMillis;
++  }
++
++  @Override
++  public long monotonicNow() {
++    return nowMillis;
++  }
++
++  /** Increases the time by milliseconds */
++  public void advance(long advMillis) {
++    nowMillis += advMillis;
++  }
++}
+-- 
+1.7.9.5
+

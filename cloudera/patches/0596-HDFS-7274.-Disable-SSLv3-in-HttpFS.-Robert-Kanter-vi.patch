@@ -1,0 +1,29 @@
+From 7baec5c7abf32ace435c18b903697f0a3b7cf6fc Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 28 Oct 2014 17:21:20 -0700
+Subject: [PATCH 596/813] HDFS-7274. Disable SSLv3 in HttpFS. (Robert Kanter
+ via kasha)
+
+(cherry picked from commit 3f48493bed22f9618a9330deaaaa070734989814)
+
+(cherry picked from commit f2679ae22ebc3af49702602dfdc9ed5abe7ab051)
+---
+ .../src/main/tomcat/ssl-server.xml                 |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/tomcat/ssl-server.xml b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/tomcat/ssl-server.xml
+index eac6ee2..614b702 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/tomcat/ssl-server.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/tomcat/ssl-server.xml
+@@ -70,7 +70,7 @@
+          described in the APR documentation -->
+     <Connector port="${httpfs.http.port}" protocol="HTTP/1.1" SSLEnabled="true"
+                maxThreads="150" scheme="https" secure="true"
+-               clientAuth="false" sslProtocol="TLS"
++               clientAuth="false" sslEnabledProtocols="TLSv1"
+                keystoreFile="${httpfs.ssl.keystore.file}"
+                keystorePass="${httpfs.ssl.keystore.pass}"/>
+ 
+-- 
+1.7.9.5
+

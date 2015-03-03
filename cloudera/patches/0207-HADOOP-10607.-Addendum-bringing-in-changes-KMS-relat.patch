@@ -1,0 +1,158 @@
+From ec4cc9328372ed9bf631d6fcb0109075d82be527 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:03 +0000
+Subject: [PATCH 207/813] HADOOP-10607. Addendum, bringing in changes, KMS
+ related, which were left out in the original merge.
+
+Conflicts:
+	hadoop-common-project/hadoop-common/src/main/bin/hadoop
+	hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/Configuration.java
+	hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/alias/CredentialShell.java
+	hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/alias/JavaKeyStoreProvider.java
+	hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/alias/TestCredShell.java
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619523 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 113e15b3fb7f688a419da17dd517de1b871621cc)
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |    4 ++-
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |   27 --------------------
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    3 ++-
+ .../apache/hadoop/crypto/key/TestKeyProvider.java  |    9 ++++---
+ .../hadoop/crypto/key/TestKeyProviderFactory.java  |    3 ++-
+ 5 files changed, 12 insertions(+), 34 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index a0b6a8d..ecf90ad 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -26,6 +26,8 @@
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsPermission;
++import org.apache.hadoop.security.ProviderUtils;
++
+ import javax.crypto.spec.SecretKeySpec;
+ import java.io.IOException;
+ import java.io.InputStream;
+@@ -101,7 +103,7 @@
+ 
+   private JavaKeyStoreProvider(URI uri, Configuration conf) throws IOException {
+     this.uri = uri;
+-    path = unnestUri(uri);
++    path = ProviderUtils.unnestUri(uri);
+     fs = path.getFileSystem(conf);
+     // Get the password file from the conf, if not present from the user's
+     // environment var
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index 0b031c0..8511599 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -489,33 +489,6 @@ protected static String buildVersionName(String name, int version) {
+   }
+ 
+   /**
+-   * Convert a nested URI to decode the underlying path. The translation takes
+-   * the authority and parses it into the underlying scheme and authority.
+-   * For example, "myscheme://hdfs@nn/my/path" is converted to
+-   * "hdfs://nn/my/path".
+-   * @param nestedUri the URI from the nested URI
+-   * @return the unnested path
+-   */
+-  public static Path unnestUri(URI nestedUri) {
+-    String[] parts = nestedUri.getAuthority().split("@", 2);
+-    StringBuilder result = new StringBuilder(parts[0]);
+-    result.append("://");
+-    if (parts.length == 2) {
+-      result.append(parts[1]);
+-    }
+-    result.append(nestedUri.getPath());
+-    if (nestedUri.getQuery() != null) {
+-      result.append("?");
+-      result.append(nestedUri.getQuery());
+-    }
+-    if (nestedUri.getFragment() != null) {
+-      result.append("#");
+-      result.append(nestedUri.getFragment());
+-    }
+-    return new Path(result.toString());
+-  }
+-
+-  /**
+    * Find the provider with the given key.
+    * @param providerList the list of providers
+    * @param keyName the key name we are looking for
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index 4c87ee1..024a192 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -24,6 +24,7 @@
+ import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.security.ProviderUtils;
+ import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+ import org.apache.hadoop.security.authentication.client.AuthenticationException;
+ import org.apache.hadoop.security.authentication.client.PseudoAuthenticator;
+@@ -147,7 +148,7 @@ public String toString() {
+   }
+ 
+   public KMSClientProvider(URI uri, Configuration conf) throws IOException {
+-    Path path = unnestUri(uri);
++    Path path = ProviderUtils.unnestUri(uri);
+     URL url = path.toUri().toURL();
+     kmsUrl = createServiceURL(url);
+     if ("https".equalsIgnoreCase(url.getProtocol())) {
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+index 1f046e6..71237cd 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+@@ -21,6 +21,7 @@
+ import org.apache.hadoop.conf.Configuration;
+ 
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.security.ProviderUtils;
+ import org.junit.Test;
+ 
+ import java.io.IOException;
+@@ -133,13 +134,13 @@ public void testOptions() throws Exception {
+   @Test
+   public void testUnnestUri() throws Exception {
+     assertEquals(new Path("hdfs://nn.example.com/my/path"),
+-        KeyProvider.unnestUri(new URI("myscheme://hdfs@nn.example.com/my/path")));
++        ProviderUtils.unnestUri(new URI("myscheme://hdfs@nn.example.com/my/path")));
+     assertEquals(new Path("hdfs://nn/my/path?foo=bar&baz=bat#yyy"),
+-        KeyProvider.unnestUri(new URI("myscheme://hdfs@nn/my/path?foo=bar&baz=bat#yyy")));
++        ProviderUtils.unnestUri(new URI("myscheme://hdfs@nn/my/path?foo=bar&baz=bat#yyy")));
+     assertEquals(new Path("inner://hdfs@nn1.example.com/my/path"),
+-        KeyProvider.unnestUri(new URI("outer://inner@hdfs@nn1.example.com/my/path")));
++        ProviderUtils.unnestUri(new URI("outer://inner@hdfs@nn1.example.com/my/path")));
+     assertEquals(new Path("user:///"),
+-        KeyProvider.unnestUri(new URI("outer://user/")));
++        ProviderUtils.unnestUri(new URI("outer://user/")));
+   }
+ 
+   private static class MyKeyProvider extends KeyProvider {
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+index 5bede60..438fb60 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+@@ -29,6 +29,7 @@
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.security.Credentials;
++import org.apache.hadoop.security.ProviderUtils;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -204,7 +205,7 @@ public void testJksProvider() throws Exception {
+     file.delete();
+     conf.set(KeyProviderFactory.KEY_PROVIDER_PATH, ourUrl);
+     checkSpecificProvider(conf, ourUrl);
+-    Path path = KeyProvider.unnestUri(new URI(ourUrl));
++    Path path = ProviderUtils.unnestUri(new URI(ourUrl));
+     FileSystem fs = path.getFileSystem(conf);
+     FileStatus s = fs.getFileStatus(path);
+     assertTrue(s.getPermission().toString().equals("rwx------"));
+-- 
+1.7.9.5
+

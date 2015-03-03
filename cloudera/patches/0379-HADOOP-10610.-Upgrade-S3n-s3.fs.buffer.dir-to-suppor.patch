@@ -1,0 +1,50 @@
+From 0a37a1047245975da74993e5667a17366a642d92 Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Thu, 17 Jul 2014 21:58:07 +0000
+Subject: [PATCH 379/813] HADOOP-10610. Upgrade S3n s3.fs.buffer.dir to
+ support multi directories. Contrbuted by Ted
+ Malaska.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611490 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hadoop/fs/s3native/NativeS3FileSystem.java     |    9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3native/NativeS3FileSystem.java b/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3native/NativeS3FileSystem.java
+index 70edaa8..e490edf 100644
+--- a/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3native/NativeS3FileSystem.java
++++ b/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3native/NativeS3FileSystem.java
+@@ -50,6 +50,7 @@
+ import org.apache.hadoop.fs.FileAlreadyExistsException;
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.LocalDirAllocator;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.s3.S3Exception;
+@@ -225,6 +226,7 @@ public boolean seekToNewSource(long targetPos) throws IOException {
+     private OutputStream backupStream;
+     private MessageDigest digest;
+     private boolean closed;
++    private LocalDirAllocator lDirAlloc;
+     
+     public NativeS3FsOutputStream(Configuration conf,
+         NativeFileSystemStore store, String key, Progressable progress,
+@@ -246,11 +248,10 @@ public NativeS3FsOutputStream(Configuration conf,
+     }
+ 
+     private File newBackupFile() throws IOException {
+-      File dir = new File(conf.get("fs.s3.buffer.dir"));
+-      if (!dir.mkdirs() && !dir.exists()) {
+-        throw new IOException("Cannot create S3 buffer directory: " + dir);
++      if (lDirAlloc == null) {
++        lDirAlloc = new LocalDirAllocator("fs.s3.buffer.dir");
+       }
+-      File result = File.createTempFile("output-", ".tmp", dir);
++      File result = lDirAlloc.createTmpFileForWrite("output-", LocalDirAllocator.SIZE_UNKNOWN, conf);
+       result.deleteOnExit();
+       return result;
+     }
+-- 
+1.7.9.5
+

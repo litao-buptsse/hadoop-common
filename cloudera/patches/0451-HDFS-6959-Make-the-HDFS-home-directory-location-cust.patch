@@ -1,0 +1,132 @@
+From ca3e119f48afbe92b301751f2de4e2bd532806fd Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Wed, 3 Sep 2014 19:30:30 -0700
+Subject: [PATCH 451/813] HDFS-6959 Make the HDFS home directory location
+ customizable.  Contributed by Yongjun Zhang
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    2 ++
+ .../apache/hadoop/hdfs/DistributedFileSystem.java  |   11 ++++++--
+ .../src/main/resources/hdfs-default.xml            |    8 ++++++
+ .../java/org/apache/hadoop/hdfs/TestLocalDFS.java  |   29 +++++++++++++++++++-
+ 4 files changed, 46 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index ca009bc..c52d932 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -41,6 +41,8 @@
+   public static final int     DFS_STREAM_BUFFER_SIZE_DEFAULT = 4096;
+   public static final String  DFS_BYTES_PER_CHECKSUM_KEY = "dfs.bytes-per-checksum";
+   public static final int     DFS_BYTES_PER_CHECKSUM_DEFAULT = 512;
++  public static final String  DFS_USER_HOME_DIR_PREFIX_KEY = "dfs.user.home.dir.prefix";
++  public static final String  DFS_USER_HOME_DIR_PREFIX_DEFAULT = "/user";
+   public static final String  DFS_CLIENT_RETRY_POLICY_ENABLED_KEY = "dfs.client.retry.policy.enabled";
+   public static final boolean DFS_CLIENT_RETRY_POLICY_ENABLED_DEFAULT = false; 
+   public static final String  DFS_CLIENT_RETRY_POLICY_SPEC_KEY = "dfs.client.retry.policy.spec";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
+index 288e02f..54ef433 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
+@@ -104,6 +104,8 @@
+ public class DistributedFileSystem extends FileSystem {
+   private Path workingDir;
+   private URI uri;
++  private String homeDirPrefix =
++      DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT;
+ 
+   DFSClient dfs;
+   private boolean verifyChecksum = true;
+@@ -138,7 +140,10 @@ public void initialize(URI uri, Configuration conf) throws IOException {
+     if (host == null) {
+       throw new IOException("Incomplete HDFS URI, no host: "+ uri);
+     }
+-
++    homeDirPrefix = conf.get(
++        DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_KEY,
++        DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT);
++    
+     this.dfs = new DFSClient(uri, conf, statistics);
+     this.uri = URI.create(uri.getScheme()+"://"+uri.getAuthority());
+     this.workingDir = getHomeDirectory();
+@@ -169,10 +174,10 @@ public void setWorkingDirectory(Path dir) {
+     workingDir = fixRelativePart(dir);
+   }
+ 
+-  
+   @Override
+   public Path getHomeDirectory() {
+-    return makeQualified(new Path("/user/" + dfs.ugi.getShortUserName()));
++    return makeQualified(new Path(homeDirPrefix + "/"
++        + dfs.ugi.getShortUserName()));
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index 084ebf2..0980321 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -2103,4 +2103,12 @@
+   </description>
+ </property>
+ 
++<property>
++  <name>dfs.user.home.dir.prefix</name>
++  <value>/user</value>
++  <description>The directory to prepend to user name to get the user's
++    home direcotry.
++  </description>
++</property>
++
+ </configuration>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLocalDFS.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLocalDFS.java
+index fb90ad2..5385046 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLocalDFS.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLocalDFS.java
+@@ -90,7 +90,9 @@ public void testWorkingDirectory() throws IOException {
+ 
+       // test home directory
+       Path home = 
+-        fileSys.makeQualified(new Path("/user/" + getUserName(fileSys))); 
++        fileSys.makeQualified(
++            new Path(DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT
++                + "/" + getUserName(fileSys))); 
+       Path fsHome = fileSys.getHomeDirectory();
+       assertEquals(home, fsHome);
+ 
+@@ -99,4 +101,29 @@ public void testWorkingDirectory() throws IOException {
+       cluster.shutdown();
+     }
+   }
++  
++  /**
++   * Tests get/set working directory in DFS.
++   */
++  @Test(timeout=30000)
++  public void testHomeDirectory() throws IOException {
++    final String[] homeBases = new String[] {"/home", "/home/user"};
++    Configuration conf = new HdfsConfiguration();
++    for (final String homeBase : homeBases) {
++      conf.set(DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_KEY, homeBase);
++      MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
++      FileSystem fileSys = cluster.getFileSystem();
++      try {    
++        // test home directory
++        Path home = 
++            fileSys.makeQualified(
++                new Path(homeBase + "/" + getUserName(fileSys))); 
++        Path fsHome = fileSys.getHomeDirectory();
++        assertEquals(home, fsHome);
++      } finally {
++        fileSys.close();
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+-- 
+1.7.9.5
+

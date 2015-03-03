@@ -1,0 +1,206 @@
+From 49bb4c99ed7e13e787e51eaf6c3dd4ef0c0aa262 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 18 Jul 2014 17:17:15 +0000
+Subject: [PATCH 600/813] HDFS-6597. Merging change r1611723 from trunk to
+ branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611724 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fcca9666a8c97aa870546149c4a5c29192eb0a8d)
+---
+ .../hdfs/server/common/HdfsServerConstants.java    |    3 ++-
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    6 +++++-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    3 ++-
+ .../hadoop/hdfs/server/namenode/NNStorage.java     |    2 +-
+ .../hadoop/hdfs/server/namenode/NameNode.java      |   19 ++++++++++++++++---
+ .../server/namenode/TestStartupOptionUpgrade.java  |   19 ++++++++++++++++++-
+ 6 files changed, 44 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+index 8e1c37a..ef740a2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+@@ -102,7 +102,8 @@ public static String getAllOptionString() {
+     FORCE("-force"),
+     NONINTERACTIVE("-nonInteractive"),
+     RENAMERESERVED("-renameReserved"),
+-    METADATAVERSION("-metadataVersion");
++    METADATAVERSION("-metadataVersion"),
++    UPGRADEONLY("-upgradeOnly");
+ 
+     private static final Pattern ENUM_WITH_ROLLING_UPGRADE_OPTION = Pattern.compile(
+         "(\\w+)\\((\\w+)\\)");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index a4b3634..d9aa3dc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -225,6 +225,7 @@ boolean recoverTransitionRead(StartupOption startOpt, FSNamesystem target,
+       NNStorage.checkVersionUpgradable(storage.getLayoutVersion());
+     }
+     if (startOpt != StartupOption.UPGRADE
++        && startOpt != StartupOption.UPGRADEONLY
+         && !RollingUpgradeStartupOption.STARTED.matches(startOpt)
+         && layoutVersion < Storage.LAST_PRE_UPGRADE_LAYOUT_VERSION
+         && layoutVersion != HdfsConstants.NAMENODE_LAYOUT_VERSION) {
+@@ -263,6 +264,7 @@ boolean recoverTransitionRead(StartupOption startOpt, FSNamesystem target,
+     // 3. Do transitions
+     switch(startOpt) {
+     case UPGRADE:
++    case UPGRADEONLY:
+       doUpgrade(target);
+       return false; // upgrade saved image already
+     case IMPORT:
+@@ -748,11 +750,13 @@ public void initEditLog(StartupOption startOpt) throws IOException {
+       editLog.recoverUnclosedStreams();
+     } else if (HAUtil.isHAEnabled(conf, nameserviceId)
+         && (startOpt == StartupOption.UPGRADE
++            || startOpt == StartupOption.UPGRADEONLY
+             || RollingUpgradeStartupOption.ROLLBACK.matches(startOpt))) {
+       // This NN is HA, but we're doing an upgrade or a rollback of rolling
+       // upgrade so init the edit log for write.
+       editLog.initJournalsForWrite();
+-      if (startOpt == StartupOption.UPGRADE) {
++      if (startOpt == StartupOption.UPGRADE
++          || startOpt == StartupOption.UPGRADEONLY) {
+         long sharedLogCTime = editLog.getSharedLogCTime();
+         if (this.storage.getCTime() < sharedLogCTime) {
+           throw new IOException("It looks like the shared log is already " +
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index ebcc79b..8133441 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -1010,7 +1010,8 @@ private void loadFSImage(StartupOption startOpt) throws IOException {
+       }
+       // This will start a new log segment and write to the seen_txid file, so
+       // we shouldn't do it when coming up in standby state
+-      if (!haEnabled || (haEnabled && startOpt == StartupOption.UPGRADE)) {
++      if (!haEnabled || (haEnabled && startOpt == StartupOption.UPGRADE)
++          || (haEnabled && startOpt == StartupOption.UPGRADEONLY)) {
+         fsImage.openEditLogForWrite();
+       }
+       success = true;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+index a576f1c..2eef037 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+@@ -836,7 +836,7 @@ private void reportErrorsOnDirectory(StorageDirectory sd) {
+    */
+   void processStartupOptionsForUpgrade(StartupOption startOpt, int layoutVersion)
+       throws IOException {
+-    if (startOpt == StartupOption.UPGRADE) {
++    if (startOpt == StartupOption.UPGRADE || startOpt == StartupOption.UPGRADEONLY) {
+       // If upgrade from a release that does not support federation,
+       // if clusterId is provided in the startupOptions use it.
+       // Else generate a new cluster ID      
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index 2739c1d..3291cb9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -209,6 +209,9 @@
+       + StartupOption.UPGRADE.getName() + 
+         " [" + StartupOption.CLUSTERID.getName() + " cid]" +
+         " [" + StartupOption.RENAMERESERVED.getName() + "<k-v pairs>] ] | \n\t["
++      + StartupOption.UPGRADEONLY.getName() + 
++        " [" + StartupOption.CLUSTERID.getName() + " cid]" +
++        " [" + StartupOption.RENAMERESERVED.getName() + "<k-v pairs>] ] | \n\t["
+       + StartupOption.ROLLBACK.getName() + "] | \n\t["
+       + StartupOption.ROLLINGUPGRADE.getName() + " "
+       + RollingUpgradeStartupOption.getAllOptionString() + " ] | \n\t["
+@@ -711,6 +714,7 @@ private void stopHttpServer() {
+    * <li>{@link StartupOption#BACKUP BACKUP} - start backup node</li>
+    * <li>{@link StartupOption#CHECKPOINT CHECKPOINT} - start checkpoint node</li>
+    * <li>{@link StartupOption#UPGRADE UPGRADE} - start the cluster  
++   * <li>{@link StartupOption#UPGRADEONLY UPGRADEONLY} - upgrade the cluster  
+    * upgrade and create a snapshot of the current file system state</li> 
+    * <li>{@link StartupOption#RECOVER RECOVERY} - recover name node
+    * metadata</li>
+@@ -765,7 +769,8 @@ protected NameNode(Configuration conf, NamenodeRole role)
+   }
+ 
+   protected HAState createHAState(StartupOption startOpt) {
+-    if (!haEnabled || startOpt == StartupOption.UPGRADE) {
++    if (!haEnabled || startOpt == StartupOption.UPGRADE 
++        || startOpt == StartupOption.UPGRADEONLY) {
+       return ACTIVE_STATE;
+     } else {
+       return STANDBY_STATE;
+@@ -1196,8 +1201,10 @@ static StartupOption parseArguments(String args[]) {
+         startOpt = StartupOption.BACKUP;
+       } else if (StartupOption.CHECKPOINT.getName().equalsIgnoreCase(cmd)) {
+         startOpt = StartupOption.CHECKPOINT;
+-      } else if (StartupOption.UPGRADE.getName().equalsIgnoreCase(cmd)) {
+-        startOpt = StartupOption.UPGRADE;
++      } else if (StartupOption.UPGRADE.getName().equalsIgnoreCase(cmd)
++          || StartupOption.UPGRADEONLY.getName().equalsIgnoreCase(cmd)) {
++        startOpt = StartupOption.UPGRADE.getName().equalsIgnoreCase(cmd) ? 
++            StartupOption.UPGRADE : StartupOption.UPGRADEONLY;
+         /* Can be followed by CLUSTERID with a required parameter or
+          * RENAMERESERVED with an optional parameter
+          */
+@@ -1409,6 +1416,12 @@ public static NameNode createNameNode(String argv[], Configuration conf)
+         terminate(0);
+         return null; // avoid javac warning
+       }
++      case UPGRADEONLY: {
++        DefaultMetricsSystem.initialize("NameNode");
++        new NameNode(conf);
++        terminate(0);
++        return null;
++      }
+       default: {
+         DefaultMetricsSystem.initialize("NameNode");
+         return new NameNode(conf);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestStartupOptionUpgrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestStartupOptionUpgrade.java
+index b0d5584..ef51acc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestStartupOptionUpgrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestStartupOptionUpgrade.java
+@@ -21,6 +21,8 @@
+ import static org.junit.Assert.assertTrue;
+ 
+ import java.net.URI;
++import java.util.Arrays;
++import java.util.Collection;
+ import java.util.Collections;
+ 
+ import org.apache.hadoop.conf.Configuration;
+@@ -30,11 +32,15 @@
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.junit.runners.Parameterized;
++import org.junit.runners.Parameterized.Parameters;
+ 
+ /**
+  * This class tests various upgrade cases from earlier versions to current
+  * version with and without clusterid.
+  */
++@RunWith(value = Parameterized.class)
+ public class TestStartupOptionUpgrade {
+ 
+   private Configuration conf;
+@@ -42,10 +48,21 @@
+   private int layoutVersion;
+   NNStorage storage;
+ 
++  @Parameters
++  public static Collection<Object[]> startOption() {
++    Object[][] params = new Object[][] { { StartupOption.UPGRADE },
++        { StartupOption.UPGRADEONLY } };
++    return Arrays.asList(params);
++  }
++
++  public TestStartupOptionUpgrade(StartupOption startOption) {
++    super();
++    this.startOpt = startOption;
++  }
++  
+   @Before
+   public void setUp() throws Exception {
+     conf = new HdfsConfiguration();
+-    startOpt = StartupOption.UPGRADE;
+     startOpt.setClusterId(null);
+     storage = new NNStorage(conf,
+       Collections.<URI>emptyList(),
+-- 
+1.7.9.5
+

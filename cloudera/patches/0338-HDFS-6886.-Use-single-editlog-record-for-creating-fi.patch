@@ -1,0 +1,1365 @@
+From f9bd9823bb905148de1ca150a2628b61b271a862 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing@hortonworks.com>
+Date: Thu, 4 Sep 2014 18:54:38 -0700
+Subject: [PATCH 338/813] HDFS-6886. Use single editlog record for creating
+ file + overwrite. Contributed by Yi Liu. (cherry
+ picked from commit
+ 6104520369045dfaa4b543cbad21236ed322249b)
+
+Conflicts:
+    hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../java/org/apache/hadoop/hdfs/inotify/Event.java |   12 ++
+ .../apache/hadoop/hdfs/protocolPB/PBHelper.java    |    6 +-
+ .../hadoop/hdfs/server/namenode/FSEditLog.java     |    6 +-
+ .../hdfs/server/namenode/FSEditLogLoader.java      |    8 +-
+ .../hadoop/hdfs/server/namenode/FSEditLogOp.java   |   18 ++
+ .../hdfs/server/namenode/FSImageSerialization.java |   17 ++
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   45 +++--
+ .../namenode/InotifyFSEditLogOpTranslator.java     |    1 +
+ .../server/namenode/NameNodeLayoutVersion.java     |    4 +-
+ .../hadoop-hdfs/src/main/proto/inotify.proto       |    1 +
+ .../hdfs/TestDFSInotifyEventInputStream.java       |    8 +-
+ .../org/apache/hadoop/hdfs/TestFileCreation.java   |  119 +++++++++++++
+ .../hdfs/server/namenode/CreateEditsLog.java       |    2 +-
+ .../hadoop/hdfs/server/namenode/TestEditLog.java   |    2 +-
+ .../hadoop-hdfs/src/test/resources/editsStored     |  Bin 4992 -> 5252 bytes
+ .../hadoop-hdfs/src/test/resources/editsStored.xml |  182 +++++++++++++-------
+ 16 files changed, 336 insertions(+), 95 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/inotify/Event.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/inotify/Event.java
+index c7129ca..e8a34e7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/inotify/Event.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/inotify/Event.java
+@@ -100,6 +100,7 @@ public long getTimestamp() {
+     private String groupName;
+     private FsPermission perms;
+     private String symlinkTarget;
++    private boolean overwrite;
+ 
+     public static class Builder {
+       private INodeType iNodeType;
+@@ -110,6 +111,7 @@ public long getTimestamp() {
+       private String groupName;
+       private FsPermission perms;
+       private String symlinkTarget;
++      private boolean overwrite;
+ 
+       public Builder iNodeType(INodeType type) {
+         this.iNodeType = type;
+@@ -150,6 +152,11 @@ public Builder symlinkTarget(String symlinkTarget) {
+         this.symlinkTarget = symlinkTarget;
+         return this;
+       }
++      
++      public Builder overwrite(boolean overwrite) {
++        this.overwrite = overwrite;
++        return this;
++      }
+ 
+       public CreateEvent build() {
+         return new CreateEvent(this);
+@@ -166,6 +173,7 @@ private CreateEvent(Builder b) {
+       this.groupName = b.groupName;
+       this.perms = b.perms;
+       this.symlinkTarget = b.symlinkTarget;
++      this.overwrite = b.overwrite;
+     }
+ 
+     public INodeType getiNodeType() {
+@@ -208,6 +216,10 @@ public FsPermission getPerms() {
+     public String getSymlinkTarget() {
+       return symlinkTarget;
+     }
++    
++    public boolean getOverwrite() {
++      return overwrite;
++    }
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index f14e4cf..720455e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -2425,7 +2425,8 @@ public static EventsList convert(GetEditsFromTxidResponseProto resp) throws
+             .perms(convert(create.getPerms()))
+             .replication(create.getReplication())
+             .symlinkTarget(create.getSymlinkTarget().isEmpty() ? null :
+-            create.getSymlinkTarget()).build());
++            create.getSymlinkTarget())
++            .overwrite(create.getOverwrite()).build());
+         break;
+       case EVENT_METADATA:
+         InotifyProtos.MetadataUpdateEventProto meta =
+@@ -2503,7 +2504,8 @@ public static GetEditsFromTxidResponseProto convertEditsResponse(EventsList el)
+                     .setPerms(convert(ce2.getPerms()))
+                     .setReplication(ce2.getReplication())
+                     .setSymlinkTarget(ce2.getSymlinkTarget() == null ?
+-                        "" : ce2.getSymlinkTarget()).build().toByteString()
++                        "" : ce2.getSymlinkTarget())
++                    .setOverwrite(ce2.getOverwrite()).build().toByteString()
+             ).build());
+         break;
+       case METADATA:
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+index 8b44628..6bc0319 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+@@ -702,7 +702,8 @@ private void logRpcIds(FSEditLogOp op, boolean toLogRpcIds) {
+    * Add open lease record to edit log. 
+    * Records the block locations of the last block.
+    */
+-  public void logOpenFile(String path, INodeFile newNode, boolean toLogRpcIds) {
++  public void logOpenFile(String path, INodeFile newNode, boolean overwrite,
++      boolean toLogRpcIds) {
+     Preconditions.checkArgument(newNode.isUnderConstruction());
+     PermissionStatus permissions = newNode.getPermissionStatus();
+     AddOp op = AddOp.getInstance(cache.get())
+@@ -716,7 +717,8 @@ public void logOpenFile(String path, INodeFile newNode, boolean toLogRpcIds) {
+       .setPermissionStatus(permissions)
+       .setClientName(newNode.getFileUnderConstructionFeature().getClientName())
+       .setClientMachine(
+-          newNode.getFileUnderConstructionFeature().getClientMachine());
++          newNode.getFileUnderConstructionFeature().getClientMachine())
++      .setOverwrite(overwrite);
+ 
+     AclFeature f = newNode.getAclFeature();
+     if (f != null) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+index a0dd4ea..7f7caf6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+@@ -341,8 +341,12 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+ 
+       // See if the file already exists (persistBlocks call)
+       final INodesInPath iip = fsDir.getLastINodeInPath(path);
+-      final INodeFile oldFile = INodeFile.valueOf(
+-          iip.getINode(0), path, true);
++      INodeFile oldFile = INodeFile.valueOf(iip.getINode(0), path, true);
++      if (oldFile != null && addCloseOp.overwrite) {
++        // This is OP_ADD with overwrite
++        fsDir.unprotectedDelete(path, addCloseOp.mtime);
++        oldFile = null;
++      }
+       INodeFile newFile = oldFile;
+       if (oldFile == null) { // this is OP_ADD on a new file (case 1)
+         // versions > 0 support per file replication
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
+index eec361b..6caee17 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
+@@ -409,6 +409,7 @@ private static void write(List<AclEntry> aclEntries, DataOutputStream out)
+     List<XAttr> xAttrs;
+     String clientName;
+     String clientMachine;
++    boolean overwrite;
+     
+     private AddCloseOp(FSEditLogOpCodes opCode) {
+       super(opCode);
+@@ -488,6 +489,11 @@ public String getPath() {
+       this.clientMachine = clientMachine;
+       return (T)this;
+     }
++    
++    <T extends AddCloseOp> T setOverwrite(boolean overwrite) {
++      this.overwrite = overwrite;
++      return (T)this;
++    }
+ 
+     @Override
+     public void writeFields(DataOutputStream out) throws IOException {
+@@ -507,6 +513,7 @@ public void writeFields(DataOutputStream out) throws IOException {
+         b.build().writeDelimitedTo(out);
+         FSImageSerialization.writeString(clientName,out);
+         FSImageSerialization.writeString(clientMachine,out);
++        FSImageSerialization.writeBoolean(overwrite, out);
+         // write clientId and callId
+         writeRpcIds(rpcClientId, rpcCallId, out);
+       }
+@@ -572,6 +579,12 @@ void readFields(DataInputStream in, int logVersion)
+         this.xAttrs = readXAttrsFromEditLog(in, logVersion);
+         this.clientName = FSImageSerialization.readString(in);
+         this.clientMachine = FSImageSerialization.readString(in);
++        if (NameNodeLayoutVersion.supports(
++            NameNodeLayoutVersion.Feature.CREATE_OVERWRITE, logVersion)) {
++          this.overwrite = FSImageSerialization.readBoolean(in);
++        } else {
++          this.overwrite = false;
++        }
+         // read clientId and callId
+         readRpcIds(in, logVersion);
+       } else {
+@@ -627,6 +640,8 @@ public String stringifyMembers() {
+       builder.append(clientName);
+       builder.append(", clientMachine=");
+       builder.append(clientMachine);
++      builder.append(", overwrite=");
++      builder.append(overwrite);
+       if (this.opCode == OP_ADD) {
+         appendRpcIdsToString(builder, rpcClientId, rpcCallId);
+       }
+@@ -655,6 +670,8 @@ protected void toXml(ContentHandler contentHandler) throws SAXException {
+           Long.toString(blockSize));
+       XMLUtils.addSaxString(contentHandler, "CLIENT_NAME", clientName);
+       XMLUtils.addSaxString(contentHandler, "CLIENT_MACHINE", clientMachine);
++      XMLUtils.addSaxString(contentHandler, "OVERWRITE", 
++          Boolean.toString(overwrite));
+       for (Block b : blocks) {
+         FSEditLogOp.blockToXml(contentHandler, b);
+       }
+@@ -678,6 +695,7 @@ void fromXml(Stanza st) throws InvalidXmlException {
+       this.blockSize = Long.parseLong(st.getValue("BLOCKSIZE"));
+       this.clientName = st.getValue("CLIENT_NAME");
+       this.clientMachine = st.getValue("CLIENT_MACHINE");
++      this.overwrite = Boolean.parseBoolean(st.getValueOrNull("OVERWRITE"));
+       if (st.hasChildren("BLOCK")) {
+         List<Stanza> blocks = st.getChildren("BLOCK");
+         this.blocks = new Block[blocks.size()];
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+index 314d55f..5ad67da 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+@@ -42,6 +42,7 @@
+ import org.apache.hadoop.hdfs.util.XMLUtils;
+ import org.apache.hadoop.hdfs.util.XMLUtils.InvalidXmlException;
+ import org.apache.hadoop.hdfs.util.XMLUtils.Stanza;
++import org.apache.hadoop.io.BooleanWritable;
+ import org.apache.hadoop.io.IntWritable;
+ import org.apache.hadoop.io.LongWritable;
+ import org.apache.hadoop.io.ShortWritable;
+@@ -89,6 +90,7 @@ protected TLData initialValue() {
+     final IntWritable U_INT = new IntWritable();
+     final LongWritable U_LONG = new LongWritable();
+     final FsPermission FILE_PERM = new FsPermission((short) 0);
++    final BooleanWritable U_BOOLEAN = new BooleanWritable();
+   }
+ 
+   private static void writePermissionStatus(INodeAttributes inode,
+@@ -367,6 +369,21 @@ static void writeLong(long value, DataOutputStream out) throws IOException {
+     uLong.write(out);
+   }
+   
++  /** read the boolean value */
++  static boolean readBoolean(DataInput in) throws IOException {
++    BooleanWritable uBoolean = TL_DATA.get().U_BOOLEAN;
++    uBoolean.readFields(in);
++    return uBoolean.get();
++  }
++  
++  /** write the boolean value */
++  static void writeBoolean(boolean value, DataOutputStream out) 
++      throws IOException {
++    BooleanWritable uBoolean = TL_DATA.get().U_BOOLEAN;
++    uBoolean.set(value);
++    uBoolean.write(out);
++  }
++  
+   /** read the int value */
+   static int readInt(DataInput in) throws IOException {
+     IntWritable uInt = TL_DATA.get().U_INT;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 1904abe..5af4f0e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2455,6 +2455,7 @@ private HdfsFileStatus startFileInt(final String srcArg,
+      * A special RetryStartFileException is used to indicate that we should
+      * retry creation of a FileEncryptionInfo.
+      */
++    BlocksMapUpdateInfo toRemoveBlocks = null;
+     try {
+       boolean shouldContinue = true;
+       int iters = 0;
+@@ -2503,9 +2504,9 @@ private HdfsFileStatus startFileInt(final String srcArg,
+           checkOperation(OperationCategory.WRITE);
+           checkNameNodeSafeMode("Cannot create file" + src);
+           src = resolvePath(src, pathComponents);
+-          startFileInternal(pc, src, permissions, holder, clientMachine, create,
+-              overwrite, createParent, replication, blockSize, suite, edek,
+-              logRetryCache);
++          toRemoveBlocks = startFileInternal(pc, src, permissions, holder, 
++              clientMachine, create, overwrite, createParent, replication, 
++              blockSize, suite, edek, logRetryCache);
+           stat = dir.getFileInfo(src, false,
+               FSDirectory.isReservedRawName(srcArg));
+         } catch (StandbyException se) {
+@@ -2526,6 +2527,10 @@ private HdfsFileStatus startFileInt(final String srcArg,
+       // They need to be sync'ed even when an exception was thrown.
+       if (!skipSync) {
+         getEditLog().logSync();
++        if (toRemoveBlocks != null) {
++          removeBlocks(toRemoveBlocks);
++          toRemoveBlocks.clear();
++        }
+       }
+     }
+ 
+@@ -2542,11 +2547,11 @@ private HdfsFileStatus startFileInt(final String srcArg,
+    * For description of parameters and exceptions thrown see
+    * {@link ClientProtocol#create}
+    */
+-  private void startFileInternal(FSPermissionChecker pc, String src,
+-      PermissionStatus permissions, String holder, String clientMachine,
+-      boolean create, boolean overwrite, boolean createParent,
+-      short replication, long blockSize, CipherSuite suite,
+-      EncryptedKeyVersion edek, boolean logRetryEntry)
++  private BlocksMapUpdateInfo startFileInternal(FSPermissionChecker pc, 
++      String src, PermissionStatus permissions, String holder, 
++      String clientMachine, boolean create, boolean overwrite, 
++      boolean createParent, short replication, long blockSize, 
++      CipherSuite suite, EncryptedKeyVersion edek, boolean logRetryEntry)
+       throws FileAlreadyExistsException, AccessControlException,
+       UnresolvedLinkException, FileNotFoundException,
+       ParentNotDirectoryException, RetryStartFileException, IOException {
+@@ -2582,9 +2587,12 @@ private void startFileInternal(FSPermissionChecker pc, String src,
+     if (isPermissionEnabled) {
+       if (overwrite && myFile != null) {
+         checkPathAccess(pc, src, FsAction.WRITE);
+-      } else {
+-        checkAncestorAccess(pc, src, FsAction.WRITE);
+       }
++      /*
++       * To overwrite existing file, need to check 'w' permission 
++       * of parent (equals to ancestor in this case)
++       */
++      checkAncestorAccess(pc, src, FsAction.WRITE);
+     }
+ 
+     if (!createParent) {
+@@ -2592,6 +2600,7 @@ private void startFileInternal(FSPermissionChecker pc, String src,
+     }
+ 
+     try {
++      BlocksMapUpdateInfo toRemoveBlocks = null;
+       if (myFile == null) {
+         if (!create) {
+           throw new FileNotFoundException("Can't overwrite non-existent " +
+@@ -2599,11 +2608,12 @@ private void startFileInternal(FSPermissionChecker pc, String src,
+         }
+       } else {
+         if (overwrite) {
+-          try {
+-            deleteInt(src, true, false); // File exists - delete if overwrite
+-          } catch (AccessControlException e) {
+-            logAuditEvent(false, "delete", src);
+-            throw e;
++          toRemoveBlocks = new BlocksMapUpdateInfo();
++          List<INode> toRemoveINodes = new ChunkedArrayList<INode>();
++          long ret = dir.delete(src, toRemoveBlocks, toRemoveINodes, now());
++          if (ret >= 0) {
++            incrDeletedFileCount(ret);
++            removePathAndBlocks(src, null, toRemoveINodes, true);
+           }
+         } else {
+           // If lease soft limit time is expired, recover the lease
+@@ -2637,11 +2647,12 @@ private void startFileInternal(FSPermissionChecker pc, String src,
+       }
+ 
+       // record file record in log, record new generation stamp
+-      getEditLog().logOpenFile(src, newNode, logRetryEntry);
++      getEditLog().logOpenFile(src, newNode, overwrite, logRetryEntry);
+       if (NameNode.stateChangeLog.isDebugEnabled()) {
+         NameNode.stateChangeLog.debug("DIR* NameSystem.startFile: added " +
+             src + " inode " + newNode.getId() + " " + holder);
+       }
++      return toRemoveBlocks;
+     } catch (IOException ie) {
+       NameNode.stateChangeLog.warn("DIR* NameSystem.startFile: " + src + " " +
+           ie.getMessage());
+@@ -2744,7 +2755,7 @@ LocatedBlock prepareFileForWrite(String src, INodeFile file,
+     }
+ 
+     if (writeToEditLog) {
+-      getEditLog().logOpenFile(src, cons, logRetryCache);
++      getEditLog().logOpenFile(src, cons, false, logRetryCache);
+     }
+     return ret;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/InotifyFSEditLogOpTranslator.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/InotifyFSEditLogOpTranslator.java
+index 676f887..00a5f25 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/InotifyFSEditLogOpTranslator.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/InotifyFSEditLogOpTranslator.java
+@@ -50,6 +50,7 @@ private static long getSize(FSEditLogOp.AddCloseOp acOp) {
+             .ownerName(addOp.permissions.getUserName())
+             .groupName(addOp.permissions.getGroupName())
+             .perms(addOp.permissions.getPermission())
++            .overwrite(addOp.overwrite)
+             .iNodeType(Event.CreateEvent.INodeType.FILE).build() };
+       } else {
+         return new Event[] { new Event.AppendEvent(addOp.path) };
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java
+index 6ae2806..1df6df4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java
+@@ -65,7 +65,9 @@ public static boolean supports(final LayoutFeature f, final int lv) {
+   public static enum Feature implements LayoutFeature {
+     ROLLING_UPGRADE(-55, -53, "Support rolling upgrade", false),
+     EDITLOG_LENGTH(-56, "Add length field to every edit log op"),
+-    XATTRS(-57, "Extended attributes");
++    XATTRS(-57, "Extended attributes"),
++    CREATE_OVERWRITE(-58, "Use single editlog record for " +
++        "creating file with overwrite");
+     
+     private final FeatureInfo info;
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/inotify.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/inotify.proto
+index b58bfcc..a1d4d92 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/inotify.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/inotify.proto
+@@ -72,6 +72,7 @@ message CreateEventProto {
+   required FsPermissionProto perms = 6;
+   optional int32 replication = 7;
+   optional string symlinkTarget = 8;
++  optional bool overwrite = 9;
+ }
+ 
+ message CloseEventProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInotifyEventInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInotifyEventInputStream.java
+index c268281..45b588b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInotifyEventInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInotifyEventInputStream.java
+@@ -147,12 +147,7 @@ public void testBasic() throws IOException, URISyntaxException,
+       Assert.assertTrue(re2.getSrcPath().equals("/file4"));
+       Assert.assertTrue(re.getTimestamp() > 0);
+ 
+-      // DeleteOp
+-      next = waitForNextEvent(eis);
+-      Assert.assertTrue(next.getEventType() == Event.EventType.UNLINK);
+-      Assert.assertTrue(((Event.UnlinkEvent) next).getPath().equals("/file2"));
+-
+-      // AddOp
++      // AddOp with overwrite
+       next = waitForNextEvent(eis);
+       Assert.assertTrue(next.getEventType() == Event.EventType.CREATE);
+       Event.CreateEvent ce = (Event.CreateEvent) next;
+@@ -161,6 +156,7 @@ public void testBasic() throws IOException, URISyntaxException,
+       Assert.assertTrue(ce.getCtime() > 0);
+       Assert.assertTrue(ce.getReplication() > 0);
+       Assert.assertTrue(ce.getSymlinkTarget() == null);
++      Assert.assertTrue(ce.getOverwrite());
+ 
+       // CloseOp
+       next = waitForNextEvent(eis);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java
+index c8b7df2..3a399f3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileCreation.java
+@@ -38,6 +38,7 @@
+ import static org.junit.Assume.assumeTrue;
+ 
+ import java.io.BufferedReader;
++import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.io.FileNotFoundException;
+ import java.io.FileReader;
+@@ -70,6 +71,7 @@
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.datanode.DataNode;
+ import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+ import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
+@@ -78,6 +80,8 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodeId;
+ import org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException;
+ import org.apache.hadoop.hdfs.server.namenode.LeaseManager;
++import org.apache.hadoop.hdfs.server.namenode.NameNode;
++import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+ import org.apache.hadoop.io.EnumSetWritable;
+ import org.apache.hadoop.io.IOUtils;
+@@ -86,6 +90,7 @@
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.apache.hadoop.util.Time;
+ import org.apache.log4j.Level;
++import org.junit.Assert;
+ import org.junit.Test;
+ 
+ /**
+@@ -1210,4 +1215,118 @@ public void testFileIdMismatch() throws IOException {
+     }
+   }
+ 
++  /**
++   * 1. Check the blocks of old file are cleaned after creating with overwrite
++   * 2. Restart NN, check the file
++   * 3. Save new checkpoint and restart NN, check the file
++   */
++  @Test(timeout = 120000)
++  public void testFileCreationWithOverwrite() throws Exception {
++    Configuration conf = new Configuration();
++    conf.setInt("dfs.blocksize", blockSize);
++    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).
++        numDataNodes(3).build();
++    DistributedFileSystem dfs = cluster.getFileSystem();
++    try {
++      dfs.mkdirs(new Path("/foo/dir"));
++      String file = "/foo/dir/file";
++      Path filePath = new Path(file);
++      
++      // Case 1: Create file with overwrite, check the blocks of old file
++      // are cleaned after creating with overwrite
++      NameNode nn = cluster.getNameNode();
++      FSNamesystem fsn = NameNodeAdapter.getNamesystem(nn);
++      BlockManager bm = fsn.getBlockManager();
++      
++      FSDataOutputStream out = dfs.create(filePath);
++      byte[] oldData = AppendTestUtil.randomBytes(seed, fileSize);
++      try {
++        out.write(oldData);
++      } finally {
++        out.close();
++      }
++      
++      LocatedBlocks oldBlocks = NameNodeAdapter.getBlockLocations(
++          nn, file, 0, fileSize);
++      assertBlocks(bm, oldBlocks, true);
++      
++      out = dfs.create(filePath, true);
++      byte[] newData = AppendTestUtil.randomBytes(seed, fileSize);
++      try {
++        out.write(newData);
++      } finally {
++        out.close();
++      }
++      dfs.deleteOnExit(filePath);
++      
++      LocatedBlocks newBlocks = NameNodeAdapter.getBlockLocations(
++          nn, file, 0, fileSize);
++      assertBlocks(bm, newBlocks, true);
++      assertBlocks(bm, oldBlocks, false);
++      
++      FSDataInputStream in = dfs.open(filePath);
++      byte[] result = null;
++      try {
++        result = readAll(in);
++      } finally {
++        in.close();
++      }
++      Assert.assertArrayEquals(newData, result);
++      
++      // Case 2: Restart NN, check the file
++      cluster.restartNameNode();
++      nn = cluster.getNameNode();
++      in = dfs.open(filePath);
++      try {
++        result = readAll(in);
++      } finally {
++        in.close();
++      }
++      Assert.assertArrayEquals(newData, result);
++      
++      // Case 3: Save new checkpoint and restart NN, check the file
++      NameNodeAdapter.enterSafeMode(nn, false);
++      NameNodeAdapter.saveNamespace(nn);
++      cluster.restartNameNode();
++      nn = cluster.getNameNode();
++      
++      in = dfs.open(filePath);
++      try {
++        result = readAll(in);
++      } finally {
++        in.close();
++      }
++      Assert.assertArrayEquals(newData, result);
++    } finally {
++      if (dfs != null) {
++        dfs.close();
++      }
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++  
++  private void assertBlocks(BlockManager bm, LocatedBlocks lbs, 
++      boolean exist) {
++    for (LocatedBlock locatedBlock : lbs.getLocatedBlocks()) {
++      if (exist) {
++        assertTrue(bm.getStoredBlock(locatedBlock.getBlock().
++            getLocalBlock()) != null);
++      } else {
++        assertTrue(bm.getStoredBlock(locatedBlock.getBlock().
++            getLocalBlock()) == null);
++      }
++    }
++  }
++  
++  private byte[] readAll(FSDataInputStream in) throws IOException {
++    ByteArrayOutputStream out = new ByteArrayOutputStream();
++    byte[] buffer = new byte[1024];
++    int n = 0;
++    while((n = in.read(buffer)) > -1) {
++      out.write(buffer, 0, n);
++    }
++    return out.toByteArray();
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+index a5e2edf..3f96c0c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+@@ -99,7 +99,7 @@ static void addFiles(FSEditLog editLog, int numFiles, short replication,
+       INodeFile fileUc = new INodeFile(inodeId.nextValue(), null,
+           p, 0L, 0L, BlockInfo.EMPTY_ARRAY, replication, blockSize);
+       fileUc.toUnderConstruction("", "");
+-      editLog.logOpenFile(filePath, fileUc, false);
++      editLog.logOpenFile(filePath, fileUc, false, false);
+       editLog.logCloseFile(filePath, inode);
+ 
+       if (currentBlockId - bidAtSync >= 2000) { // sync every 2K blocks
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java
+index d2846f6..377eb84 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java
+@@ -197,7 +197,7 @@ public void run() {
+             p, 0L, 0L, BlockInfo.EMPTY_ARRAY, replication, blockSize);
+         inode.toUnderConstruction("", "");
+ 
+-        editLog.logOpenFile("/filename" + (startIndex + i), inode, false);
++        editLog.logOpenFile("/filename" + (startIndex + i), inode, false, false);
+         editLog.logCloseFile("/filename" + (startIndex + i), inode);
+         editLog.logSync();
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored
+index a134969ca79136819a5f1e2d5e16771d54aed04a..5d93a505c01a7ec8430cea52fd48380c663d4318 100644
+GIT binary patch
+delta 1662
+zcmY+Fe@xV69LJxpcgJyX96Wa(+#$z(1@t(`6!Z)s<m(;30u3BB=RnaMpu@#tlp%{z
+z3ul%!{E(D6#{7}Xx~%nMvn-8OX5+64Muec&Ty;Tcn;TTn=kw+HZr`5m?)g6N_xpK0
+zzrN31m+yJMabaQM>mK6{X`tt^Lm)>vP0{ZT6-ggR(t#z?0JIwxMaP8ya5uP&+v6CP
+z0s6wi;aP*%GRl}#db(==D7<WYRFVi{cOJ+&|D**YkElV$>|m3;mWVDY*W|XfR2tDw
+z5g7-wu5R47zoC9lYs2og1|}V!Qp(M`z|#K*q=o8z7X#54SSbijxMED^KX<LTPV>wX
+zY9d68sr<e1p=&l&?iXqjB%9LsxuX$hJSr7Jb-@<XMxGb*V+#rAgzAQqrfytVVrclo
+zuw6!Vsc@31R&ZHOd*{!3@mVvLk-?bZxB0=f<;(GDo!Z9LLVHwZsAALDgp7(7_mHbF
+zw&VmG9MN-9$w1EUtLl885htj&8S}ypvj-%zJM?efg+>`wjYZGIGUT=of2C(pcPxg;
+z+uyq~^{g~xt>>QJsl#+;r_~f=>2Su}$0Hw421qz1)C|}h-9?97?B}l?Dv(ju23|oC
+zg)!spBPPFoU~xW%KemqC2-3i-DT&1g8J6_WdEd2B8Cx1BlPrZX)2_kqe${jQWZ(j(
+zX7_qc#3@wUc+@a&alt8zJ2dO;sgY6DSlN_N7>l}6dbv-}x{nNGO=sPUozb&aAuEUH
+zMc&*>o6)bP@U;OY=9oLD@$MZGw9OFfP|PrCb%QasUfr0$(ax?y8DrWc)=(dXG4ty`
+z)P(hu$RPtK@h9u-SM(c`3!lcOhqAMG)ye2<oV65I7>izWyLDF2Sw{wPX0F~GnbR*O
+z0L!g8q0Xw_ei?m@v!22VW0tt5%(9;I02#=+^Fs63TY63&a$FF$y1DHY-!uA+*?=39
+z1k=_I{&(Czz69*OM`bXU4+rD6@s5w$nmH=1LM?z>agF?B-sdlo5Ekl#u-*2ex_QAj
+zX1?r}QPw7_p0UDMOk&nIW%|i(T<mMOd+Ccp^@`;$3akir+m^w$cn81Q`*eXDRn1XU
+z=Xks$>)_d)&*@>C1njS0#-*`DY}5)^5N1p(VK(0HR!W)zwDNZ0ghb5{nhrY?g4}$f
+zXD$QPD&Z8v`w1bQa%rfJu7-Mzur2`;_w(!Usyz)`r6OAjMLeGuI{Uu$p`yMqSeL;O
+zp23@@7sBb-(tgp(;WAI<MN#jJ)6EjMf;|M&+`})__D#_Rs>TnM3P`aR^P<VgHo6KW
+zs>WC)JYnC!VIrnkuWm-w1EY5Aant<?-4I3Ow|Kx~cZ1iFTn6{%hG|Icd>&r>QSW$M
+g`RUdfnxSUkF3=xCM@#L+;$ul@SOu)QvcCAne}yP0)Bpeg
+
+delta 1619
+zcmY*ZYitx%6h7P8XSa{N`zY+zwzIpXba`!8i<M&Aad#<F-EDuEG=(-qa2p9tOX>^O
+zCT+qa1}wFEgP`FNvlR*2AXH-vfgskX2v`hh6^VbKiC7+`VoW5Zo-;d>3@4e)-0%C&
+zH)qbAdv^r-7V78b=Dr`)x9N@yZrH_rCa1ytPV%gKBun>JmhK2o3K`JR-`X?9J^GeL
+zJpep`7X^cyVEd+y#QKfhiI-nbfG&JxY`}zsDzHB;(9QkZmRDm&K^diEIQTh(hpqo@
+zt0xy%i)0MI$)^m(Y}iq>IS-L#3hLq>qmSJ<cYZV<kp=}V;4xz@`}5b??+7@mp!4`a
+z<4*h>SJXQ+_&`L|sW9{DE&=G)93J<V;Im4&i2x98ja3$2_Tp2eyaw<9|Hk3u113kb
+zIX&{bh_ISdND>Jk>z3zqtJX|ufbf@aJbxvbg-MA~lrj6y<c)q^_hY??kZM*;yo428
+z-F<nd){LGpgsGS)ys9-5GiI-uy`C1n=a>aWX;}(DvP{UupEoC&ZFhG8K_4lEkH;*1
+z^vk1x8-MI75fN5P@smUX(C>S%C#@}|ln5;4cCYxuD7_;nuK^bDvTT23-B;}+A|k4f
+z{F@~J!!fWVwLS|oX~Lb*@zMR{Q<DLpJY}8FhqB#~MaH3N5kb`|KmrNCc=z-DOlzeK
+zjc~W+c6U;1wK!!BvG-3r`iJ^*n9?zp@US(-B=*y@v{GBKluueStyuo)!(pR{l=@zI
+z`Xm6;?D&Pa_PxrN3-?~>F{QPwsNiRF{E=&?f3DK{gwT`fHy7L1_G*2eBm!GH{l&u*
+zTeS5*#Y=NTkumGVY7u$0o=Or+02Y5=@Tk^jIT7e{|C2*AL9Nfz{6KDqtxbG9p>0GJ
+zzm}V_zqz8>V8g79axTC#nTbl}h1u1*n=K6CZiQOGC-d4_|A5Owz-J0t&0F*L$U_vq
+zGr6NdL|CnKB}pWJ>_o-MOWI21)?=kJsVbMe)2c~{QNtzMGUjUUyic1^MQaf)t+ehH
+zW&rTCdUVmY`LVrLC+C9j_w_UGLp0&*G5|<?+E~VCZ2|Yz?B){s_-zXFoN@=WF66!W
+zX1;-i*{Q;bAPsn<!iM>mEW$pJKD@F35v9Kn;TC&<4d2}Uz=vqPqK)#1y_((YKUhwq
+zU7?_>_+ERd`%Le|FSMi7<4w)caj(hcj&*K2aEdmHJmGj>4TddUT^%7}?eXHSZ?Bgl
+z+JqOy^IUX9?eQV+rNy{fC1U_<eBA3O;O{zoc4Lz(rllG()HqV!tlGgPm?0@yFBD;x
+zoBN%f)$y0w>{NjI^IpUgvOeATc4z0(3qC4bC1MKE^+scda~={oidp<*)3)vZ1AVL*
+Au>b%7
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml
+index 340667c..977be98 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <EDITS>
+-  <EDITS_VERSION>-57</EDITS_VERSION>
++  <EDITS_VERSION>-58</EDITS_VERSION>
+   <RECORD>
+     <OPCODE>OP_START_LOG_SEGMENT</OPCODE>
+     <DATA>
+@@ -42,6 +42,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
+       <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -64,6 +65,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME></CLIENT_NAME>
+       <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -174,6 +176,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
+       <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -196,6 +199,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME></CLIENT_NAME>
+       <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -204,17 +208,61 @@
+     </DATA>
+   </RECORD>
+   <RECORD>
+-    <OPCODE>OP_SET_REPLICATION</OPCODE>
++    <OPCODE>OP_ADD</OPCODE>
+     <DATA>
+       <TXID>17</TXID>
++      <LENGTH>0</LENGTH>
++      <INODEID>16388</INODEID>
+       <PATH>/file_create</PATH>
+       <REPLICATION>1</REPLICATION>
++      <MTIME>1402899229912</MTIME>
++      <ATIME>1402899229912</ATIME>
++      <BLOCKSIZE>512</BLOCKSIZE>
++      <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
++      <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>true</OVERWRITE>
++      <PERMISSION_STATUS>
++        <USERNAME>andrew</USERNAME>
++        <GROUPNAME>supergroup</GROUPNAME>
++        <MODE>420</MODE>
++      </PERMISSION_STATUS>
++      <RPC_CLIENTID>e03f4a52-3d85-4e05-8942-286185e639bd</RPC_CLIENTID>
++      <RPC_CALLID>21</RPC_CALLID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+-    <OPCODE>OP_SET_PERMISSIONS</OPCODE>
++    <OPCODE>OP_CLOSE</OPCODE>
+     <DATA>
+       <TXID>18</TXID>
++      <LENGTH>0</LENGTH>
++      <INODEID>0</INODEID>
++      <PATH>/file_create</PATH>
++      <REPLICATION>1</REPLICATION>
++      <MTIME>1402899229931</MTIME>
++      <ATIME>1402899229912</ATIME>
++      <BLOCKSIZE>512</BLOCKSIZE>
++      <CLIENT_NAME></CLIENT_NAME>
++      <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
++      <PERMISSION_STATUS>
++        <USERNAME>andrew</USERNAME>
++        <GROUPNAME>supergroup</GROUPNAME>
++        <MODE>420</MODE>
++      </PERMISSION_STATUS>
++    </DATA>
++  </RECORD>
++  <RECORD>
++    <OPCODE>OP_SET_REPLICATION</OPCODE>
++    <DATA>
++      <TXID>19</TXID>
++      <PATH>/file_create</PATH>
++      <REPLICATION>1</REPLICATION>
++    </DATA>
++  </RECORD>
++  <RECORD>
++    <OPCODE>OP_SET_PERMISSIONS</OPCODE>
++    <DATA>
++      <TXID>20</TXID>
+       <SRC>/file_create</SRC>
+       <MODE>511</MODE>
+     </DATA>
+@@ -222,7 +270,7 @@
+   <RECORD>
+     <OPCODE>OP_SET_OWNER</OPCODE>
+     <DATA>
+-      <TXID>19</TXID>
++      <TXID>21</TXID>
+       <SRC>/file_create</SRC>
+       <USERNAME>newOwner</USERNAME>
+     </DATA>
+@@ -230,7 +278,7 @@
+   <RECORD>
+     <OPCODE>OP_TIMES</OPCODE>
+     <DATA>
+-      <TXID>20</TXID>
++      <TXID>22</TXID>
+       <LENGTH>0</LENGTH>
+       <PATH>/file_create</PATH>
+       <MTIME>1285195527000</MTIME>
+@@ -240,7 +288,7 @@
+   <RECORD>
+     <OPCODE>OP_SET_QUOTA</OPCODE>
+     <DATA>
+-      <TXID>21</TXID>
++      <TXID>23</TXID>
+       <SRC>/directory_mkdir</SRC>
+       <NSQUOTA>1000</NSQUOTA>
+       <DSQUOTA>-1</DSQUOTA>
+@@ -249,7 +297,7 @@
+   <RECORD>
+     <OPCODE>OP_RENAME</OPCODE>
+     <DATA>
+-      <TXID>22</TXID>
++      <TXID>24</TXID>
+       <LENGTH>0</LENGTH>
+       <SRC>/file_create</SRC>
+       <DST>/file_moved</DST>
+@@ -262,7 +310,7 @@
+   <RECORD>
+     <OPCODE>OP_ADD</OPCODE>
+     <DATA>
+-      <TXID>23</TXID>
++      <TXID>25</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>16389</INODEID>
+       <PATH>/file_concat_target</PATH>
+@@ -272,6 +320,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
+       <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -284,21 +333,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>24</TXID>
++      <TXID>26</TXID>
+       <BLOCK_ID>1073741825</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>25</TXID>
++      <TXID>27</TXID>
+       <GENSTAMPV2>1001</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>26</TXID>
++      <TXID>28</TXID>
+       <PATH>/file_concat_target</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741825</BLOCK_ID>
+@@ -312,21 +361,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>27</TXID>
++      <TXID>29</TXID>
+       <BLOCK_ID>1073741826</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>28</TXID>
++      <TXID>30</TXID>
+       <GENSTAMPV2>1002</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>29</TXID>
++      <TXID>31</TXID>
+       <PATH>/file_concat_target</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741825</BLOCK_ID>
+@@ -345,21 +394,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>30</TXID>
++      <TXID>32</TXID>
+       <BLOCK_ID>1073741827</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>31</TXID>
++      <TXID>33</TXID>
+       <GENSTAMPV2>1003</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>32</TXID>
++      <TXID>34</TXID>
+       <PATH>/file_concat_target</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741826</BLOCK_ID>
+@@ -378,7 +427,7 @@
+   <RECORD>
+     <OPCODE>OP_CLOSE</OPCODE>
+     <DATA>
+-      <TXID>33</TXID>
++      <TXID>35</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>0</INODEID>
+       <PATH>/file_concat_target</PATH>
+@@ -388,6 +437,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME></CLIENT_NAME>
+       <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <BLOCK>
+         <BLOCK_ID>1073741825</BLOCK_ID>
+         <NUM_BYTES>512</NUM_BYTES>
+@@ -413,7 +463,7 @@
+   <RECORD>
+     <OPCODE>OP_ADD</OPCODE>
+     <DATA>
+-      <TXID>34</TXID>
++      <TXID>36</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>16390</INODEID>
+       <PATH>/file_concat_0</PATH>
+@@ -423,6 +473,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
+       <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -435,21 +486,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>35</TXID>
++      <TXID>37</TXID>
+       <BLOCK_ID>1073741828</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>36</TXID>
++      <TXID>38</TXID>
+       <GENSTAMPV2>1004</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>37</TXID>
++      <TXID>39</TXID>
+       <PATH>/file_concat_0</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741828</BLOCK_ID>
+@@ -463,21 +514,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>38</TXID>
++      <TXID>40</TXID>
+       <BLOCK_ID>1073741829</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>39</TXID>
++      <TXID>41</TXID>
+       <GENSTAMPV2>1005</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>40</TXID>
++      <TXID>42</TXID>
+       <PATH>/file_concat_0</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741828</BLOCK_ID>
+@@ -496,21 +547,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>41</TXID>
++      <TXID>43</TXID>
+       <BLOCK_ID>1073741830</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>42</TXID>
++      <TXID>44</TXID>
+       <GENSTAMPV2>1006</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>43</TXID>
++      <TXID>45</TXID>
+       <PATH>/file_concat_0</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741829</BLOCK_ID>
+@@ -529,7 +580,7 @@
+   <RECORD>
+     <OPCODE>OP_CLOSE</OPCODE>
+     <DATA>
+-      <TXID>44</TXID>
++      <TXID>46</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>0</INODEID>
+       <PATH>/file_concat_0</PATH>
+@@ -539,6 +590,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME></CLIENT_NAME>
+       <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <BLOCK>
+         <BLOCK_ID>1073741828</BLOCK_ID>
+         <NUM_BYTES>512</NUM_BYTES>
+@@ -564,7 +616,7 @@
+   <RECORD>
+     <OPCODE>OP_ADD</OPCODE>
+     <DATA>
+-      <TXID>45</TXID>
++      <TXID>47</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>16391</INODEID>
+       <PATH>/file_concat_1</PATH>
+@@ -574,6 +626,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
+       <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -586,21 +639,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>46</TXID>
++      <TXID>48</TXID>
+       <BLOCK_ID>1073741831</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>47</TXID>
++      <TXID>49</TXID>
+       <GENSTAMPV2>1007</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>48</TXID>
++      <TXID>50</TXID>
+       <PATH>/file_concat_1</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741831</BLOCK_ID>
+@@ -614,21 +667,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>49</TXID>
++      <TXID>51</TXID>
+       <BLOCK_ID>1073741832</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>50</TXID>
++      <TXID>52</TXID>
+       <GENSTAMPV2>1008</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>51</TXID>
++      <TXID>53</TXID>
+       <PATH>/file_concat_1</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741831</BLOCK_ID>
+@@ -647,21 +700,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>52</TXID>
++      <TXID>54</TXID>
+       <BLOCK_ID>1073741833</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>53</TXID>
++      <TXID>55</TXID>
+       <GENSTAMPV2>1009</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>54</TXID>
++      <TXID>56</TXID>
+       <PATH>/file_concat_1</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741832</BLOCK_ID>
+@@ -680,7 +733,7 @@
+   <RECORD>
+     <OPCODE>OP_CLOSE</OPCODE>
+     <DATA>
+-      <TXID>55</TXID>
++      <TXID>57</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>0</INODEID>
+       <PATH>/file_concat_1</PATH>
+@@ -690,6 +743,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME></CLIENT_NAME>
+       <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <BLOCK>
+         <BLOCK_ID>1073741831</BLOCK_ID>
+         <NUM_BYTES>512</NUM_BYTES>
+@@ -715,7 +769,7 @@
+   <RECORD>
+     <OPCODE>OP_CONCAT_DELETE</OPCODE>
+     <DATA>
+-      <TXID>56</TXID>
++      <TXID>58</TXID>
+       <LENGTH>0</LENGTH>
+       <TRG>/file_concat_target</TRG>
+       <TIMESTAMP>1402899230394</TIMESTAMP>
+@@ -730,7 +784,7 @@
+   <RECORD>
+     <OPCODE>OP_SYMLINK</OPCODE>
+     <DATA>
+-      <TXID>57</TXID>
++      <TXID>59</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>16392</INODEID>
+       <PATH>/file_symlink</PATH>
+@@ -749,7 +803,7 @@
+   <RECORD>
+     <OPCODE>OP_ADD</OPCODE>
+     <DATA>
+-      <TXID>58</TXID>
++      <TXID>60</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>16393</INODEID>
+       <PATH>/hard-lease-recovery-test</PATH>
+@@ -759,6 +813,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME>DFSClient_NONMAPREDUCE_1233039831_1</CLIENT_NAME>
+       <CLIENT_MACHINE>127.0.0.1</CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <PERMISSION_STATUS>
+         <USERNAME>andrew</USERNAME>
+         <GROUPNAME>supergroup</GROUPNAME>
+@@ -771,21 +826,21 @@
+   <RECORD>
+     <OPCODE>OP_ALLOCATE_BLOCK_ID</OPCODE>
+     <DATA>
+-      <TXID>59</TXID>
++      <TXID>61</TXID>
+       <BLOCK_ID>1073741834</BLOCK_ID>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>60</TXID>
++      <TXID>62</TXID>
+       <GENSTAMPV2>1010</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ADD_BLOCK</OPCODE>
+     <DATA>
+-      <TXID>61</TXID>
++      <TXID>63</TXID>
+       <PATH>/hard-lease-recovery-test</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741834</BLOCK_ID>
+@@ -799,7 +854,7 @@
+   <RECORD>
+     <OPCODE>OP_UPDATE_BLOCKS</OPCODE>
+     <DATA>
+-      <TXID>62</TXID>
++      <TXID>64</TXID>
+       <PATH>/hard-lease-recovery-test</PATH>
+       <BLOCK>
+         <BLOCK_ID>1073741834</BLOCK_ID>
+@@ -813,14 +868,14 @@
+   <RECORD>
+     <OPCODE>OP_SET_GENSTAMP_V2</OPCODE>
+     <DATA>
+-      <TXID>63</TXID>
++      <TXID>65</TXID>
+       <GENSTAMPV2>1011</GENSTAMPV2>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_REASSIGN_LEASE</OPCODE>
+     <DATA>
+-      <TXID>64</TXID>
++      <TXID>66</TXID>
+       <LEASEHOLDER>DFSClient_NONMAPREDUCE_1233039831_1</LEASEHOLDER>
+       <PATH>/hard-lease-recovery-test</PATH>
+       <NEWHOLDER>HDFS_NameNode</NEWHOLDER>
+@@ -829,7 +884,7 @@
+   <RECORD>
+     <OPCODE>OP_CLOSE</OPCODE>
+     <DATA>
+-      <TXID>65</TXID>
++      <TXID>67</TXID>
+       <LENGTH>0</LENGTH>
+       <INODEID>0</INODEID>
+       <PATH>/hard-lease-recovery-test</PATH>
+@@ -839,6 +894,7 @@
+       <BLOCKSIZE>512</BLOCKSIZE>
+       <CLIENT_NAME></CLIENT_NAME>
+       <CLIENT_MACHINE></CLIENT_MACHINE>
++      <OVERWRITE>false</OVERWRITE>
+       <BLOCK>
+         <BLOCK_ID>1073741834</BLOCK_ID>
+         <NUM_BYTES>11</NUM_BYTES>
+@@ -854,7 +910,7 @@
+   <RECORD>
+     <OPCODE>OP_ADD_CACHE_POOL</OPCODE>
+     <DATA>
+-      <TXID>66</TXID>
++      <TXID>68</TXID>
+       <POOLNAME>pool1</POOLNAME>
+       <OWNERNAME>andrew</OWNERNAME>
+       <GROUPNAME>andrew</GROUPNAME>
+@@ -868,7 +924,7 @@
+   <RECORD>
+     <OPCODE>OP_MODIFY_CACHE_POOL</OPCODE>
+     <DATA>
+-      <TXID>67</TXID>
++      <TXID>69</TXID>
+       <POOLNAME>pool1</POOLNAME>
+       <LIMIT>99</LIMIT>
+       <RPC_CLIENTID>e03f4a52-3d85-4e05-8942-286185e639bd</RPC_CLIENTID>
+@@ -878,7 +934,7 @@
+   <RECORD>
+     <OPCODE>OP_ADD_CACHE_DIRECTIVE</OPCODE>
+     <DATA>
+-      <TXID>68</TXID>
++      <TXID>70</TXID>
+       <ID>1</ID>
+       <PATH>/path</PATH>
+       <REPLICATION>1</REPLICATION>
+@@ -891,7 +947,7 @@
+   <RECORD>
+     <OPCODE>OP_MODIFY_CACHE_DIRECTIVE</OPCODE>
+     <DATA>
+-      <TXID>69</TXID>
++      <TXID>71</TXID>
+       <ID>1</ID>
+       <REPLICATION>2</REPLICATION>
+       <RPC_CLIENTID>e03f4a52-3d85-4e05-8942-286185e639bd</RPC_CLIENTID>
+@@ -901,7 +957,7 @@
+   <RECORD>
+     <OPCODE>OP_REMOVE_CACHE_DIRECTIVE</OPCODE>
+     <DATA>
+-      <TXID>70</TXID>
++      <TXID>72</TXID>
+       <ID>1</ID>
+       <RPC_CLIENTID>e03f4a52-3d85-4e05-8942-286185e639bd</RPC_CLIENTID>
+       <RPC_CALLID>77</RPC_CALLID>
+@@ -910,7 +966,7 @@
+   <RECORD>
+     <OPCODE>OP_REMOVE_CACHE_POOL</OPCODE>
+     <DATA>
+-      <TXID>71</TXID>
++      <TXID>73</TXID>
+       <POOLNAME>pool1</POOLNAME>
+       <RPC_CLIENTID>e03f4a52-3d85-4e05-8942-286185e639bd</RPC_CLIENTID>
+       <RPC_CALLID>78</RPC_CALLID>
+@@ -919,7 +975,7 @@
+   <RECORD>
+     <OPCODE>OP_SET_ACL</OPCODE>
+     <DATA>
+-      <TXID>72</TXID>
++      <TXID>74</TXID>
+       <SRC>/file_concat_target</SRC>
+       <ENTRY>
+         <SCOPE>ACCESS</SCOPE>
+@@ -952,7 +1008,7 @@
+   <RECORD>
+     <OPCODE>OP_SET_XATTR</OPCODE>
+     <DATA>
+-      <TXID>73</TXID>
++      <TXID>75</TXID>
+       <SRC>/file_concat_target</SRC>
+       <XATTR>
+         <NAMESPACE>USER</NAMESPACE>
+@@ -966,7 +1022,7 @@
+   <RECORD>
+     <OPCODE>OP_SET_XATTR</OPCODE>
+     <DATA>
+-      <TXID>74</TXID>
++      <TXID>76</TXID>
+       <SRC>/file_concat_target</SRC>
+       <XATTR>
+         <NAMESPACE>USER</NAMESPACE>
+@@ -980,7 +1036,7 @@
+   <RECORD>
+     <OPCODE>OP_REMOVE_XATTR</OPCODE>
+     <DATA>
+-      <TXID>75</TXID>
++      <TXID>77</TXID>
+       <SRC>/file_concat_target</SRC>
+       <XATTR>
+         <NAMESPACE>USER</NAMESPACE>
+@@ -993,21 +1049,21 @@
+   <RECORD>
+     <OPCODE>OP_ROLLING_UPGRADE_START</OPCODE>
+     <DATA>
+-      <TXID>76</TXID>
++      <TXID>78</TXID>
+       <STARTTIME>1402899233646</STARTTIME>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_ROLLING_UPGRADE_FINALIZE</OPCODE>
+     <DATA>
+-      <TXID>77</TXID>
++      <TXID>79</TXID>
+       <FINALIZETIME>1402899233647</FINALIZETIME>
+     </DATA>
+   </RECORD>
+   <RECORD>
+     <OPCODE>OP_END_LOG_SEGMENT</OPCODE>
+     <DATA>
+-      <TXID>78</TXID>
++      <TXID>80</TXID>
+     </DATA>
+   </RECORD>
+ </EDITS>
+-- 
+1.7.9.5
+

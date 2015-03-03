@@ -1,0 +1,191 @@
+From c79599c20944b023c2f598461e433b5c3c3823a3 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Fri, 24 Oct 2014 11:13:44 -0700
+Subject: [PATCH 705/813] YARN-2724. Skipped uploading a local log file to
+ HDFS if exception is raised when opening it.
+ Contributed by Xuan Gong.
+
+(cherry picked from commit e31f0a6558b106662c83e1f797216e412b6689a9)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/AggregatedLogFormat.java
+---
+ .../yarn/logaggregation/AggregatedLogFormat.java   |   51 +++++++++++++-------
+ .../logaggregation/TestAggregatedLogFormat.java    |   17 ++++++-
+ 2 files changed, 49 insertions(+), 19 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/AggregatedLogFormat.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/AggregatedLogFormat.java
+index 3568de2..d6913a8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/AggregatedLogFormat.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/logaggregation/AggregatedLogFormat.java
+@@ -64,6 +64,9 @@
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ 
++import com.google.common.annotations.VisibleForTesting;
++
++
+ @Public
+ @Evolving
+ public class AggregatedLogFormat {
+@@ -165,11 +168,11 @@ public LogValue(List<String> rootLogDirs, ContainerId containerId,
+     public void write(DataOutputStream out) throws IOException {
+       for (String rootLogDir : this.rootLogDirs) {
+         File appLogDir =
+-            new File(rootLogDir, 
++            new File(rootLogDir,
+                 ConverterUtils.toString(
+                     this.containerId.getApplicationAttemptId().
+                         getApplicationId())
+-                );
++            );
+         File containerLogDir =
+             new File(appLogDir, ConverterUtils.toString(this.containerId));
+ 
+@@ -182,8 +185,16 @@ public void write(DataOutputStream out) throws IOException {
+         Arrays.sort(logFiles);
+         for (File logFile : logFiles) {
+ 
+-          final long fileLength = logFile.length();
++          FileInputStream in = null;
++          try {
++            in = secureOpenFile(logFile);
++          } catch (IOException e) {
++            logErrorMessage(logFile, e);
++            IOUtils.cleanup(LOG, in);
++            continue;
++          }
+ 
++          final long fileLength = logFile.length();
+           // Write the logFile Type
+           out.writeUTF(logFile.getName());
+ 
+@@ -191,9 +202,7 @@ public void write(DataOutputStream out) throws IOException {
+           out.writeUTF(String.valueOf(fileLength));
+ 
+           // Write the log itself
+-          FileInputStream in = null;
+           try {
+-            in = SecureIOUtils.openForRead(logFile, getUser(), null);
+             byte[] buf = new byte[65535];
+             int len = 0;
+             long bytesLeft = fileLength;
+@@ -201,33 +210,41 @@ public void write(DataOutputStream out) throws IOException {
+               //If buffer contents within fileLength, write
+               if (len < bytesLeft) {
+                 out.write(buf, 0, len);
+-                bytesLeft-=len;
++                bytesLeft -= len;
+               }
+               //else only write contents within fileLength, then exit early
+               else {
+-                out.write(buf, 0, (int)bytesLeft);
++                out.write(buf, 0, (int) bytesLeft);
+                 break;
+               }
+             }
+             long newLength = logFile.length();
+-            if(fileLength < newLength) {
+-              LOG.warn("Aggregated logs truncated by approximately "+
+-                  (newLength-fileLength) +" bytes.");
++            if (fileLength < newLength) {
++              LOG.warn("Aggregated logs truncated by approximately " +
++                  (newLength - fileLength) + " bytes.");
+             }
+           } catch (IOException e) {
+-            String message = "Error aggregating log file. Log file : "
+-                + logFile.getAbsolutePath() + e.getMessage(); 
+-            LOG.error(message, e);
++            String message = logErrorMessage(logFile, e);
+             out.write(message.getBytes());
+           } finally {
+-            if (in != null) {
+-              in.close();
+-            }
++            IOUtils.cleanup(LOG, in);
+           }
+         }
+       }
+     }
+-    
++
++    @VisibleForTesting
++    public FileInputStream secureOpenFile(File logFile) throws IOException {
++      return SecureIOUtils.openForRead(logFile, getUser(), null);
++    }
++
++    private static String logErrorMessage(File logFile, Exception e) {
++      String message = "Error aggregating log file. Log file : "
++          + logFile.getAbsolutePath() + ". " + e.getMessage();
++      LOG.error(message, e);
++      return message;
++    }
++
+     // Added for testing purpose.
+     public String getUser() {
+       return user;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java
+index 676a156..0fae77d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java
+@@ -20,6 +20,7 @@
+ 
+ import static org.mockito.Mockito.spy;
+ import static org.mockito.Mockito.when;
++import static org.mockito.Mockito.doThrow;
+ 
+ import java.io.BufferedReader;
+ import java.io.DataInputStream;
+@@ -37,7 +38,6 @@
+ import java.util.concurrent.CountDownLatch;
+ 
+ import org.junit.Assert;
+-
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+@@ -194,6 +194,8 @@ public void testReadAcontainerLogs1() throws Exception {
+ 
+     int numChars = 80000;
+ 
++    // create file stderr and stdout in containerLogDir
++    writeSrcFile(srcFilePath, "stderr", numChars);
+     writeSrcFile(srcFilePath, "stdout", numChars);
+ 
+     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+@@ -204,7 +206,14 @@ public void testReadAcontainerLogs1() throws Exception {
+         new LogValue(Collections.singletonList(srcFileRoot.toString()),
+             testContainerId, ugi.getShortUserName());
+ 
+-    logWriter.append(logKey, logValue);
++    // When we try to open FileInputStream for stderr, it will throw out an IOException.
++    // Skip the log aggregation for stderr.
++    LogValue spyLogValue = spy(logValue);
++    File errorFile = new File((new Path(srcFilePath, "stderr")).toString());
++    doThrow(new IOException("Mock can not open FileInputStream")).when(
++      spyLogValue).secureOpenFile(errorFile);
++
++    logWriter.append(logKey, spyLogValue);
+     logWriter.close();
+ 
+     // make sure permission are correct on the file
+@@ -218,11 +227,15 @@ public void testReadAcontainerLogs1() throws Exception {
+     Writer writer = new StringWriter();
+     LogReader.readAcontainerLogs(dis, writer);
+     
++    // We should only do the log aggregation for stdout.
++    // Since we could not open the fileInputStream for stderr, this file is not
++    // aggregated.
+     String s = writer.toString();
+     int expectedLength =
+         "\n\nLogType:stdout".length() + ("\nLogLength:" + numChars).length()
+             + "\nLog Contents:\n".length() + numChars;
+     Assert.assertTrue("LogType not matched", s.contains("LogType:stdout"));
++    Assert.assertTrue("log file:stderr should not be aggregated.", !s.contains("LogType:stderr"));
+     Assert.assertTrue("LogLength not matched", s.contains("LogLength:" + numChars));
+     Assert.assertTrue("Log Contents not matched", s.contains("Log Contents"));
+     
+-- 
+1.7.9.5
+

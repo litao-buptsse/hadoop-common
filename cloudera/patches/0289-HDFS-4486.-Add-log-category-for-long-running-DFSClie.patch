@@ -1,0 +1,240 @@
+From 7c9a0f6e896e40fe5f834c83ce4ce26ba5677ce2 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Wed, 27 Aug 2014 13:39:40 -0700
+Subject: [PATCH 289/813] HDFS-4486. Add log category for long-running
+ DFSClient notices.  Contributed by Zhe Zhang.
+
+(cherry picked from commit 225569ece229cec32f852f831fd337a139c44b1e)
+---
+ .../org/apache/hadoop/crypto/OpensslCipher.java    |    2 ++
+ .../hadoop/crypto/random/OpensslSecureRandom.java  |    3 +++
+ .../org/apache/hadoop/io/nativeio/NativeIO.java    |    7 ++---
+ .../JniBasedUnixGroupsMappingWithFallback.java     |    3 ++-
+ .../apache/hadoop/util/PerformanceAdvisory.java    |   24 +++++++++++++++++
+ .../org/apache/hadoop/hdfs/BlockReaderFactory.java |   27 +++++++++-----------
+ .../hdfs/shortcircuit/DomainSocketFactory.java     |    4 ++-
+ 7 files changed, 50 insertions(+), 20 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/OpensslCipher.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/OpensslCipher.java
+index 264652b..2eb16ee 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/OpensslCipher.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/OpensslCipher.java
+@@ -32,6 +32,7 @@
+ import org.apache.hadoop.util.NativeCodeLoader;
+ 
+ import com.google.common.base.Preconditions;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ 
+ /**
+  * OpenSSL cipher using JNI.
+@@ -82,6 +83,7 @@ static int get(String padding) throws NoSuchPaddingException {
+     String loadingFailure = null;
+     try {
+       if (!NativeCodeLoader.buildSupportsOpenssl()) {
++        PerformanceAdvisory.LOG.debug("Build does not support openssl");
+         loadingFailure = "build does not support openssl.";
+       } else {
+         initIDs();
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OpensslSecureRandom.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OpensslSecureRandom.java
+index b1fa988..6c53a0a 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OpensslSecureRandom.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OpensslSecureRandom.java
+@@ -25,6 +25,7 @@
+ import org.apache.hadoop.util.NativeCodeLoader;
+ 
+ import com.google.common.base.Preconditions;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ 
+ /**
+  * OpenSSL secure random using JNI.
+@@ -67,6 +68,8 @@ public static boolean isNativeCodeLoaded() {
+   
+   public OpensslSecureRandom() {
+     if (!nativeEnabled) {
++      PerformanceAdvisory.LOG.debug("Build does not support openssl, " +
++          "falling back to Java SecureRandom.");
+       fallback = new java.security.SecureRandom();
+     }
+   }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java
+index db8da35..3bdc3e4 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java
+@@ -36,6 +36,7 @@
+ import org.apache.hadoop.io.SecureIOUtils.AlreadyExistsException;
+ import org.apache.hadoop.util.NativeCodeLoader;
+ import org.apache.hadoop.util.Shell;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ 
+@@ -195,7 +196,7 @@ public boolean verifyCanMlock() {
+           // This can happen if the user has an older version of libhadoop.so
+           // installed - in this case we can continue without native IO
+           // after warning
+-          LOG.error("Unable to initialize NativeIO libraries", t);
++          PerformanceAdvisory.LOG.debug("Unable to initialize NativeIO libraries", t);
+         }
+       }
+     }
+@@ -579,7 +580,7 @@ public static boolean access(String path, AccessRight desiredAccess)
+           // This can happen if the user has an older version of libhadoop.so
+           // installed - in this case we can continue without native IO
+           // after warning
+-          LOG.error("Unable to initialize NativeIO libraries", t);
++          PerformanceAdvisory.LOG.debug("Unable to initialize NativeIO libraries", t);
+         }
+       }
+     }
+@@ -598,7 +599,7 @@ public static boolean access(String path, AccessRight desiredAccess)
+         // This can happen if the user has an older version of libhadoop.so
+         // installed - in this case we can continue without native IO
+         // after warning
+-        LOG.error("Unable to initialize NativeIO libraries", t);
++        PerformanceAdvisory.LOG.debug("Unable to initialize NativeIO libraries", t);
+       }
+     }
+   }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/JniBasedUnixGroupsMappingWithFallback.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/JniBasedUnixGroupsMappingWithFallback.java
+index 908ca14..40333fc 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/JniBasedUnixGroupsMappingWithFallback.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/JniBasedUnixGroupsMappingWithFallback.java
+@@ -24,6 +24,7 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.util.NativeCodeLoader;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ 
+ public class JniBasedUnixGroupsMappingWithFallback implements
+     GroupMappingServiceProvider {
+@@ -37,7 +38,7 @@ public JniBasedUnixGroupsMappingWithFallback() {
+     if (NativeCodeLoader.isNativeCodeLoaded()) {
+       this.impl = new JniBasedUnixGroupsMapping();
+     } else {
+-      LOG.debug("Falling back to shell based");
++      PerformanceAdvisory.LOG.debug("Falling back to shell based");
+       this.impl = new ShellBasedUnixGroupsMapping();
+     }
+     if (LOG.isDebugEnabled()){
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java
+new file mode 100644
+index 0000000..306d47c
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PerformanceAdvisory.java
+@@ -0,0 +1,24 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements. See the NOTICE file distributed with this
++ * work for additional information regarding copyright ownership. The ASF
++ * licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package org.apache.hadoop.util;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++
++public class PerformanceAdvisory {
++  public static final Log LOG = LogFactory.getLog(PerformanceAdvisory.class);
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java
+index d27bd6e..3fb442b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java
+@@ -54,6 +54,7 @@
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.token.SecretManager.InvalidToken;
+ import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ import org.apache.hadoop.util.Time;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+@@ -343,10 +344,9 @@ private BlockReader getLegacyBlockReaderLocal() throws IOException {
+       return null;
+     }
+     if (clientContext.getDisableLegacyBlockReaderLocal()) {
+-      if (LOG.isTraceEnabled()) {
+-        LOG.trace(this + ": can't construct BlockReaderLocalLegacy because " +
+-            "disableLegacyBlockReaderLocal is set.");
+-      }
++      PerformanceAdvisory.LOG.debug(this + ": can't construct " +
++          "BlockReaderLocalLegacy because " +
++          "disableLegacyBlockReaderLocal is set.");
+       return null;
+     }
+     IOException ioe = null;
+@@ -385,10 +385,8 @@ private BlockReader getBlockReaderLocal() throws InvalidToken {
+                       getPathInfo(inetSocketAddress, conf);
+     }
+     if (!pathInfo.getPathState().getUsableForShortCircuit()) {
+-      if (LOG.isTraceEnabled()) {
+-        LOG.trace(this + ": " + pathInfo + " is not " +
+-            "usable for short circuit; giving up on BlockReaderLocal.");
+-      }
++      PerformanceAdvisory.LOG.debug(this + ": " + pathInfo + " is not " +
++          "usable for short circuit; giving up on BlockReaderLocal.");
+       return null;
+     }
+     ShortCircuitCache cache = clientContext.getShortCircuitCache();
+@@ -404,8 +402,9 @@ private BlockReader getBlockReaderLocal() throws InvalidToken {
+     }
+     if (info.getReplica() == null) {
+       if (LOG.isTraceEnabled()) {
+-        LOG.trace(this + ": failed to get ShortCircuitReplica.  " +
+-            "Cannot construct BlockReaderLocal via " + pathInfo.getPath());
++        PerformanceAdvisory.LOG.debug(this + ": failed to get " +
++            "ShortCircuitReplica. Cannot construct " +
++            "BlockReaderLocal via " + pathInfo.getPath());
+       }
+       return null;
+     }
+@@ -580,11 +579,9 @@ private BlockReader getRemoteBlockReaderFromDomain() throws IOException {
+                       getPathInfo(inetSocketAddress, conf);
+     }
+     if (!pathInfo.getPathState().getUsableForDataTransfer()) {
+-      if (LOG.isTraceEnabled()) {
+-        LOG.trace(this + ": not trying to create a remote block reader " +
+-            "because the UNIX domain socket at " + pathInfo +
+-            " is not usable.");
+-      }
++      PerformanceAdvisory.LOG.debug(this + ": not trying to create a " +
++          "remote block reader because the UNIX domain socket at " +
++          pathInfo + " is not usable.");
+       return null;
+     }
+     if (LOG.isTraceEnabled()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/shortcircuit/DomainSocketFactory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/shortcircuit/DomainSocketFactory.java
+index e067de7..5fd31a9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/shortcircuit/DomainSocketFactory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/shortcircuit/DomainSocketFactory.java
+@@ -33,6 +33,7 @@
+ import com.google.common.base.Preconditions;
+ import com.google.common.cache.Cache;
+ import com.google.common.cache.CacheBuilder;
++import org.apache.hadoop.util.PerformanceAdvisory;
+ 
+ public class DomainSocketFactory {
+   private static final Log LOG = LogFactory.getLog(DomainSocketFactory.class);
+@@ -105,7 +106,8 @@ public DomainSocketFactory(Conf conf) {
+     }
+ 
+     if (feature == null) {
+-      LOG.debug("Both short-circuit local reads and UNIX domain socket are disabled.");
++      PerformanceAdvisory.LOG.debug(
++          "Both short-circuit local reads and UNIX domain socket are disabled.");
+     } else {
+       if (conf.getDomainSocketPath().isEmpty()) {
+         throw new HadoopIllegalArgumentException(feature + " is enabled but "
+-- 
+1.7.9.5
+

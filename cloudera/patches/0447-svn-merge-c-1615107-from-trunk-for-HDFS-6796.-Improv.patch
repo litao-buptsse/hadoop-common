@@ -1,0 +1,139 @@
+From df8fb2c795e171ebb7f89ee3b0c45b5eb559dbbb Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Fri, 1 Aug 2014 14:15:57 +0000
+Subject: [PATCH 447/813] svn merge -c 1615107 from trunk for HDFS-6796.
+ Improve the argument check during balancer command
+ line parsing.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1615108 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/balancer/Balancer.java      |   33 ++++++++++++--------
+ .../hadoop/hdfs/server/balancer/TestBalancer.java  |   31 +++++++++++++++++-
+ 2 files changed, 50 insertions(+), 14 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java
+index cfbe6a9..62c5c51 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java
+@@ -1762,9 +1762,9 @@ static Parameters parse(String[] args) {
+       if (args != null) {
+         try {
+           for(int i = 0; i < args.length; i++) {
+-            checkArgument(args.length >= 2, "args = " + Arrays.toString(args));           
+             if ("-threshold".equalsIgnoreCase(args[i])) {
+-              i++;
++              checkArgument(++i < args.length,
++                "Threshold value is missing: args = " + Arrays.toString(args));
+               try {
+                 threshold = Double.parseDouble(args[i]);
+                 if (threshold < 1 || threshold > 100) {
+@@ -1779,7 +1779,8 @@ static Parameters parse(String[] args) {
+                 throw e;
+               }
+             } else if ("-policy".equalsIgnoreCase(args[i])) {
+-              i++;
++              checkArgument(++i < args.length,
++                "Policy value is missing: args = " + Arrays.toString(args));
+               try {
+                 policy = BalancingPolicy.parse(args[i]);
+               } catch(IllegalArgumentException e) {
+@@ -1787,16 +1788,26 @@ static Parameters parse(String[] args) {
+                 throw e;
+               }
+             } else if ("-exclude".equalsIgnoreCase(args[i])) {
+-              i++;
++              checkArgument(++i < args.length,
++                  "List of nodes to exclude | -f <filename> is missing: args = "
++                  + Arrays.toString(args));
+               if ("-f".equalsIgnoreCase(args[i])) {
+-                nodesTobeExcluded = Util.getHostListFromFile(args[++i]);
++                checkArgument(++i < args.length,
++                    "File containing nodes to exclude is not specified: args = "
++                    + Arrays.toString(args));
++                nodesTobeExcluded = Util.getHostListFromFile(args[i]);
+               } else {
+                 nodesTobeExcluded = Util.parseHostList(args[i]);
+               }
+             } else if ("-include".equalsIgnoreCase(args[i])) {
+-              i++;
++              checkArgument(++i < args.length,
++                "List of nodes to include | -f <filename> is missing: args = "
++                + Arrays.toString(args));
+               if ("-f".equalsIgnoreCase(args[i])) {
+-                nodesTobeIncluded = Util.getHostListFromFile(args[++i]);
++                checkArgument(++i < args.length,
++                    "File containing nodes to include is not specified: args = "
++                    + Arrays.toString(args));
++                nodesTobeIncluded = Util.getHostListFromFile(args[i]);
+                } else {
+                 nodesTobeIncluded = Util.parseHostList(args[i]);
+               }
+@@ -1805,12 +1816,8 @@ static Parameters parse(String[] args) {
+                   + Arrays.toString(args));
+             }
+           }
+-          if (!nodesTobeExcluded.isEmpty() && !nodesTobeIncluded.isEmpty()) {
+-            System.err.println(
+-                "-exclude and -include options cannot be specified together.");
+-            throw new IllegalArgumentException(
+-                "-exclude and -include options cannot be specified together.");
+-          }
++          checkArgument(nodesTobeExcluded.isEmpty() || nodesTobeIncluded.isEmpty(),
++              "-exclude and -include options cannot be specified together.");
+         } catch(RuntimeException e) {
+           printUsage(System.err);
+           throw e;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+index 1b9b430..c8933df 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+@@ -867,13 +867,42 @@ public void testBalancerCliParseWithWrongParams() {
+     } catch (IllegalArgumentException e) {
+ 
+     }
+-    parameters = new String[] { "-threshold 1 -policy" };
++    parameters = new String[] {"-threshold", "1", "-policy"};
+     try {
+       Balancer.Cli.parse(parameters);
+       fail(reason);
+     } catch (IllegalArgumentException e) {
+ 
+     }
++    parameters = new String[] {"-threshold", "1", "-include"};
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++    parameters = new String[] {"-threshold", "1", "-exclude"};
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++    parameters = new String[] {"-include",  "-f"};
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++    parameters = new String[] {"-exclude",  "-f"};
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++
+     parameters = new String[] {"-include",  "testnode1", "-exclude", "testnode2"};
+     try {
+       Balancer.Cli.parse(parameters);
+-- 
+1.7.9.5
+

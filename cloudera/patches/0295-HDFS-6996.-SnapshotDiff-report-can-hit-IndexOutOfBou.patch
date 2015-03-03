@@ -1,0 +1,129 @@
+From 39186e85e558b1f1b2cd52fc2523058ea96131e4 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing@hortonworks.com>
+Date: Thu, 4 Sep 2014 16:12:44 -0700
+Subject: [PATCH 295/813] HDFS-6996. SnapshotDiff report can hit
+ IndexOutOfBoundsException when there are nested
+ renamed directory/file. Contributed by Jing Zhao.
+
+(cherry picked from commit f7df24bb1b4278d27f5c2b7fecf7b69be4302c7a)
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    5 +--
+ .../hdfs/server/namenode/INodeReference.java       |    4 +--
+ .../snapshot/INodeDirectorySnapshottable.java      |    4 +--
+ .../namenode/snapshot/TestSnapshotDiffReport.java  |   36 ++++++++++++++++++++
+ 4 files changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 2690125..3f621cb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -428,7 +428,8 @@ boolean unprotectedRemoveBlock(String path,
+   /**
+    * @throws SnapshotAccessControlException 
+    * @see #unprotectedRenameTo(String, String, long)
+-   * @deprecated Use {@link #renameTo(String, String, boolean, Rename...)}
++   * @deprecated Use {@link #renameTo(String, String, long,
++   *                                  BlocksMapUpdateInfo, Rename...)}
+    */
+   @Deprecated
+   boolean renameTo(String src, String dst, long mtime)
+@@ -479,7 +480,7 @@ void renameTo(String src, String dst, long mtime,
+    * @throws QuotaExceededException if the operation violates any quota limit
+    * @throws FileAlreadyExistsException if the src is a symlink that points to dst
+    * @throws SnapshotAccessControlException if path is in RO snapshot
+-   * @deprecated See {@link #renameTo(String, String, boolean, Rename...)}
++   * @deprecated See {@link #renameTo(String, String, long, BlocksMapUpdateInfo, Rename...)}
+    */
+   @Deprecated
+   boolean unprotectedRenameTo(String src, String dst, long timestamp)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+index 05e144d..9bd2ad0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+@@ -28,7 +28,6 @@
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+-import org.apache.hadoop.hdfs.server.namenode.XAttrFeature;
+ 
+ import com.google.common.base.Preconditions;
+ 
+@@ -450,7 +449,8 @@ public INodeReference getParentRef(int snapshotId) {
+           end = mid;
+         }
+       }
+-      if (withNameList.get(start).lastSnapshotId >= snapshotId) {
++      if (start < withNameList.size() &&
++          withNameList.get(start).lastSnapshotId >= snapshotId) {
+         return withNameList.get(start);
+       } else {
+         return this.getParentReference();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+index 5a6ed75..a929b84 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+@@ -74,7 +74,7 @@ static public INodeDirectorySnapshottable valueOf(
+   /**
+    * Snapshots of this directory in ascending order of snapshot names.
+    * Note that snapshots in ascending order of snapshot id are stored in
+-   * {@link INodeDirectoryWithSnapshot}.diffs (a private field).
++   * {@link DirectoryWithSnapshotFeature}.diffs (a private field).
+    */
+   private final List<Snapshot> snapshotsByNames = new ArrayList<Snapshot>();
+ 
+@@ -495,4 +495,4 @@ public void remove() {
+       });
+     }
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDiffReport.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDiffReport.java
+index 0cc318b..786f924 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDiffReport.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDiffReport.java
+@@ -492,4 +492,40 @@ public void testDiffReportWithRenameAndAppend() throws Exception {
+         new DiffReportEntry(DiffType.RENAME, DFSUtil.string2Bytes("foo"),
+             DFSUtil.string2Bytes("bar")));
+   }
++
++  /**
++   * Nested renamed dir/file and the withNameList in the WithCount node of the
++   * parental directory is empty due to snapshot deletion. See HDFS-6996 for
++   * details.
++   */
++  @Test
++  public void testDiffReportWithRenameAndSnapshotDeletion() throws Exception {
++    final Path root = new Path("/");
++    final Path foo = new Path(root, "foo");
++    final Path bar = new Path(foo, "bar");
++    DFSTestUtil.createFile(hdfs, bar, BLOCKSIZE, REPLICATION, seed);
++
++    SnapshotTestHelper.createSnapshot(hdfs, root, "s0");
++    // rename /foo to /foo2
++    final Path foo2 = new Path(root, "foo2");
++    hdfs.rename(foo, foo2);
++    // now /foo/bar becomes /foo2/bar
++    final Path bar2 = new Path(foo2, "bar");
++
++    // delete snapshot s0 so that the withNameList inside of the WithCount node
++    // of foo becomes empty
++    hdfs.deleteSnapshot(root, "s0");
++
++    // create snapshot s1 and rename bar again
++    SnapshotTestHelper.createSnapshot(hdfs, root, "s1");
++    final Path bar3 = new Path(foo2, "bar-new");
++    hdfs.rename(bar2, bar3);
++
++    // we always put modification on the file before rename
++    verifyDiffReport(root, "s1", "",
++        new DiffReportEntry(DiffType.MODIFY, DFSUtil.string2Bytes("")),
++        new DiffReportEntry(DiffType.MODIFY, DFSUtil.string2Bytes("foo2")),
++        new DiffReportEntry(DiffType.RENAME, DFSUtil.string2Bytes("foo2/bar"),
++            DFSUtil.string2Bytes("foo2/bar-new")));
++  }
+ }
+\ No newline at end of file
+-- 
+1.7.9.5
+

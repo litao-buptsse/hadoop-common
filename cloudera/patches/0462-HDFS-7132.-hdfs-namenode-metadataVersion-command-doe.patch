@@ -1,0 +1,94 @@
+From 0692ecd1901cede23aff52e5107f668e5457c2a3 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Tue, 23 Sep 2014 14:10:02 -0700
+Subject: [PATCH 462/813] HDFS-7132. hdfs namenode -metadataVersion command
+ does not honor configured name dirs. Contributed by
+ Charles Lamb. (cherry picked from
+ f48686a1ad81823000534665a76264bba51182f4)
+
+---
+ .../hadoop/hdfs/server/namenode/NameNode.java      |    3 ++
+ .../server/namenode/TestMetadataVersionOutput.java |   32 ++++++++++++++------
+ 2 files changed, 25 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index 365857f..2211556 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -1331,6 +1331,9 @@ private static void doRecovery(StartupOption startOpt, Configuration conf)
+    */
+   private static boolean printMetadataVersion(Configuration conf)
+     throws IOException {
++    final String nsId = DFSUtil.getNamenodeNameServiceId(conf);
++    final String namenodeId = HAUtil.getNameNodeId(conf, nsId);
++    NameNode.initializeGenericKeys(conf, nsId, namenodeId);
+     final FSImage fsImage = new FSImage(conf);
+     final FSNamesystem fs = new FSNamesystem(conf, fsImage, false);
+     return fsImage.recoverTransitionRead(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestMetadataVersionOutput.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestMetadataVersionOutput.java
+index 0e809cf..03c7557 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestMetadataVersionOutput.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestMetadataVersionOutput.java
+@@ -25,27 +25,22 @@
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ 
+ import org.junit.After;
+-import org.junit.Before;
+ import org.junit.Test;
+ 
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
+ import java.io.PrintStream;
+ 
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODE_ID_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
++
+ public class TestMetadataVersionOutput {
+ 
+   private MiniDFSCluster dfsCluster = null;
+   private final Configuration conf = new Configuration();
+ 
+-  @Before
+-  public void setUp() throws Exception {
+-    dfsCluster = new MiniDFSCluster.Builder(conf).
+-            numDataNodes(1).
+-            checkExitOnShutdown(false).
+-            build();
+-    dfsCluster.waitClusterUp();
+-  }
+-
+   @After
+   public void tearDown() throws Exception {
+     if (dfsCluster != null) {
+@@ -54,9 +49,26 @@ public void tearDown() throws Exception {
+     Thread.sleep(2000);
+   }
+ 
++  private void initConfig() {
++    conf.set(DFS_NAMESERVICE_ID, "ns1");
++    conf.set(DFS_HA_NAMENODES_KEY_PREFIX + ".ns1", "nn1");
++    conf.set(DFS_HA_NAMENODE_ID_KEY, "nn1");
++    conf.set(DFS_NAMENODE_NAME_DIR_KEY + ".ns1.nn1", MiniDFSCluster.getBaseDirectory() + "1");
++    conf.unset(DFS_NAMENODE_NAME_DIR_KEY);
++  }
++
+   @Test(timeout = 30000)
+   public void testMetadataVersionOutput() throws IOException {
+ 
++    initConfig();
++    dfsCluster = new MiniDFSCluster.Builder(conf).
++        manageNameDfsDirs(false).
++        numDataNodes(1).
++        checkExitOnShutdown(false).
++        build();
++    dfsCluster.waitClusterUp();
++    dfsCluster.shutdown(false);
++    initConfig();
+     final PrintStream origOut = System.out;
+     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+     final PrintStream stdOut = new PrintStream(baos);
+-- 
+1.7.9.5
+

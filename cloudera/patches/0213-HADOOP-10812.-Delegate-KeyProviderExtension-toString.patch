@@ -1,0 +1,32 @@
+From 154ce628c52dd86786b12c18bfc43b9a8d6f5c4e Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:16 +0000
+Subject: [PATCH 213/813] HADOOP-10812. Delegate KeyProviderExtension#toString
+ to underlying KeyProvider. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619529 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1b6202dca2038c2df34b54064ac6be8810c28791)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/KeyProviderExtension.java    |    5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+index d5ba8ba..3b1eb58 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+@@ -120,4 +120,9 @@ public KeyVersion rollNewVersion(String name, byte[] material)
+   public void flush() throws IOException {
+     keyProvider.flush();
+   }
++
++  @Override
++  public String toString() {
++    return getClass().getSimpleName() + ": " + keyProvider.toString();
++  }
+ }
+-- 
+1.7.9.5
+

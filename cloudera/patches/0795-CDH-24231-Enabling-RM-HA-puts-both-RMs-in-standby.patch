@@ -1,0 +1,42 @@
+From 95ce7ee32a98bf07326e1d62a3ca87d961079ed2 Mon Sep 17 00:00:00 2001
+From: Zhihai Xu <zxu@cloudera.com>
+Date: Sun, 11 Jan 2015 10:41:54 -0800
+Subject: [PATCH 795/813] CDH-24231:Enabling RM HA puts both RMs in standby
+
+---
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |   13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 9942d8f..2979627 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -840,19 +840,18 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+       RMAppRecoverEvent recoverEvent = (RMAppRecoverEvent) event;
+       try {
+         app.recover(recoverEvent.getRMState());
++        // The app has completed.
++        if (app.recoveredFinalState != null) {
++          app.recoverAppAttempts();
++          new FinalTransition(app.recoveredFinalState).transition(app, event);
++          return app.recoveredFinalState;
++        }
+       } catch (Exception e) {
+         String msg = app.applicationId + " failed to recover. " + e.getMessage();
+         failToRecoverApp(app, event, msg, e);
+         return RMAppState.FINAL_SAVING;
+       }
+ 
+-      // The app has completed.
+-      if (app.recoveredFinalState != null) {
+-        app.recoverAppAttempts();
+-        new FinalTransition(app.recoveredFinalState).transition(app, event);
+-        return app.recoveredFinalState;
+-      }
+-
+       if (UserGroupInformation.isSecurityEnabled()) {
+         // synchronously renew delegation token on recovery.
+         try {
+-- 
+1.7.9.5
+

@@ -1,0 +1,38 @@
+From 6f841e6b0db9538f31b9ba1f063a3bbae6a71319 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Fri, 19 Sep 2014 09:16:05 -0700
+Subject: [PATCH 440/813] HDFS-7096.  Fix TestRpcProgramNfs3 to use
+ DFS_ENCRYPTION_KEY_PROVIDER_URI (clamb via cmccabe)
+ (cherry picked from commit
+ 25fd69a8f9defb21a5c0e3b7243657d9e8080319) (cherry
+ picked from commit
+ 5520ca6ec3b366d9fbece1fc5b9e35c6383b94df)
+
+---
+ .../hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java   |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+index 68efac2..acd47fb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+@@ -34,6 +34,7 @@
+ import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.fs.FileSystemTestHelper;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.DFSTestUtil;
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+@@ -131,7 +132,7 @@ public static void setup() throws Exception {
+     String testRoot = fsHelper.getTestRootDir();
+     testRootDir = new File(testRoot).getAbsoluteFile();
+     final Path jksPath = new Path(testRootDir.toString(), "test.jks");
+-    config.set(KeyProviderFactory.KEY_PROVIDER_PATH,
++    config.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri());
+     ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+ 
+-- 
+1.7.9.5
+

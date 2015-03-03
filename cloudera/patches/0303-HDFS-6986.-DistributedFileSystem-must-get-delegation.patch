@@ -1,0 +1,155 @@
+From bd601cca12658d5d7fceb8a3a6c3f3328610cc96 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Fri, 5 Sep 2014 22:33:48 -0700
+Subject: [PATCH 303/813] HDFS-6986. DistributedFileSystem must get delegation
+ tokens from configured KeyProvider. (zhz via tucu)
+
+(cherry picked from commit 035112f25133343a55f9c65e0577a2230954dae8)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    4 ++
+ .../apache/hadoop/hdfs/DistributedFileSystem.java  |   24 +++++++++++
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |   43 ++++++++++++++++++++
+ 3 files changed, 71 insertions(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index 4ce4d31..10b751f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -3074,4 +3074,8 @@ boolean isHedgedReadsEnabled() {
+   DFSHedgedReadMetrics getHedgedReadMetrics() {
+     return HEDGED_READ_METRIC;
+   }
++
++  public KeyProviderCryptoExtension getKeyProvider() {
++    return provider;
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
+index abc9ca7..288e02f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
+@@ -84,8 +84,10 @@
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.security.AccessControlException;
++import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.util.Progressable;
++import org.apache.hadoop.crypto.key.KeyProviderDelegationTokenExtension;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Preconditions;
+@@ -1989,6 +1991,28 @@ public Void next(final FileSystem fs, final Path p)
+     }.resolve(this, absF);
+   }
+ 
++  @Override
++  public Token<?>[] addDelegationTokens(
++      final String renewer, Credentials credentials) throws IOException {
++    Token<?>[] tokens = super.addDelegationTokens(renewer, credentials);
++    if (dfs.getKeyProvider() != null) {
++      KeyProviderDelegationTokenExtension keyProviderDelegationTokenExtension =
++          KeyProviderDelegationTokenExtension.
++              createKeyProviderDelegationTokenExtension(dfs.getKeyProvider());
++      Token<?>[] kpTokens = keyProviderDelegationTokenExtension.
++          addDelegationTokens(renewer, credentials);
++      if (tokens != null && kpTokens != null) {
++        Token<?>[] all = new Token<?>[tokens.length + kpTokens.length];
++        System.arraycopy(tokens, 0, all, 0, tokens.length);
++        System.arraycopy(kpTokens, 0, all, tokens.length, kpTokens.length);
++        tokens = all;
++      } else {
++        tokens = (tokens != null) ? tokens : kpTokens;
++      }
++    }
++    return tokens;
++  }
++
+   public DFSInotifyEventInputStream getInotifyEventStream() throws IOException {
+     return dfs.getInotifyEventStream();
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index 1a13332..1cf9263 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -34,6 +34,7 @@
+ import org.apache.hadoop.crypto.CipherSuite;
+ import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+ import org.apache.hadoop.crypto.key.KeyProvider;
++import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.fs.FSTestWrapper;
+ import org.apache.hadoop.fs.FileContext;
+@@ -51,12 +52,22 @@
+ import org.apache.hadoop.hdfs.server.namenode.EncryptionFaultInjector;
+ import org.apache.hadoop.hdfs.server.namenode.EncryptionZoneManager;
+ import org.apache.hadoop.security.AccessControlException;
++import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.token.Token;
++import org.apache.hadoop.crypto.key.KeyProviderDelegationTokenExtension.DelegationTokenExtension;
++import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.CryptoExtension;
++import org.apache.hadoop.io.Text;
+ import org.apache.log4j.Level;
+ import org.apache.log4j.Logger;
+ import org.junit.After;
++import org.junit.Assert;
+ import org.junit.Before;
+ import org.junit.Test;
++import org.mockito.Mockito;
++import static org.mockito.Mockito.withSettings;
++import static org.mockito.Mockito.any;
++import static org.mockito.Mockito.anyString;
+ 
+ import static org.apache.hadoop.hdfs.DFSTestUtil.verifyFilesEqual;
+ import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+@@ -91,6 +102,7 @@ public void setup() throws Exception {
+     conf.set(KeyProviderFactory.KEY_PROVIDER_PATH,
+         JavaKeyStoreProvider.SCHEME_NAME + "://file" + testRootDir + "/test.jks"
+     );
++    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY, true);
+     // Lower the batch size for testing
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_LIST_ENCRYPTION_ZONES_NUM_RESPONSES,
+         2);
+@@ -753,4 +765,35 @@ public void doCleanup() throws Exception {
+           e.getCause());
+     }
+   }
++
++  /**
++   * Tests obtaining delegation token from stored key
++   */
++  @Test(timeout = 120000)
++  public void testDelegationToken() throws Exception {
++    UserGroupInformation.createRemoteUser("JobTracker");
++    DistributedFileSystem dfs = cluster.getFileSystem();
++    KeyProviderCryptoExtension keyProvider = Mockito.mock(KeyProviderCryptoExtension.class,
++        withSettings().extraInterfaces(
++            DelegationTokenExtension.class,
++            CryptoExtension.class));
++    Mockito.when(keyProvider.getConf()).thenReturn(conf);
++    byte[] testIdentifier = "Test identifier for delegation token".getBytes();
++
++    Token<?> testToken = new Token(testIdentifier, new byte[0],
++        new Text(), new Text());
++    Mockito.when(((DelegationTokenExtension)keyProvider).
++        addDelegationTokens(anyString(), (Credentials)any())).
++        thenReturn(new Token<?>[] { testToken });
++
++    dfs.getClient().provider = keyProvider;
++
++    Credentials creds = new Credentials();
++    final Token<?> tokens[] = dfs.addDelegationTokens("JobTracker", creds);
++    DistributedFileSystem.LOG.debug("Delegation tokens: " +
++        Arrays.asList(tokens));
++    Assert.assertEquals(2, tokens.length);
++    Assert.assertEquals(tokens[1], testToken);
++    Assert.assertEquals(1, creds.numberOfTokens());
++  }
+ }
+-- 
+1.7.9.5
+

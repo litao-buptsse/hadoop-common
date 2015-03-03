@@ -1,0 +1,78 @@
+From b373881e1a8f75a3fdba443cfc5e294661babefe Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Thu, 9 Oct 2014 12:07:51 -0500
+Subject: [PATCH 638/813] HDFS-7217. Better batching of IBRs. Contributed by
+ Kihwal Lee. (cherry picked from commit
+ db71bb54bcc75b71c5841b25ceb03fb0218c6d4f)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hdfs/server/datanode/BPOfferService.java       |    4 ++--
+ .../hdfs/server/datanode/BPServiceActor.java       |   10 +++++++---
+ .../datanode/TestIncrementalBlockReports.java      |    2 +-
+ 3 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java
+index ae64d8a..2eab87f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java
+@@ -237,7 +237,7 @@ void notifyNamenodeReceivedBlock(
+         delHint);
+ 
+     for (BPServiceActor actor : bpServices) {
+-      actor.notifyNamenodeBlockImmediately(bInfo, storageUuid);
++      actor.notifyNamenodeBlock(bInfo, storageUuid, true);
+     }
+   }
+ 
+@@ -270,7 +270,7 @@ void notifyNamenodeReceivingBlock(ExtendedBlock block, String storageUuid) {
+        block.getLocalBlock(), BlockStatus.RECEIVING_BLOCK, null);
+     
+     for (BPServiceActor actor : bpServices) {
+-      actor.notifyNamenodeBlockImmediately(bInfo, storageUuid);
++      actor.notifyNamenodeBlock(bInfo, storageUuid, false);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
+index 7d30688..2961698 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
+@@ -368,13 +368,17 @@ void addPendingReplicationBlockInfo(ReceivedDeletedBlockInfo bInfo,
+    * till namenode is informed before responding with success to the
+    * client? For now we don't.
+    */
+-  void notifyNamenodeBlockImmediately(
+-      ReceivedDeletedBlockInfo bInfo, String storageUuid) {
++  void notifyNamenodeBlock(ReceivedDeletedBlockInfo bInfo,
++      String storageUuid, boolean now) {
+     synchronized (pendingIncrementalBRperStorage) {
+       addPendingReplicationBlockInfo(
+           bInfo, dn.getFSDataset().getStorage(storageUuid));
+       sendImmediateIBR = true;
+-      pendingIncrementalBRperStorage.notifyAll();
++      // If now is true, the report is sent right away.
++      // Otherwise, it will be sent out in the next heartbeat.
++      if (now) {
++        pendingIncrementalBRperStorage.notifyAll();
++      }
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java
+index 81dc13c..b5aa93f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java
+@@ -84,7 +84,7 @@ private static Block getDummyBlock() {
+   private void injectBlockReceived() {
+     ReceivedDeletedBlockInfo rdbi = new ReceivedDeletedBlockInfo(
+         getDummyBlock(), BlockStatus.RECEIVED_BLOCK, null);
+-    actor.notifyNamenodeBlockImmediately(rdbi, storageUuid);
++    actor.notifyNamenodeBlock(rdbi, storageUuid, true);
+   }
+ 
+   /**
+-- 
+1.7.9.5
+

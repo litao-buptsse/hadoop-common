@@ -1,0 +1,28 @@
+From 7c66be038e76ca7d5ebd25b24e8b9f0679c2c470 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 12 Nov 2014 18:39:03 -0800
+Subject: [PATCH 660/813] HADOOP-11217. (Addendum to allow SSLv2Hello) Disable
+ SSLv3 in KMS. (Robert Kanter via kasha)
+
+(cherry picked from commit 87818ef4e7c1a49dc3b0d6766cceb3499b07b837)
+(cherry picked from commit 6e6439062760fefb2aa6a94dd78950073bb4a064)
+---
+ .../hadoop-kms/src/main/tomcat/ssl-server.xml      |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml b/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
+index 531ad15..5215ded 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
+@@ -70,7 +70,7 @@
+          described in the APR documentation -->
+     <Connector port="${kms.http.port}" protocol="HTTP/1.1" SSLEnabled="true"
+                maxThreads="${kms.max.threads}" scheme="https" secure="true"
+-               clientAuth="false" sslEnabledProtocols="TLSv1"
++               clientAuth="false" sslEnabledProtocols="TLSv1,SSLv2Hello"
+                keystoreFile="${kms.ssl.keystore.file}"
+                keystorePass="${kms.ssl.keystore.pass}"/>
+ 
+-- 
+1.7.9.5
+

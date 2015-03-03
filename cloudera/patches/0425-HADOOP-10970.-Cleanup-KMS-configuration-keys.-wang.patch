@@ -1,0 +1,254 @@
+From 8ca23d3c6d816ad30f2673966798329ff0b74b19 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 19 Sep 2014 14:54:37 -0700
+Subject: [PATCH 425/813] HADOOP-10970. Cleanup KMS configuration keys. (wang)
+
+(cherry picked from commit adf0b67a7104bd457b20c95ff78dd48753dcd699)
+(cherry picked from commit ee508c1b32c7b885fd45df0407c3b7deea734381)
+---
+ .../hadoop-kms/src/main/conf/kms-acls.xml          |   12 ++---
+ .../hadoop-kms/src/main/conf/kms-site.xml          |   47 +++++++++++++++++++-
+ .../hadoop/crypto/key/kms/server/KMSAudit.java     |   14 ++++--
+ .../crypto/key/kms/server/KMSConfiguration.java    |    8 ++--
+ .../hadoop/crypto/key/kms/server/KMSWebApp.java    |    4 +-
+ 5 files changed, 69 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/main/conf/kms-acls.xml b/hadoop-common-project/hadoop-kms/src/main/conf/kms-acls.xml
+index 24a46b8..1d5b649 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/conf/kms-acls.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/conf/kms-acls.xml
+@@ -23,7 +23,7 @@
+     <value>*</value>
+     <description>
+       ACL for create-key operations.
+-      If the user does is not in the GET ACL, the key material is not returned
++      If the user is not in the GET ACL, the key material is not returned
+       as part of the response.
+     </description>
+   </property>
+@@ -58,7 +58,7 @@
+     <name>hadoop.kms.acl.GET_KEYS</name>
+     <value>*</value>
+     <description>
+-      ACL for get-keys operation.
++      ACL for get-keys operations.
+     </description>
+   </property>
+ 
+@@ -66,7 +66,7 @@
+     <name>hadoop.kms.acl.GET_METADATA</name>
+     <value>*</value>
+     <description>
+-      ACL for get-key-metadata an get-keys-metadata operations.
++      ACL for get-key-metadata and get-keys-metadata operations.
+     </description>
+   </property>
+ 
+@@ -74,7 +74,7 @@
+     <name>hadoop.kms.acl.SET_KEY_MATERIAL</name>
+     <value>*</value>
+     <description>
+-      Complimentary ACL for CREATE and ROLLOVER operation to allow the client
++      Complementary ACL for CREATE and ROLLOVER operations to allow the client
+       to provide the key material when creating or rolling a key.
+     </description>
+   </property>
+@@ -83,7 +83,7 @@
+     <name>hadoop.kms.acl.GENERATE_EEK</name>
+     <value>*</value>
+     <description>
+-      ACL for generateEncryptedKey CryptoExtension operations
++      ACL for generateEncryptedKey CryptoExtension operations.
+     </description>
+   </property>
+ 
+@@ -91,7 +91,7 @@
+     <name>hadoop.kms.acl.DECRYPT_EEK</name>
+     <value>*</value>
+     <description>
+-      ACL for decrypt EncryptedKey CryptoExtension operations
++      ACL for decryptEncryptedKey CryptoExtension operations.
+     </description>
+   </property>
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml b/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml
+index 4f4694c..a810ca4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml
+@@ -15,10 +15,12 @@
+ <configuration>
+ 
+   <!-- KMS Backend KeyProvider -->
++
+   <property>
+     <name>hadoop.kms.key.provider.uri</name>
+     <value>jceks://file@/${user.home}/kms.keystore</value>
+     <description>
++      URI of the backing KeyProvider for the KMS.
+     </description>
+   </property>
+ 
+@@ -26,14 +28,52 @@
+     <name>hadoop.security.keystore.JavaKeyStoreProvider.password</name>
+     <value>none</value>
+     <description>
++      If using the JavaKeyStoreProvider, the password for the keystore file.
+     </description>
+   </property>
+ 
+   <!-- KMS Cache -->
++
++  <property>
++    <name>hadoop.kms.cache.enable</name>
++    <value>true</value>
++    <description>
++      Whether the KMS will act as a cache for the backing KeyProvider.
++      When the cache is enabled, operations like getKeyVersion, getMetadata,
++      and getCurrentKey will sometimes return cached data without consulting
++      the backing KeyProvider. Cached values are flushed when keys are deleted
++      or modified.
++    </description>
++  </property>
++
+   <property>
+     <name>hadoop.kms.cache.timeout.ms</name>
++    <value>600000</value>
++    <description>
++      Expiry time for the KMS key version and key metadata cache, in
++      milliseconds. This affects getKeyVersion and getMetadata.
++    </description>
++  </property>
++
++  <property>
++    <name>hadoop.kms.current.key.cache.timeout.ms</name>
++    <value>30000</value>
++    <description>
++      Expiry time for the KMS current key cache, in milliseconds. This
++      affects getCurrentKey operations.
++    </description>
++  </property>
++
++  <!-- KMS Audit -->
++
++  <property>
++    <name>hadoop.kms.audit.aggregation.window.ms</name>
+     <value>10000</value>
+     <description>
++      Duplicate audit log events within the aggregation window (specified in
++      ms) are quashed to reduce log traffic. A single message for aggregated
++      events is printed at the end of the window, along with a count of the
++      number of aggregated events.
+     </description>
+   </property>
+ 
+@@ -43,7 +83,8 @@
+     <name>hadoop.kms.authentication.type</name>
+     <value>simple</value>
+     <description>
+-      simple or kerberos
++      Authentication type for the KMS. Can be either &quot;simple&quot;
++      or &quot;kerberos&quot;.
+     </description>
+   </property>
+ 
+@@ -51,6 +92,7 @@
+     <name>hadoop.kms.authentication.kerberos.keytab</name>
+     <value>${user.home}/kms.keytab</value>
+     <description>
++      Path to the keytab with credentials for the configured Kerberos principal.
+     </description>
+   </property>
+ 
+@@ -58,6 +100,8 @@
+     <name>hadoop.kms.authentication.kerberos.principal</name>
+     <value>HTTP/localhost</value>
+     <description>
++      The Kerberos principal to use for the HTTP endpoint.
++      The principal must start with 'HTTP/' as per the Kerberos HTTP SPNEGO specification.
+     </description>
+   </property>
+ 
+@@ -65,6 +109,7 @@
+     <name>hadoop.kms.authentication.kerberos.name.rules</name>
+     <value>DEFAULT</value>
+     <description>
++      Rules used to resolve Kerberos principal names.
+     </description>
+   </property>
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java
+index dc55a84..7ff76e5 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSAudit.java
+@@ -103,9 +103,17 @@ public long getStartTime() {
+ 
+   private static Logger AUDIT_LOG = LoggerFactory.getLogger(KMS_LOGGER_NAME);
+ 
+-  KMSAudit(long delay) {
++  /**
++   * Create a new KMSAudit.
++   *
++   * @param windowMs Duplicate events within the aggregation window are quashed
++   *                 to reduce log traffic. A single message for aggregated
++   *                 events is printed at the end of the window, along with a
++   *                 count of the number of aggregated events.
++   */
++  KMSAudit(long windowMs) {
+     cache = CacheBuilder.newBuilder()
+-        .expireAfterWrite(delay, TimeUnit.MILLISECONDS)
++        .expireAfterWrite(windowMs, TimeUnit.MILLISECONDS)
+         .removalListener(
+             new RemovalListener<String, AuditEvent>() {
+               @Override
+@@ -126,7 +134,7 @@ public void onRemoval(
+       public void run() {
+         cache.cleanUp();
+       }
+-    }, delay / 10, delay / 10, TimeUnit.MILLISECONDS);
++    }, windowMs / 10, windowMs / 10, TimeUnit.MILLISECONDS);
+   }
+ 
+   private void logEvent(AuditEvent event) {
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
+index 56123f9..bd61ca7 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
+@@ -54,16 +54,16 @@
+   public static final String CURR_KEY_CACHE_TIMEOUT_KEY = CONFIG_PREFIX +
+       "current.key.cache.timeout.ms";
+   // Delay for Audit logs that need aggregation
+-  public static final String KMS_AUDIT_AGGREGATION_DELAY = CONFIG_PREFIX +
+-      "aggregation.delay.ms";
+-
++  public static final String KMS_AUDIT_AGGREGATION_WINDOW = CONFIG_PREFIX +
++      "audit.aggregation.window.ms";
++  
+   public static final boolean KEY_CACHE_ENABLE_DEFAULT = true;
+   // 10 mins
+   public static final long KEY_CACHE_TIMEOUT_DEFAULT = 10 * 60 * 1000;
+   // 30 secs
+   public static final long CURR_KEY_CACHE_TIMEOUT_DEFAULT = 30 * 1000;
+   // 10 secs
+-  public static final long KMS_AUDIT_AGGREGATION_DELAY_DEFAULT = 10000;
++  public static final long KMS_AUDIT_AGGREGATION_WINDOW_DEFAULT = 10000;
+ 
+   // Property to Enable/Disable per Key authorization
+   public static final String KEY_AUTHORIZATION_ENABLE = CONFIG_PREFIX +
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
+index c36823a..194ecd6 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
+@@ -148,8 +148,8 @@ public void contextInitialized(ServletContextEvent sce) {
+ 
+       kmsAudit =
+           new KMSAudit(kmsConf.getLong(
+-              KMSConfiguration.KMS_AUDIT_AGGREGATION_DELAY,
+-              KMSConfiguration.KMS_AUDIT_AGGREGATION_DELAY_DEFAULT));
++              KMSConfiguration.KMS_AUDIT_AGGREGATION_WINDOW,
++              KMSConfiguration.KMS_AUDIT_AGGREGATION_WINDOW_DEFAULT));
+ 
+       // this is required for the the JMXJsonServlet to work properly.
+       // the JMXJsonServlet is behind the authentication filter,
+-- 
+1.7.9.5
+

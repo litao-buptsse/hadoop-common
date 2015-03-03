@@ -1,0 +1,63 @@
+From 1985a14d7d75d5b26718c9b27cc2d623e3bdc932 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Mon, 13 Oct 2014 16:32:01 -0700
+Subject: [PATCH 573/813] YARN-2566. DefaultContainerExecutor should pick a
+ working directory randomly. (Zhihai Xu via kasha)
+
+(cherry picked from commit cc93e7e683fa74eb1a7aa2b357a36667bd21086a)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/DefaultContainerExecutor.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    4 ++--
+ .../src/main/resources/yarn-default.xml            |    2 +-
+ .../nodemanager/TestDefaultContainerExecutor.java  |    1 +
+ 3 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index 72bcb0b..25276a5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -791,10 +791,10 @@
+   public static final String NM_MAX_PER_DISK_UTILIZATION_PERCENTAGE =
+       NM_DISK_HEALTH_CHECK_PREFIX + "max-disk-utilization-per-disk-percentage";
+   /**
+-   * By default, 100% of the disk can be used before it is marked as offline.
++   * By default, 90% of the disk can be used before it is marked as offline.
+    */
+   public static final float DEFAULT_NM_MAX_PER_DISK_UTILIZATION_PERCENTAGE =
+-      100.0F;
++      90.0F;
+ 
+   /**
+    * The minimum space that must be available on a local dir for it to be used.
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+index 6e13aef..ae09d9c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+@@ -948,7 +948,7 @@
+     for full disk. This applies to yarn-nodemanager.local-dirs and 
+     yarn.nodemanager.log-dirs.</description>
+     <name>yarn.nodemanager.disk-health-checker.max-disk-utilization-per-disk-percentage</name>
+-    <value>100.0</value>
++    <value>90.0</value>
+   </property>
+ 
+   <property>
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
+index 763c4e1..931a222 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
+@@ -312,6 +312,7 @@ public void testStartLocalizer()
+ 
+     Configuration conf = new Configuration();
+     localizationServerAddress = conf.getSocketAddr(
++        YarnConfiguration.NM_BIND_HOST,
+         YarnConfiguration.NM_LOCALIZER_ADDRESS,
+         YarnConfiguration.DEFAULT_NM_LOCALIZER_ADDRESS,
+         YarnConfiguration.DEFAULT_NM_LOCALIZER_PORT);
+-- 
+1.7.9.5
+

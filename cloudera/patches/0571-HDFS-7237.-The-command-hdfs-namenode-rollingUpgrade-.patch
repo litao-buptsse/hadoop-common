@@ -1,0 +1,183 @@
+From 2115b6a1cfd2d5859b5122377ed2d1c653c92e44 Mon Sep 17 00:00:00 2001
+From: Tsz-Wo Nicholas Sze <szetszwo@hortonworks.com>
+Date: Mon, 13 Oct 2014 18:28:34 -0700
+Subject: [PATCH 571/813] HDFS-7237. The command "hdfs namenode
+ -rollingUpgrade" throws
+ ArrayIndexOutOfBoundsException.
+
+(cherry picked from commit f6d0b8892ab116514fd031a61441141ac3bdfeb5)
+---
+ .../hdfs/server/common/HdfsServerConstants.java    |    9 ++++
+ .../hadoop/hdfs/server/namenode/NameNode.java      |   13 +++---
+ .../server/datanode/TestHdfsServerConstants.java   |   17 +++++---
+ .../server/namenode/TestNameNodeOptionParsing.java |   45 ++++++++++++++++++++
+ 4 files changed, 72 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+index ca4fc49..8e1c37a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+@@ -72,6 +72,15 @@ static RollingUpgradeStartupOption fromString(String s) {
+       throw new IllegalArgumentException("Failed to convert \"" + s
+           + "\" to " + RollingUpgradeStartupOption.class.getSimpleName());
+     }
++
++    public static String getAllOptionString() {
++      final StringBuilder b = new StringBuilder("<");
++      for(RollingUpgradeStartupOption opt : VALUES) {
++        b.append(opt.name().toLowerCase()).append("|");
++      }
++      b.setCharAt(b.length() - 1, '>');
++      return b.toString();
++    }
+   }
+ 
+   /** Startup options */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index 6934a45..b217718 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -210,10 +210,8 @@
+         " [" + StartupOption.CLUSTERID.getName() + " cid]" +
+         " [" + StartupOption.RENAMERESERVED.getName() + "<k-v pairs>] ] | \n\t["
+       + StartupOption.ROLLBACK.getName() + "] | \n\t["
+-      + StartupOption.ROLLINGUPGRADE.getName() + " <"
+-      + RollingUpgradeStartupOption.DOWNGRADE.name().toLowerCase() + "|"
+-      + RollingUpgradeStartupOption.ROLLBACK.name().toLowerCase() + "|"
+-      + RollingUpgradeStartupOption.STARTED.name().toLowerCase() + "> ] | \n\t["
++      + StartupOption.ROLLINGUPGRADE.getName() + " "
++      + RollingUpgradeStartupOption.getAllOptionString() + " ] | \n\t["
+       + StartupOption.FINALIZE.getName() + "] | \n\t["
+       + StartupOption.IMPORT.getName() + "] | \n\t["
+       + StartupOption.INITIALIZESHAREDEDITS.getName() + "] | \n\t["
+@@ -1231,6 +1229,11 @@ static StartupOption parseArguments(String args[]) {
+       } else if (StartupOption.ROLLINGUPGRADE.getName().equalsIgnoreCase(cmd)) {
+         startOpt = StartupOption.ROLLINGUPGRADE;
+         ++i;
++        if (i >= argsLen) {
++          LOG.fatal("Must specify a rolling upgrade startup option "
++              + RollingUpgradeStartupOption.getAllOptionString());
++          return null;
++        }
+         startOpt.setRollingUpgradeStartupOption(args[i]);
+       } else if (StartupOption.ROLLBACK.getName().equalsIgnoreCase(cmd)) {
+         startOpt = StartupOption.ROLLBACK;
+@@ -1479,7 +1482,7 @@ public static void main(String argv[]) throws Exception {
+         namenode.join();
+       }
+     } catch (Throwable e) {
+-      LOG.fatal("Exception in namenode join", e);
++      LOG.fatal("Failed to start namenode.", e);
+       terminate(1, e);
+     }
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestHdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestHdfsServerConstants.java
+index a147103..2e76b25 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestHdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestHdfsServerConstants.java
+@@ -17,12 +17,12 @@
+  */
+ package org.apache.hadoop.hdfs.server.datanode;
+ 
+-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.*;
+-import org.junit.Test;
+-
++import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.fail;
+-import static org.hamcrest.core.Is.is;
+-import static org.junit.Assert.assertThat;
++
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.RollingUpgradeStartupOption;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
++import org.junit.Test;
+ 
+ 
+ /**
+@@ -43,10 +43,10 @@ private static void verifyStartupOptionResult(String value,
+       RollingUpgradeStartupOption expectedRollupOption) {
+ 
+     StartupOption option = StartupOption.getEnum(value);
+-    assertThat(option, is(expectedOption));
++    assertEquals(expectedOption, option);
+ 
+     if (expectedRollupOption != null) {
+-      assertThat(option.getRollingUpgradeStartupOption(), is(expectedRollupOption));
++      assertEquals(expectedRollupOption, option.getRollingUpgradeStartupOption());
+     }
+   }
+ 
+@@ -86,6 +86,9 @@ public void testRollingUpgradeStartupOptionParsing() {
+     verifyStartupOptionResult("ROLLINGUPGRADE(DOWNGRADE)",
+                               StartupOption.ROLLINGUPGRADE,
+                               RollingUpgradeStartupOption.DOWNGRADE);
++    verifyStartupOptionResult("ROLLINGUPGRADE(STARTED)",
++        StartupOption.ROLLINGUPGRADE,
++        RollingUpgradeStartupOption.STARTED);
+ 
+     try {
+       verifyStartupOptionResult("ROLLINGUPGRADE(UNKNOWNOPTION)", StartupOption.ROLLINGUPGRADE, null);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestNameNodeOptionParsing.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestNameNodeOptionParsing.java
+index 6ef1e57..f540253 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestNameNodeOptionParsing.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestNameNodeOptionParsing.java
+@@ -23,7 +23,9 @@
+ import static org.junit.Assert.assertTrue;
+ 
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.RollingUpgradeStartupOption;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
++import org.junit.Assert;
+ import org.junit.Test;
+ 
+ public class TestNameNodeOptionParsing {
+@@ -102,4 +104,47 @@ public void testUpgrade() {
+     assertNull(opt);
+   }
+ 
++  @Test(timeout = 10000)
++  public void testRollingUpgrade() {
++    {
++      final String[] args = {"-rollingUpgrade"};
++      final StartupOption opt = NameNode.parseArguments(args);
++      assertNull(opt);
++    }
++
++    {
++      final String[] args = {"-rollingUpgrade", "started"};
++      final StartupOption opt = NameNode.parseArguments(args);
++      assertEquals(StartupOption.ROLLINGUPGRADE, opt);
++      assertEquals(RollingUpgradeStartupOption.STARTED, opt.getRollingUpgradeStartupOption());
++      assertTrue(RollingUpgradeStartupOption.STARTED.matches(opt));
++    }
++
++    {
++      final String[] args = {"-rollingUpgrade", "downgrade"};
++      final StartupOption opt = NameNode.parseArguments(args);
++      assertEquals(StartupOption.ROLLINGUPGRADE, opt);
++      assertEquals(RollingUpgradeStartupOption.DOWNGRADE, opt.getRollingUpgradeStartupOption());
++      assertTrue(RollingUpgradeStartupOption.DOWNGRADE.matches(opt));
++    }
++
++    {
++      final String[] args = {"-rollingUpgrade", "rollback"};
++      final StartupOption opt = NameNode.parseArguments(args);
++      assertEquals(StartupOption.ROLLINGUPGRADE, opt);
++      assertEquals(RollingUpgradeStartupOption.ROLLBACK, opt.getRollingUpgradeStartupOption());
++      assertTrue(RollingUpgradeStartupOption.ROLLBACK.matches(opt));
++    }
++
++    {
++      final String[] args = {"-rollingUpgrade", "foo"};
++      try {
++        NameNode.parseArguments(args);
++        Assert.fail();
++      } catch(IllegalArgumentException iae) {
++        // the exception is expected.
++      }
++    }
++  }
++    
+ }
+-- 
+1.7.9.5
+

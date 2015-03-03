@@ -1,0 +1,65 @@
+From fedd57503d33eff2c8a821957e5566028cb42589 Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Wed, 16 Jul 2014 18:27:09 +0000
+Subject: [PATCH 687/813] Merge r1611126 from trunk. YARN-2264. Fixed a race
+ condition in DrainDispatcher which may cause random
+ test failures. Contributed by Li Lu
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611127 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1c2fec20c9125f99e72003fb15b5938fd1df035e)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/event/DrainDispatcher.java  |   14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/event/DrainDispatcher.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/event/DrainDispatcher.java
+index e79e7b3..803b2bb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/event/DrainDispatcher.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/event/DrainDispatcher.java
+@@ -28,6 +28,7 @@
+ // and similar grotesqueries
+   private volatile boolean drained = false;
+   private final BlockingQueue<Event> queue;
++  final Object mutex;
+ 
+   public DrainDispatcher() {
+     this(new LinkedBlockingQueue<Event>());
+@@ -36,6 +37,7 @@ public DrainDispatcher() {
+   private DrainDispatcher(BlockingQueue<Event> eventQueue) {
+     super(eventQueue);
+     this.queue = eventQueue;
++    this.mutex = this;
+   }
+ 
+   /**
+@@ -53,8 +55,10 @@ Runnable createThread() {
+       @Override
+       public void run() {
+         while (!Thread.currentThread().isInterrupted()) {
+-          // !drained if dispatch queued new events on this dispatcher
+-          drained = queue.isEmpty();
++          synchronized (mutex) {
++            // !drained if dispatch queued new events on this dispatcher
++            drained = queue.isEmpty();
++          }
+           Event event;
+           try {
+             event = queue.take();
+@@ -75,8 +79,10 @@ public EventHandler getEventHandler() {
+     return new EventHandler() {
+       @Override
+       public void handle(Event event) {
+-        drained = false;
+-        actual.handle(event);
++        synchronized (mutex) {
++          actual.handle(event);
++          drained = false;
++        }
+       }
+     };
+   }
+-- 
+1.7.9.5
+

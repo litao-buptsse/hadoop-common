@@ -1,0 +1,39 @@
+From 684675201a48b2039479d51136c867c7cf5c31b8 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Fri, 19 Sep 2014 17:07:06 -0500
+Subject: [PATCH 432/813] HDFS-7046. HA NN can NPE upon transition to active.
+ Contributed by Kihwal Lee. (cherry-picked from
+ 9e355719653c5e7b48b601090634882e4f29a743)
+
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index b8798b6..9cd3606 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -1155,8 +1155,9 @@ void startActiveServices() throws IOException {
+       cacheManager.startMonitorThread();
+       blockManager.getDatanodeManager().setShouldSendCachingCommands(true);
+     } finally {
+-      writeUnlock();
+       startingActiveService = false;
++      checkSafeMode();
++      writeUnlock();
+     }
+   }
+ 
+@@ -5530,6 +5531,9 @@ private void checkMode() {
+       // Have to have write-lock since leaving safemode initializes
+       // repl queues, which requires write lock
+       assert hasWriteLock();
++      if (inTransitionToActive()) {
++        return;
++      }
+       // if smmthread is already running, the block threshold must have been 
+       // reached before, there is no need to enter the safe mode again
+       if (smmthread == null && needEnter()) {
+-- 
+1.7.9.5
+

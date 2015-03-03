@@ -1,0 +1,32 @@
+From 808a71655fd432185ae9135c12ce28c5946ca2a5 Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Mon, 18 Aug 2014 18:18:22 +0000
+Subject: [PATCH 528/813] MAPREDUCE-6036. TestJobEndNotifier fails
+ intermittently in branch-2. Contributed by chang li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1618691 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d51f81c3b6e55feece55df5e2c052b18ca2dc768)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../mapreduce/v2/app/TestJobEndNotifier.java       |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestJobEndNotifier.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestJobEndNotifier.java
+index e143b25..ecfa43c 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestJobEndNotifier.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestJobEndNotifier.java
+@@ -270,7 +270,8 @@ public void testNotificationOnLastRetryUnregistrationFailure()
+     app.waitForInternalState(job, JobStateInternal.REBOOT);
+     // Now shutdown. User should see FAILED state.
+     // Unregistration fails: isLastAMRetry is recalculated, this is
+-    app.shutDownJob();
++    ///reboot will stop service internally, we don't need to shutdown twice
++    app.waitForServiceToStop(10000);
+     Assert.assertFalse(app.isLastAMRetry());
+     // Since it's not last retry, JobEndServlet didn't called
+     Assert.assertEquals(0, JobEndServlet.calledTimes);
+-- 
+1.7.9.5
+

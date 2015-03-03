@@ -1,0 +1,100 @@
+From f573d23694d171ce46ba6e2a8f5d41c738c49f16 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Sat, 26 Jul 2014 04:21:16 +0000
+Subject: [PATCH 261/813] HDFS-6749. Merging change r1613561 from trunk to
+ branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1613562 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f1d0db87cdf2436ebf51fbdaa51dd9af93e53b9b)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    8 ++++++++
+ .../hadoop/hdfs/server/namenode/TestINodeFile.java |   14 ++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index fd8105e..d1c97b2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -3719,8 +3719,10 @@ boolean isFileClosed(String src)
+       StandbyException, IOException {
+     FSPermissionChecker pc = getPermissionChecker();  
+     checkOperation(OperationCategory.READ);
++    byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
+     readLock();
+     try {
++      src = FSDirectory.resolvePath(src, pathComponents, dir);
+       checkOperation(OperationCategory.READ);
+       if (isPermissionEnabled) {
+         checkTraverse(pc, src);
+@@ -8182,9 +8184,11 @@ AclStatus getAclStatus(String src) throws IOException {
+     nnConf.checkAclsConfigFlag();
+     FSPermissionChecker pc = getPermissionChecker();
+     checkOperation(OperationCategory.READ);
++    byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
+     readLock();
+     try {
+       checkOperation(OperationCategory.READ);
++      src = FSDirectory.resolvePath(src, pathComponents, dir);
+       if (isPermissionEnabled) {
+         checkPermission(pc, src, false, null, null, null, null);
+       }
+@@ -8287,8 +8291,10 @@ private void checkXAttrSize(XAttr xAttr) {
+       }
+     }
+     checkOperation(OperationCategory.READ);
++    byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
+     readLock();
+     try {
++      src = FSDirectory.resolvePath(src, pathComponents, dir);
+       checkOperation(OperationCategory.READ);
+       if (isPermissionEnabled) {
+         checkPathAccess(pc, src, FsAction.READ);
+@@ -8332,8 +8338,10 @@ private void checkXAttrSize(XAttr xAttr) {
+     nnConf.checkXAttrsConfigFlag();
+     final FSPermissionChecker pc = getPermissionChecker();
+     checkOperation(OperationCategory.READ);
++    byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
+     readLock();
+     try {
++      src = FSDirectory.resolvePath(src, pathComponents, dir);
+       checkOperation(OperationCategory.READ);
+       if (isPermissionEnabled) {
+         /* To access xattr names, you need EXECUTE in the owning directory. */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+index 43228db..38c5a16 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+@@ -524,6 +524,7 @@ public void testInodeIdBasedPaths() throws Exception {
+     Configuration conf = new Configuration();
+     conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY,
+         DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_DEFAULT);
++    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
+     MiniDFSCluster cluster = null;
+     try {
+       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+@@ -571,6 +572,19 @@ public void testInodeIdBasedPaths() throws Exception {
+       // ClientProtocol#getPreferredBlockSize
+       assertEquals(testFileBlockSize,
+           nnRpc.getPreferredBlockSize(testFileInodePath.toString()));
++
++      /*
++       * HDFS-6749 added missing calls to FSDirectory.resolvePath in the
++       * following four methods. The calls below ensure that
++       * /.reserved/.inodes paths work properly. No need to check return
++       * values as these methods are tested elsewhere.
++       */
++      {
++        fs.isFileClosed(testFileInodePath);
++        fs.getAclStatus(testFileInodePath);
++        fs.getXAttrs(testFileInodePath);
++        fs.listXAttrs(testFileInodePath);
++      }
+       
+       // symbolic link related tests
+       
+-- 
+1.7.9.5
+

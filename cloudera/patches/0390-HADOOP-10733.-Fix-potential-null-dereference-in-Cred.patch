@@ -1,0 +1,83 @@
+From 9c5d4846a0d4205a789b8078200edf93723a928c Mon Sep 17 00:00:00 2001
+From: Owen O'Malley <omalley@apache.org>
+Date: Thu, 17 Jul 2014 18:12:45 +0000
+Subject: [PATCH 390/813] HADOOP-10733. Fix potential null dereference in
+ CredShell. (Ted Yu via omalley)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611421 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d157d7fb812f6049a24e0d386e1bd0796379c211)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/security/alias/CredentialShell.java     |    4 ++--
+ .../hadoop/security/alias/TestCredShell.java       |   20 ++++++++++++++++++--
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/alias/CredentialShell.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/alias/CredentialShell.java
+index 02f4f75..6be2234 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/alias/CredentialShell.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/alias/CredentialShell.java
+@@ -373,12 +373,12 @@ public String getUsage() {
+       char[] newPassword2 = c.readPassword("Enter password again: ");
+       noMatch = !Arrays.equals(newPassword1, newPassword2);
+       if (noMatch) {
+-        Arrays.fill(newPassword1, ' ');
++        if (newPassword1 != null) Arrays.fill(newPassword1, ' ');
+         c.format("Passwords don't match. Try again.%n");
+       } else {
+         cred = newPassword1;
+       }
+-      Arrays.fill(newPassword2, ' ');
++      if (newPassword2 != null) Arrays.fill(newPassword2, ' ');
+     } while (noMatch);
+     return cred;
+   }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/alias/TestCredShell.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/alias/TestCredShell.java
+index 34758be..c48b69f 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/alias/TestCredShell.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/alias/TestCredShell.java
+@@ -128,6 +128,22 @@ public void testTransientProviderOnlyConfig() throws Exception {
+   }
+   
+   @Test
++  public void testPromptForCredentialWithEmptyPasswd() throws Exception {
++    String[] args1 = {"create", "credential1", "--provider", 
++        "jceks://file" + tmpDir + "/credstore.jceks"};
++    ArrayList<String> passwords = new ArrayList<String>();
++    passwords.add(null);
++    passwords.add("p@ssw0rd");
++    int rc = 0;
++    CredentialShell shell = new CredentialShell();
++    shell.setConf(new Configuration());
++    shell.setPasswordReader(new MockPasswordReader(passwords));
++    rc = shell.run(args1);
++    assertEquals(outContent.toString(), -1, rc);
++    assertTrue(outContent.toString().contains("Passwords don't match"));
++  }
++
++  @Test
+   public void testPromptForCredential() throws Exception {
+     String[] args1 = {"create", "credential1", "--provider", 
+         "jceks://file" + tmpDir + "/credstore.jceks"};
+@@ -142,7 +158,7 @@ public void testPromptForCredential() throws Exception {
+     assertEquals(0, rc);
+     assertTrue(outContent.toString().contains("credential1 has been successfully " +
+         "created."));
+-
++    
+     String[] args2 = {"delete", "credential1", "--provider", 
+         "jceks://file" + tmpDir + "/credstore.jceks"};
+     rc = shell.run(args2);
+@@ -162,7 +178,7 @@ public MockPasswordReader(List<String> passwds) {
+     public char[] readPassword(String prompt) {
+       if (passwords.size() == 0) return null;
+       String pass = passwords.remove(0);
+-      return pass.toCharArray();
++      return pass == null ? null : pass.toCharArray();
+     }
+ 
+     @Override
+-- 
+1.7.9.5
+

@@ -1,0 +1,212 @@
+From aa9eb5d7d0d7a8f65995acf7bf56c175390cad96 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Mon, 8 Sep 2014 10:12:16 -0700
+Subject: [PATCH 333/813] HADOOP-11071. KMSClientProvider should drain the
+ local generated EEK cache on key rollover. (tucu)
+
+(cherry picked from commit df8c84cba8512058f5097c6faeedf4b65cab3806)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../crypto/key/KeyProviderCryptoExtension.java     |   11 ++++++++++
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    9 +++++++-
+ .../apache/hadoop/crypto/key/kms/ValueQueue.java   |   13 ++++++++++++
+ .../apache/hadoop/crypto/key/TestValueQueue.java   |   14 +++++++++++++
+ ...agerKeyGeneratorKeyProviderCryptoExtension.java |   22 ++++++++++++++++++++
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |   17 +++++++++++++++
+ 6 files changed, 85 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+index e9d7caa..5d3281c 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+@@ -179,6 +179,13 @@ public void warmUpEncryptedKeys(String... keyNames)
+         throws IOException;
+ 
+     /**
++     * Drains the Queue for the provided key.
++     *
++     * @param keyName the key to drain the Queue for
++     */
++    public void drain(String keyName);
++
++    /**
+      * Generates a key material and encrypts it using the given key version name
+      * and initialization vector. The generated key material is of the same
+      * length as the <code>KeyVersion</code> material of the latest key version
+@@ -313,6 +320,10 @@ public void warmUpEncryptedKeys(String... keyNames)
+       // NO-OP since the default version does not cache any keys
+     }
+ 
++    @Override
++    public void drain(String keyName) {
++      // NO-OP since the default version does not cache any keys
++    }
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index 14593ed..ea191fc 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -590,7 +590,9 @@ private KeyVersion rollNewVersionInternal(String name, byte[] material)
+     conn.setRequestProperty(CONTENT_TYPE, APPLICATION_JSON_MIME);
+     Map response = call(conn, jsonMaterial,
+         HttpURLConnection.HTTP_OK, Map.class);
+-    return parseJSONKeyVersion(response);
++    KeyVersion keyVersion = parseJSONKeyVersion(response);
++    encKeyVersionQueue.drain(name);
++    return keyVersion;
+   }
+ 
+ 
+@@ -713,6 +715,11 @@ public void warmUpEncryptedKeys(String... keyNames)
+   }
+ 
+   @Override
++  public void drain(String keyName) {
++    encKeyVersionQueue.drain(keyName);
++  }
++
++  @Override
+   public Token<?>[] addDelegationTokens(String renewer,
+       Credentials credentials) throws IOException {
+     Token<?>[] tokens;
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/ValueQueue.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/ValueQueue.java
+index a415e2e..ee10483 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/ValueQueue.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/ValueQueue.java
+@@ -228,6 +228,19 @@ public E getNext(String keyName)
+   }
+ 
+   /**
++   * Drains the Queue for the provided key.
++   *
++   * @param keyName the key to drain the Queue for
++   */
++  public void drain(String keyName ) {
++    try {
++      keyQueues.get(keyName).clear();
++    } catch (ExecutionException ex) {
++      //NOP
++    }
++  }
++
++  /**
+    * This removes the "num" values currently at the head of the Queue for the
+    * provided key. Will immediately fire the Queue filler function if key
+    * does not exist
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestValueQueue.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestValueQueue.java
+index 7946588..8e3a093 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestValueQueue.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestValueQueue.java
+@@ -187,4 +187,18 @@ public void testgetAtMostPolicyLOW_WATERMARK() throws Exception {
+     Assert.assertEquals(10, filler.getTop().num);
+     vq.shutdown();
+   }
++
++  @Test
++  public void testDrain() throws Exception {
++    MockFiller filler = new MockFiller();
++    ValueQueue<String> vq =
++        new ValueQueue<String>(10, 0.1f, 300, 1,
++            SyncGenerationPolicy.ALL, filler);
++    Assert.assertEquals("test", vq.getNext("k1"));
++    Assert.assertEquals(1, filler.getTop().num);
++    vq.drain("k1");
++    Assert.assertNull(filler.getTop());
++    vq.shutdown();
++  }
++
+ }
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/EagerKeyGeneratorKeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/EagerKeyGeneratorKeyProviderCryptoExtension.java
+index be42b66..64af2b6 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/EagerKeyGeneratorKeyProviderCryptoExtension.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/EagerKeyGeneratorKeyProviderCryptoExtension.java
+@@ -20,6 +20,7 @@
+ 
+ import java.io.IOException;
+ import java.security.GeneralSecurityException;
++import java.security.NoSuchAlgorithmException;
+ import java.util.LinkedList;
+ import java.util.List;
+ import java.util.Queue;
+@@ -27,6 +28,7 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.crypto.key.kms.ValueQueue;
+ import org.apache.hadoop.crypto.key.kms.ValueQueue.SyncGenerationPolicy;
+@@ -113,6 +115,11 @@ public void warmUpEncryptedKeys(String... keyNames) throws
+     }
+ 
+     @Override
++    public void drain(String keyName) {
++      encKeyVersionQueue.drain(keyName);
++    }
++
++    @Override
+     public EncryptedKeyVersion generateEncryptedKey(String encryptionKeyName)
+         throws IOException, GeneralSecurityException {
+       try {
+@@ -146,4 +153,19 @@ public EagerKeyGeneratorKeyProviderCryptoExtension(Configuration conf,
+         new CryptoExtension(conf, keyProviderCryptoExtension));
+   }
+ 
++  @Override
++  public KeyVersion rollNewVersion(String name)
++      throws NoSuchAlgorithmException, IOException {
++    KeyVersion keyVersion = super.rollNewVersion(name);
++    getExtension().drain(name);
++    return keyVersion;
++  }
++
++  @Override
++  public KeyVersion rollNewVersion(String name, byte[] material)
++      throws IOException {
++    KeyVersion keyVersion = super.rollNewVersion(name, material);
++    getExtension().drain(name);
++    return keyVersion;
++  }
+ }
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index b921c84..74eab5c 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -531,6 +531,7 @@ public Void call() throws Exception {
+         Assert.assertEquals("d", meta.getDescription());
+         Assert.assertEquals(attributes, meta.getAttributes());
+ 
++        // test delegation token retrieval
+         KeyProviderDelegationTokenExtension kpdte =
+             KeyProviderDelegationTokenExtension.
+                 createKeyProviderDelegationTokenExtension(kp);
+@@ -542,6 +543,22 @@ public Void call() throws Exception {
+ 
+         Assert.assertEquals(new Text("kms-dt"), credentials.getToken(
+             SecurityUtil.buildTokenService(kmsAddr)).getKind());
++
++
++        // test rollover draining
++        KeyProviderCryptoExtension kpce = KeyProviderCryptoExtension.
++            createKeyProviderCryptoExtension(kp);
++        options = new KeyProvider.Options(conf);
++        options.setCipher("AES/CTR/NoPadding");
++        options.setBitLength(128);
++        kpce.createKey("k6", options);
++
++        EncryptedKeyVersion ekv1 = kpce.generateEncryptedKey("k6");
++        kpce.rollNewVersion("k6");
++        EncryptedKeyVersion ekv2 = kpce.generateEncryptedKey("k6");
++        Assert.assertNotEquals(ekv1.getEncryptionKeyVersionName(),
++            ekv2.getEncryptionKeyVersionName());
++
+         return null;
+       }
+     });
+-- 
+1.7.9.5
+

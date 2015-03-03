@@ -1,0 +1,81 @@
+From f10d5ebaaf65a30a2506c86aa9f11b88c9670ca7 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Tue, 15 Jul 2014 20:35:07 +0000
+Subject: [PATCH 341/813] HDFS-6456. NFS should throw error for invalid entry
+ in dfs.nfs.exports.allowed.hosts. Contributed by
+ Abhiraj Butala
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1610840 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fb1f5bc618f4e006971bdb982cfa8adad71a4e32)
+---
+ .../java/org/apache/hadoop/nfs/NfsExports.java     |   25 +++++++++++++++-----
+ .../java/org/apache/hadoop/nfs/TestNfsExports.java |   12 ++++++++++
+ 2 files changed, 31 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java
+index bf77dcd..9628686 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java
+@@ -71,7 +71,16 @@ public static synchronized NfsExports getInstance(Configuration conf) {
+   
+   private static final Pattern CIDR_FORMAT_LONG = 
+       Pattern.compile(SLASH_FORMAT_LONG);
+-  
++
++  // Hostnames are composed of series of 'labels' concatenated with dots.
++  // Labels can be between 1-63 characters long, and can only take
++  // letters, digits & hyphens. They cannot start and end with hyphens. For
++  // more details, refer RFC-1123 & http://en.wikipedia.org/wiki/Hostname
++  private static final String LABEL_FORMAT =
++      "[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?";
++  private static final Pattern HOSTNAME_FORMAT =
++      Pattern.compile("^(" + LABEL_FORMAT + "\\.)*" + LABEL_FORMAT + "$");
++
+   static class AccessCacheEntry implements LightWeightCache.Entry{
+     private final String hostAddr;
+     private AccessPrivilege access;
+@@ -381,10 +390,14 @@ private static Match getMatch(String line) {
+         LOG.debug("Using Regex match for '" + host + "' and " + privilege);
+       }
+       return new RegexMatch(privilege, host);
++    } else if (HOSTNAME_FORMAT.matcher(host).matches()) {
++      if (LOG.isDebugEnabled()) {
++        LOG.debug("Using exact match for '" + host + "' and " + privilege);
++      }
++      return new ExactMatch(privilege, host);
++    } else {
++      throw new IllegalArgumentException("Invalid hostname provided '" + host
++          + "'");
+     }
+-    if (LOG.isDebugEnabled()) {
+-      LOG.debug("Using exact match for '" + host + "' and " + privilege);
+-    }
+-    return new ExactMatch(privilege, host);
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java
+index bf8a227..349e82a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java
+@@ -194,4 +194,16 @@ public void testMultiMatchers() throws Exception {
+     } while ((System.nanoTime() - startNanos) / NanosPerMillis < 5000);
+     Assert.assertEquals(AccessPrivilege.NONE, ap);
+   }
++
++  @Test(expected=IllegalArgumentException.class)
++  public void testInvalidHost() {
++      NfsExports matcher = new NfsExports(CacheSize, ExpirationPeriod,
++        "foo#bar");
++  }
++
++  @Test(expected=IllegalArgumentException.class)
++  public void testInvalidSeparator() {
++      NfsExports matcher = new NfsExports(CacheSize, ExpirationPeriod,
++        "foo ro : bar rw");
++  }
+ }
+-- 
+1.7.9.5
+

@@ -1,0 +1,35 @@
+From c802eb9f3260c0e1a1b11861d8583fb02d751d5e Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:59 +0000
+Subject: [PATCH 205/813] HADOOP-10645. TestKMS fails because race condition
+ writing acl files. (tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619521 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 07771f7a5ae5acd8c711ee77bbd64b122bfaaded)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |    3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index 6e65234..75e32d4 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -717,6 +717,9 @@ public Void run() throws Exception {
+           }
+         });
+ 
++        //stop the reloader, to avoid running while we are writing the new file
++        KMSWebApp.getACLs().stopReloader();
++
+         // test ACL reloading
+         Thread.sleep(10); // to ensure the ACLs file modifiedTime is newer
+         conf.set(KMSACLs.Type.CREATE.getConfigKey(), "foo");
+-- 
+1.7.9.5
+

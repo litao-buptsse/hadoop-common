@@ -1,0 +1,295 @@
+From 56298815cc1be6ba3428f04fec63dc6f6f74bb24 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 8 Sep 2014 16:59:30 -0700
+Subject: [PATCH 339/813] HDFS-6951. Correctly persist raw namespace xattrs to
+ edit log and fsimage. Contributed by Charles Lamb.
+ (cherry picked from commit
+ 04915a08141bbe71bdef26e3f539aa8b76f89ac7)
+
+---
+ .../server/namenode/EncryptionZoneManager.java     |   12 ++++
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    2 +-
+ .../hdfs/server/namenode/FSImageFormatPBINode.java |   18 +++--
+ .../server/namenode/NameNodeLayoutVersion.java     |    3 +-
+ .../hadoop-hdfs/src/main/proto/fsimage.proto       |    8 ++-
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |    8 +++
+ .../hdfs/server/namenode/FSXAttrBaseTest.java      |   75 +++++++++++++-------
+ .../hadoop-hdfs/src/test/resources/editsStored     |  Bin 5252 -> 5252 bytes
+ .../hadoop-hdfs/src/test/resources/editsStored.xml |    2 +-
+ 9 files changed, 93 insertions(+), 35 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+index a0e1f0c..f00f132 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+@@ -111,6 +111,18 @@ public EncryptionZoneManager(FSDirectory dir, Configuration conf) {
+    */
+   void addEncryptionZone(Long inodeId, String keyName) {
+     assert dir.hasWriteLock();
++    unprotectedAddEncryptionZone(inodeId, keyName);
++  }
++
++  /**
++   * Add a new encryption zone.
++   * <p/>
++   * Does not assume that the FSDirectory lock is held.
++   *
++   * @param inodeId of the encryption zone
++   * @param keyName encryption zone key name
++   */
++  void unprotectedAddEncryptionZone(Long inodeId, String keyName) {
+     final EncryptionZoneInt ez = new EncryptionZoneInt(inodeId, keyName);
+     encryptionZones.put(inodeId, ez);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 3f621cb..2221ccd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -2072,7 +2072,7 @@ public final void addToInodeMap(INode inode) {
+           for (XAttr xattr : xattrs) {
+             final String xaName = XAttrHelper.getPrefixName(xattr);
+             if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
+-              ezManager.addEncryptionZone(inode.getId(),
++              ezManager.unprotectedAddEncryptionZone(inode.getId(),
+                   new String(xattr.getValue()));
+             }
+           }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+index 600d284..2a46fc4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+@@ -83,7 +83,12 @@
+   private static final int XATTR_NAMESPACE_OFFSET = 30;
+   private static final int XATTR_NAME_MASK = (1 << 24) - 1;
+   private static final int XATTR_NAME_OFFSET = 6;
+-  private static final XAttr.NameSpace[] XATTR_NAMESPACE_VALUES = 
++
++  /* See the comments in fsimage.proto for an explanation of the following. */
++  private static final int XATTR_NAMESPACE_EXT_OFFSET = 5;
++  private static final int XATTR_NAMESPACE_EXT_MASK = 1;
++
++  private static final XAttr.NameSpace[] XATTR_NAMESPACE_VALUES =
+       XAttr.NameSpace.values();
+   
+ 
+@@ -121,6 +126,8 @@ public static PermissionStatus loadPermission(long id,
+         int v = xAttrCompactProto.getName();
+         int nid = (v >> XATTR_NAME_OFFSET) & XATTR_NAME_MASK;
+         int ns = (v >> XATTR_NAMESPACE_OFFSET) & XATTR_NAMESPACE_MASK;
++        ns |=
++            ((v >> XATTR_NAMESPACE_EXT_OFFSET) & XATTR_NAMESPACE_EXT_MASK) << 2;
+         String name = stringTable[nid];
+         byte[] value = null;
+         if (xAttrCompactProto.getValue() != null) {
+@@ -367,10 +374,13 @@ private static long buildPermissionStatus(INodeAttributes n,
+       for (XAttr a : f.getXAttrs()) {
+         XAttrCompactProto.Builder xAttrCompactBuilder = XAttrCompactProto.
+             newBuilder();
+-        int v = ((a.getNameSpace().ordinal() & XATTR_NAMESPACE_MASK) << 
+-            XATTR_NAMESPACE_OFFSET) 
+-            | ((stringMap.getId(a.getName()) & XATTR_NAME_MASK) << 
++        int nsOrd = a.getNameSpace().ordinal();
++        Preconditions.checkArgument(nsOrd < 8, "Too many namespaces.");
++        int v = ((nsOrd & XATTR_NAMESPACE_MASK) << XATTR_NAMESPACE_OFFSET)
++            | ((stringMap.getId(a.getName()) & XATTR_NAME_MASK) <<
+                 XATTR_NAME_OFFSET);
++        v |= (((nsOrd >> 2) & XATTR_NAMESPACE_EXT_MASK) <<
++            XATTR_NAMESPACE_EXT_OFFSET);
+         xAttrCompactBuilder.setName(v);
+         if (a.getValue() != null) {
+           xAttrCompactBuilder.setValue(PBHelper.getByteString(a.getValue()));
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java
+index 1df6df4..404e205 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeLayoutVersion.java
+@@ -67,7 +67,8 @@ public static boolean supports(final LayoutFeature f, final int lv) {
+     EDITLOG_LENGTH(-56, "Add length field to every edit log op"),
+     XATTRS(-57, "Extended attributes"),
+     CREATE_OVERWRITE(-58, "Use single editlog record for " +
+-        "creating file with overwrite");
++      "creating file with overwrite"),
++    XATTRS_NAMESPACE_EXT(-59, "Increase number of xattr namespaces");
+     
+     private final FeatureInfo info;
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
+index 1c8edfa..29fcd36 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
+@@ -113,8 +113,12 @@ message INodeSection {
+      * 
+      * [0:2) -- the namespace of XAttr (XAttrNamespaceProto)
+      * [2:26) -- the name of the entry, which is an ID that points to a
+-     * string in the StringTableSection. 
+-     * [26:32) -- reserved for future uses.
++     * string in the StringTableSection.
++     * [26:27) -- namespace extension. Originally there were only 4 namespaces
++     * so only 2 bits were needed. At that time, this bit was reserved. When a
++     * 5th namespace was created (raw) this bit became used as a 3rd namespace
++     * bit.
++     * [27:32) -- reserved for future uses.
+      */
+     required fixed32 name = 1;
+     optional bytes value = 2;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index 1cf9263..8dec5af 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -49,6 +49,7 @@
+ import org.apache.hadoop.hdfs.client.HdfsAdmin;
+ import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+ import org.apache.hadoop.hdfs.server.namenode.EncryptionFaultInjector;
+ import org.apache.hadoop.hdfs.server.namenode.EncryptionZoneManager;
+ import org.apache.hadoop.security.AccessControlException;
+@@ -313,6 +314,13 @@ public Object run() throws Exception {
+       assertNumZones(numZones);
+       assertZonePresent(null, zonePath.toString());
+     }
++
++    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
++    fs.saveNamespace();
++    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
++    cluster.restartNameNode(true);
++    assertNumZones(numZones);
++    assertZonePresent(null, zone1.toString());
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java
+index 0c7b807..9c48400 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java
+@@ -56,6 +56,7 @@
+ import org.junit.Test;
+ 
+ import com.google.common.collect.Lists;
++import com.google.common.collect.Maps;
+ 
+ /**
+  * Tests NameNode interaction for all XAttr APIs.
+@@ -129,51 +130,73 @@ public void destroyFileSystems() {
+    */
+   @Test(timeout = 120000)
+   public void testCreateXAttr() throws Exception {
+-    FileSystem.mkdirs(fs, path, FsPermission.createImmutable((short)0750));
+-    fs.setXAttr(path, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
++    Map<String, byte[]> expectedXAttrs = Maps.newHashMap();
++    expectedXAttrs.put(name1, value1);
++    expectedXAttrs.put(name2, null);
++    doTestCreateXAttr(path, expectedXAttrs);
++    expectedXAttrs.put(raw1, value1);
++    doTestCreateXAttr(rawPath, expectedXAttrs);
++  }
++
++  private void doTestCreateXAttr(Path usePath, Map<String,
++      byte[]> expectedXAttrs) throws Exception {
++    FileSystem.mkdirs(fs, usePath, FsPermission.createImmutable((short)0750));
++    fs.setXAttr(usePath, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
+     
+-    Map<String, byte[]> xattrs = fs.getXAttrs(path);
++    Map<String, byte[]> xattrs = fs.getXAttrs(usePath);
+     Assert.assertEquals(xattrs.size(), 1);
+     Assert.assertArrayEquals(value1, xattrs.get(name1));
+     
+-    fs.removeXAttr(path, name1);
++    fs.removeXAttr(usePath, name1);
+     
+-    xattrs = fs.getXAttrs(path);
++    xattrs = fs.getXAttrs(usePath);
+     Assert.assertEquals(xattrs.size(), 0);
+     
+     // Create xattr which already exists.
+-    fs.setXAttr(path, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
++    fs.setXAttr(usePath, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
+     try {
+-      fs.setXAttr(path, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
++      fs.setXAttr(usePath, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
+       Assert.fail("Creating xattr which already exists should fail.");
+     } catch (IOException e) {
+     }
+-    fs.removeXAttr(path, name1);
++    fs.removeXAttr(usePath, name1);
+     
+-    // Create two xattrs
+-    fs.setXAttr(path, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
+-    fs.setXAttr(path, name2, null, EnumSet.of(XAttrSetFlag.CREATE));
+-    xattrs = fs.getXAttrs(path);
+-    Assert.assertEquals(xattrs.size(), 2);
+-    Assert.assertArrayEquals(value1, xattrs.get(name1));
+-    Assert.assertArrayEquals(new byte[0], xattrs.get(name2));
++    // Create the xattrs
++    for (Map.Entry<String, byte[]> ent : expectedXAttrs.entrySet()) {
++      fs.setXAttr(usePath, ent.getKey(), ent.getValue(),
++          EnumSet.of(XAttrSetFlag.CREATE));
++    }
++    xattrs = fs.getXAttrs(usePath);
++    Assert.assertEquals(xattrs.size(), expectedXAttrs.size());
++    for (Map.Entry<String, byte[]> ent : expectedXAttrs.entrySet()) {
++      final byte[] val =
++          (ent.getValue() == null) ? new byte[0] : ent.getValue();
++      Assert.assertArrayEquals(val, xattrs.get(ent.getKey()));
++    }
+     
+     restart(false);
+     initFileSystem();
+-    xattrs = fs.getXAttrs(path);
+-    Assert.assertEquals(xattrs.size(), 2);
+-    Assert.assertArrayEquals(value1, xattrs.get(name1));
+-    Assert.assertArrayEquals(new byte[0], xattrs.get(name2));
++    xattrs = fs.getXAttrs(usePath);
++    Assert.assertEquals(xattrs.size(), expectedXAttrs.size());
++    for (Map.Entry<String, byte[]> ent : expectedXAttrs.entrySet()) {
++      final byte[] val =
++          (ent.getValue() == null) ? new byte[0] : ent.getValue();
++      Assert.assertArrayEquals(val, xattrs.get(ent.getKey()));
++    }
+     
+     restart(true);
+     initFileSystem();
+-    xattrs = fs.getXAttrs(path);
+-    Assert.assertEquals(xattrs.size(), 2);
+-    Assert.assertArrayEquals(value1, xattrs.get(name1));
+-    Assert.assertArrayEquals(new byte[0], xattrs.get(name2));
+-    
+-    fs.removeXAttr(path, name1);
+-    fs.removeXAttr(path, name2);
++    xattrs = fs.getXAttrs(usePath);
++    Assert.assertEquals(xattrs.size(), expectedXAttrs.size());
++    for (Map.Entry<String, byte[]> ent : expectedXAttrs.entrySet()) {
++      final byte[] val =
++          (ent.getValue() == null) ? new byte[0] : ent.getValue();
++      Assert.assertArrayEquals(val, xattrs.get(ent.getKey()));
++    }
++
++    for (Map.Entry<String, byte[]> ent : expectedXAttrs.entrySet()) {
++      fs.removeXAttr(usePath, ent.getKey());
++    }
+   }
+   
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored
+index 5d93a505c01a7ec8430cea52fd48380c663d4318..754f690a4c85873995ba2c9fb1208f9f110f3a69 100644
+GIT binary patch
+delta 13
+UcmZqCY|&)-|NsBdjVui!04%=-Y5)KL
+
+delta 13
+UcmZqCY|&)-|NsB7jVui!04&4?YXATM
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml
+index 977be98..7cfb689 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/editsStored.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <EDITS>
+-  <EDITS_VERSION>-58</EDITS_VERSION>
++  <EDITS_VERSION>-59</EDITS_VERSION>
+   <RECORD>
+     <OPCODE>OP_START_LOG_SEGMENT</OPCODE>
+     <DATA>
+-- 
+1.7.9.5
+

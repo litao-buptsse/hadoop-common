@@ -1,0 +1,100 @@
+From 1eee6710647d533558eac29f2ccdaa49e3ab5630 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Fri, 25 Jul 2014 16:13:07 +0000
+Subject: [PATCH 282/813] YARN-2214. FairScheduler: preemptContainerPreCheck()
+ in FSParentQueue delays convergence towards
+ fairness. (Ashwin Shankar via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1613459 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1e553858f930e43fac62986549a178cdcf39384c)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+---
+ .../scheduler/fair/FSLeafQueue.java                |   19 +++++++++++++++----
+ .../scheduler/fair/FSParentQueue.java              |    5 -----
+ .../resourcemanager/scheduler/fair/FSQueue.java    |   13 -------------
+ 3 files changed, 15 insertions(+), 22 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
+index 8f95738..3b3f6ce 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
+@@ -224,16 +224,17 @@ public Resource assignContainer(FSSchedulerNode node) {
+   @Override
+   public RMContainer preemptContainer() {
+     RMContainer toBePreempted = null;
+-    if (LOG.isDebugEnabled()) {
+-      LOG.debug("Queue " + getName() + " is going to preempt a container " +
+-          "from its applications.");
+-    }
+ 
+     // If this queue is not over its fair share, reject
+     if (!preemptContainerPreCheck()) {
+       return toBePreempted;
+     }
+ 
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Queue " + getName() + " is going to preempt a container " +
++          "from its applications.");
++    }
++
+     // Choose the app that is most over fair share
+     Comparator<Schedulable> comparator = policy.getComparator();
+     AppSchedulable candidateSched = null;
+@@ -328,4 +329,14 @@ public void recoverContainer(Resource clusterResource,
+       SchedulerApplicationAttempt schedulerAttempt, RMContainer rmContainer) {
+     // TODO Auto-generated method stub
+   }
++
++  /**
++   * Helper method to check if the queue should preempt containers
++   *
++   * @return true if check passes (can preempt) or false otherwise
++   */
++  private boolean preemptContainerPreCheck() {
++    return parent.getPolicy().checkIfUsageOverFairShare(getResourceUsage(),
++        getFairShare());
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSParentQueue.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSParentQueue.java
+index 5ab60af..9af72a5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSParentQueue.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSParentQueue.java
+@@ -164,11 +164,6 @@ public Resource assignContainer(FSSchedulerNode node) {
+   public RMContainer preemptContainer() {
+     RMContainer toBePreempted = null;
+ 
+-    // If this queue is not over its fair share, reject
+-    if (!preemptContainerPreCheck()) {
+-      return toBePreempted;
+-    }
+-
+     // Find the childQueue which is most over fair share
+     FSQueue candidateQueue = null;
+     Comparator<Schedulable> comparator = policy.getComparator();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSQueue.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSQueue.java
+index 716e1ee..1e94046 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSQueue.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSQueue.java
+@@ -187,17 +187,4 @@ protected boolean assignContainerPreCheck(FSSchedulerNode node) {
+     }
+     return true;
+   }
+-
+-  /**
+-   * Helper method to check if the queue should preempt containers
+-   *
+-   * @return true if check passes (can preempt) or false otherwise
+-   */
+-  protected boolean preemptContainerPreCheck() {
+-    if (this == scheduler.getQueueManager().getRootQueue()) {
+-      return true;
+-    }
+-    return parent.getPolicy()
+-        .checkIfUsageOverFairShare(getResourceUsage(), getFairShare());
+-  }
+ }
+-- 
+1.7.9.5
+

@@ -1,0 +1,69 @@
+From 70d1a8ec185dbbff31fc221ef18f04c032254cd5 Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Thu, 21 Aug 2014 22:45:35 +0000
+Subject: [PATCH 352/813] svn merge -c 1619614 FIXES: YARN-2434. RM should not
+ recover containers from previously failed attempt
+ when AM restart is not enabled. Contributed by Jian
+ He
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619616 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fab20109ae0e061b7999f58ee924688d787f7804)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../scheduler/AbstractYarnScheduler.java           |   13 +++++++++++++
+ .../TestWorkPreservingRMRestart.java               |   13 +++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+index b0304c9..92588db 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+@@ -249,6 +249,19 @@ public synchronized void recoverContainersOnNode(
+       SchedulerApplicationAttempt schedulerAttempt =
+           schedulerApp.getCurrentAppAttempt();
+ 
++      if (!rmApp.getApplicationSubmissionContext()
++        .getKeepContainersAcrossApplicationAttempts()) {
++        // Do not recover containers for stopped attempt or previous attempt.
++        if (schedulerAttempt.isStopped()
++            || !schedulerAttempt.getApplicationAttemptId().equals(
++              container.getContainerId().getApplicationAttemptId())) {
++          LOG.info("Skip recovering container " + container
++              + " for already stopped attempt.");
++          killOrphanContainerOnNode(nm, container);
++          continue;
++        }
++      }
++
+       // create container
+       RMContainer rmContainer = recoverAndCreateContainer(container, nm);
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+index 7afb715..a22c607 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+@@ -513,6 +513,19 @@ public void testAMfailedBetweenRMRestart() throws Exception {
+     // just-recovered containers.
+     assertNull(scheduler.getRMContainer(runningContainer.getContainerId()));
+     assertNull(scheduler.getRMContainer(completedContainer.getContainerId()));
++
++    rm2.waitForNewAMToLaunchAndRegister(app1.getApplicationId(), 2, nm1);
++
++    MockNM nm2 =
++        new MockNM("127.1.1.1:4321", 8192, rm2.getResourceTrackerService());
++    NMContainerStatus previousAttemptContainer =
++        TestRMRestart.createNMContainerStatus(am1.getApplicationAttemptId(), 4,
++          ContainerState.RUNNING);
++    nm2.registerNode(Arrays.asList(previousAttemptContainer), null);
++    // Wait for RM to settle down on recovering containers;
++    Thread.sleep(3000);
++    // check containers from previous failed attempt should not be recovered.
++    assertNull(scheduler.getRMContainer(previousAttemptContainer.getContainerId()));
+   }
+ 
+   // Apps already completed before RM restart. Restarted RM scheduler should not
+-- 
+1.7.9.5
+

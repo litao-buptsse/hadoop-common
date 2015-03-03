@@ -1,0 +1,105 @@
+From a21276b350efea67850c209a2f883f3d758b943e Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Mon, 13 Oct 2014 15:08:23 +0000
+Subject: [PATCH 567/813] MAPREDUCE-6125. TestContainerLauncherImpl sometimes
+ fails. Contributed by Mit Desai
+
+(cherry picked from commit bbe80cdc7b37cae50e46eaa00e75240d4a2aac68)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../v2/app/launcher/TestContainerLauncherImpl.java |   28 ++++++++++++++------
+ 1 file changed, 20 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/launcher/TestContainerLauncherImpl.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/launcher/TestContainerLauncherImpl.java
+index 4a69a7b..74e532a 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/launcher/TestContainerLauncherImpl.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/launcher/TestContainerLauncherImpl.java
+@@ -24,6 +24,7 @@
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
+ 
++import java.io.Closeable;
+ import java.io.IOException;
+ import java.nio.ByteBuffer;
+ import java.util.HashMap;
+@@ -83,6 +84,13 @@ public void setup() throws IOException {
+     serviceResponse.put(ShuffleHandler.MAPREDUCE_SHUFFLE_SERVICEID,
+         ShuffleHandler.serializeMetaData(80));
+   }
++
++  // tests here mock ContainerManagementProtocol which does not have close
++  // method. creating an interface that implements ContainerManagementProtocol
++  // and Closeable so the tests does not fail with NoSuchMethodException
++  private static interface ContainerManagementProtocolClient extends
++    ContainerManagementProtocol, Closeable {
++  }
+   
+   private static class ContainerLauncherImplUnderTest extends 
+     ContainerLauncherImpl {
+@@ -152,8 +160,8 @@ public void testHandle() throws Exception {
+     EventHandler mockEventHandler = mock(EventHandler.class);
+     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
+     String cmAddress = "127.0.0.1:8000";
+-    ContainerManagementProtocol mockCM =
+-        mock(ContainerManagementProtocol.class);
++    ContainerManagementProtocolClient mockCM =
++        mock(ContainerManagementProtocolClient.class);
+     ContainerLauncherImplUnderTest ut =
+         new ContainerLauncherImplUnderTest(mockContext, mockCM);
+     
+@@ -213,8 +221,8 @@ public void testOutOfOrder() throws Exception {
+     EventHandler mockEventHandler = mock(EventHandler.class);
+     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
+ 
+-    ContainerManagementProtocol mockCM =
+-        mock(ContainerManagementProtocol.class);
++    ContainerManagementProtocolClient mockCM =
++        mock(ContainerManagementProtocolClient.class);
+     ContainerLauncherImplUnderTest ut =
+         new ContainerLauncherImplUnderTest(mockContext, mockCM);
+     
+@@ -275,8 +283,8 @@ public void testMyShutdown() throws Exception {
+     EventHandler mockEventHandler = mock(EventHandler.class);
+     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
+ 
+-    ContainerManagementProtocol mockCM =
+-        mock(ContainerManagementProtocol.class);
++    ContainerManagementProtocolClient mockCM =
++        mock(ContainerManagementProtocolClient.class);
+     ContainerLauncherImplUnderTest ut =
+         new ContainerLauncherImplUnderTest(mockContext, mockCM);
+ 
+@@ -330,7 +338,7 @@ public void testContainerCleaned() throws Exception {
+     EventHandler mockEventHandler = mock(EventHandler.class);
+     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
+ 
+-    ContainerManagementProtocol mockCM =
++    ContainerManagementProtocolClient mockCM =
+         new ContainerManagerForTest(startLaunchBarrier, completeLaunchBarrier);
+     ContainerLauncherImplUnderTest ut =
+         new ContainerLauncherImplUnderTest(mockContext, mockCM);
+@@ -406,7 +414,7 @@ private Token createNewContainerToken(ContainerId contId,
+         currentTime + 10000L, 123, currentTime, Priority.newInstance(0), 0));
+   }
+ 
+-  private static class ContainerManagerForTest implements ContainerManagementProtocol {
++  private static class ContainerManagerForTest implements ContainerManagementProtocolClient {
+ 
+     private CyclicBarrier startLaunchBarrier;
+     private CyclicBarrier completeLaunchBarrier;
+@@ -444,6 +452,10 @@ public GetContainerStatusesResponse getContainerStatuses(
+         GetContainerStatusesRequest request) throws IOException {
+       return null;
+     }
++
++    @Override
++    public void close() throws IOException {
++    }
+   }
+   
+   @SuppressWarnings("serial")
+-- 
+1.7.9.5
+

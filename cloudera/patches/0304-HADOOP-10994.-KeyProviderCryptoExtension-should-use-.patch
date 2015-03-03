@@ -1,0 +1,346 @@
+From cac02cd55cdda52232adcad4806f430528dcb2d3 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Fri, 29 Aug 2014 14:21:58 -0700
+Subject: [PATCH 304/813] HADOOP-10994. KeyProviderCryptoExtension should use
+ CryptoCodec for generation/decryption of keys.
+ (tucu)
+
+(cherry picked from commit 5889f4d5f33015ff0c57cc4fc319b2c113b36fe5)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |    1 +
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |   20 ++++++++
+ .../crypto/key/KeyProviderCryptoExtension.java     |   51 +++++++++++++-------
+ .../hadoop/crypto/key/KeyProviderExtension.java    |    1 +
+ .../org/apache/hadoop/crypto/key/UserProvider.java |    5 +-
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    1 +
+ .../hadoop/crypto/key/TestCachingKeyProvider.java  |    6 +++
+ .../apache/hadoop/crypto/key/TestKeyProvider.java  |   17 ++++++-
+ .../TestKeyProviderDelegationTokenExtension.java   |   11 ++++-
+ 9 files changed, 90 insertions(+), 23 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index 2503151..30583eb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -108,6 +108,7 @@
+   private final Map<String, Metadata> cache = new HashMap<String, Metadata>();
+ 
+   private JavaKeyStoreProvider(URI uri, Configuration conf) throws IOException {
++    super(conf);
+     this.uri = uri;
+     path = ProviderUtils.unnestUri(uri);
+     fs = path.getFileSystem(conf);
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index 9c46875..a8b9414 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -56,6 +56,8 @@
+       "hadoop.security.key.default.bitlength";
+   public static final int DEFAULT_BITLENGTH = 128;
+ 
++  private final Configuration conf;
++
+   /**
+    * The combination of both the key version name and the key material.
+    */
+@@ -354,6 +356,24 @@ public String toString() {
+   }
+ 
+   /**
++   * Constructor.
++   * 
++   * @param conf configuration for the provider
++   */
++  public KeyProvider(Configuration conf) {
++    this.conf = new Configuration(conf);
++  }
++
++  /**
++   * Return the provider configuration.
++   * 
++   * @return the provider configuration
++   */
++  public Configuration getConf() {
++    return conf;
++  }
++  
++  /**
+    * A helper function to create an options object.
+    * @param conf the configuration to use
+    * @return a new options object
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+index 00f8ff7..e9d7caa 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.crypto.key;
+ 
+ import java.io.IOException;
++import java.nio.ByteBuffer;
+ import java.security.GeneralSecurityException;
+ import java.security.SecureRandom;
+ 
+@@ -29,6 +30,9 @@
+ import com.google.common.base.Preconditions;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.crypto.CryptoCodec;
++import org.apache.hadoop.crypto.Decryptor;
++import org.apache.hadoop.crypto.Encryptor;
+ 
+ /**
+  * A KeyProvider with Cryptographic Extensions specifically for generating
+@@ -239,18 +243,25 @@ public EncryptedKeyVersion generateEncryptedKey(String encryptionKeyName)
+       Preconditions.checkNotNull(encryptionKey,
+           "No KeyVersion exists for key '%s' ", encryptionKeyName);
+       // Generate random bytes for new key and IV
+-      Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
++
++      CryptoCodec cc = CryptoCodec.getInstance(keyProvider.getConf());
+       final byte[] newKey = new byte[encryptionKey.getMaterial().length];
+-      RANDOM.get().nextBytes(newKey);
+-      final byte[] iv = new byte[cipher.getBlockSize()];
+-      RANDOM.get().nextBytes(iv);
++      cc.generateSecureRandom(newKey);
++      final byte[] iv = new byte[cc.getCipherSuite().getAlgorithmBlockSize()];
++      cc.generateSecureRandom(iv);
+       // Encryption key IV is derived from new key's IV
+       final byte[] encryptionIV = EncryptedKeyVersion.deriveIV(iv);
+-      // Encrypt the new key
+-      cipher.init(Cipher.ENCRYPT_MODE,
+-          new SecretKeySpec(encryptionKey.getMaterial(), "AES"),
+-          new IvParameterSpec(encryptionIV));
+-      final byte[] encryptedKey = cipher.doFinal(newKey);
++      Encryptor encryptor = cc.createEncryptor();
++      encryptor.init(encryptionKey.getMaterial(), encryptionIV);
++      int keyLen = newKey.length;
++      ByteBuffer bbIn = ByteBuffer.allocateDirect(keyLen);
++      ByteBuffer bbOut = ByteBuffer.allocateDirect(keyLen);
++      bbIn.put(newKey);
++      bbIn.flip();
++      encryptor.encrypt(bbIn, bbOut);
++      bbOut.flip();
++      byte[] encryptedKey = new byte[keyLen];
++      bbOut.get(encryptedKey);    
+       return new EncryptedKeyVersion(encryptionKeyName,
+           encryptionKey.getVersionName(), iv,
+           new KeyVersion(encryptionKey.getName(), EEK, encryptedKey));
+@@ -274,19 +285,25 @@ public KeyVersion decryptEncryptedKey(
+                 KeyProviderCryptoExtension.EEK,
+                 encryptedKeyVersion.getEncryptedKeyVersion().getVersionName()
+             );
+-      final byte[] encryptionKeyMaterial = encryptionKey.getMaterial();
++
+       // Encryption key IV is determined from encrypted key's IV
+       final byte[] encryptionIV =
+           EncryptedKeyVersion.deriveIV(encryptedKeyVersion.getEncryptedKeyIv());
+-      // Init the cipher with encryption key parameters
+-      Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
+-      cipher.init(Cipher.DECRYPT_MODE,
+-          new SecretKeySpec(encryptionKeyMaterial, "AES"),
+-          new IvParameterSpec(encryptionIV));
+-      // Decrypt the encrypted key
++
++      CryptoCodec cc = CryptoCodec.getInstance(keyProvider.getConf());
++      Decryptor decryptor = cc.createDecryptor();
++      decryptor.init(encryptionKey.getMaterial(), encryptionIV);
+       final KeyVersion encryptedKV =
+           encryptedKeyVersion.getEncryptedKeyVersion();
+-      final byte[] decryptedKey = cipher.doFinal(encryptedKV.getMaterial());
++      int keyLen = encryptedKV.getMaterial().length;
++      ByteBuffer bbIn = ByteBuffer.allocateDirect(keyLen);
++      ByteBuffer bbOut = ByteBuffer.allocateDirect(keyLen);
++      bbIn.put(encryptedKV.getMaterial());
++      bbIn.flip();
++      decryptor.decrypt(bbIn, bbOut);
++      bbOut.flip();
++      byte[] decryptedKey = new byte[keyLen];
++      bbOut.get(decryptedKey);
+       return new KeyVersion(encryptionKey.getName(), EK, decryptedKey);
+     }
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+index 3b1eb58..8852bb9 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderExtension.java
+@@ -40,6 +40,7 @@
+   private E extension;
+ 
+   public KeyProviderExtension(KeyProvider keyProvider, E extensions) {
++    super(keyProvider.getConf());
+     this.keyProvider = keyProvider;
+     this.extension = extensions;
+   }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+index e09b3f8..bf8f2fed 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+@@ -44,7 +44,8 @@
+   private final Credentials credentials;
+   private final Map<String, Metadata> cache = new HashMap<String, Metadata>();
+ 
+-  private UserProvider() throws IOException {
++  private UserProvider(Configuration conf) throws IOException {
++    super(conf);
+     user = UserGroupInformation.getCurrentUser();
+     credentials = user.getCredentials();
+   }
+@@ -145,7 +146,7 @@ public synchronized void flush() {
+     public KeyProvider createProvider(URI providerName,
+                                       Configuration conf) throws IOException {
+       if (SCHEME_NAME.equals(providerName.getScheme())) {
+-        return new UserProvider();
++        return new UserProvider(conf);
+       }
+       return null;
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index 40b84cb..14593ed 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -282,6 +282,7 @@ public HttpURLConnection configure(HttpURLConnection conn)
+   }
+ 
+   public KMSClientProvider(URI uri, Configuration conf) throws IOException {
++    super(conf);
+     Path path = ProviderUtils.unnestUri(uri);
+     URL url = path.toUri().toURL();
+     kmsUrl = createServiceURL(url);
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java
+index 2eff699..b8d29a6 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java
+@@ -19,6 +19,7 @@
+ 
+ import java.util.Date;
+ 
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -32,6 +33,7 @@ public void testCurrentKey() throws Exception {
+     KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+     Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
+     Mockito.when(mockProv.getCurrentKey(Mockito.eq("k2"))).thenReturn(null);
++    Mockito.when(mockProv.getConf()).thenReturn(new Configuration());
+     KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
+ 
+     // asserting caching
+@@ -58,6 +60,7 @@ public void testKeyVersion() throws Exception {
+     Mockito.when(mockProv.getKeyVersion(Mockito.eq("k1@0")))
+         .thenReturn(mockKey);
+     Mockito.when(mockProv.getKeyVersion(Mockito.eq("k2@0"))).thenReturn(null);
++    Mockito.when(mockProv.getConf()).thenReturn(new Configuration());
+     KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
+ 
+     // asserting caching
+@@ -88,6 +91,7 @@ public void testMetadata() throws Exception {
+     KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+     Mockito.when(mockProv.getMetadata(Mockito.eq("k1"))).thenReturn(mockMeta);
+     Mockito.when(mockProv.getMetadata(Mockito.eq("k2"))).thenReturn(null);
++    Mockito.when(mockProv.getConf()).thenReturn(new Configuration());
+     KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
+ 
+     // asserting caching
+@@ -112,6 +116,7 @@ public void testRollNewVersion() throws Exception {
+     KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
+     KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+     Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
++    Mockito.when(mockProv.getConf()).thenReturn(new Configuration());
+     KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
+     Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+     Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+@@ -134,6 +139,7 @@ public void testDeleteKey() throws Exception {
+         .thenReturn(mockKey);
+     Mockito.when(mockProv.getMetadata(Mockito.eq("k1"))).thenReturn(
+         new KMSClientProvider.KMSMetadata("c", 0, "l", null, new Date(), 1));
++    Mockito.when(mockProv.getConf()).thenReturn(new Configuration());
+     KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
+     Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+     Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+index dbf0fe6..eec80c2 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+@@ -159,6 +159,10 @@ public void testUnnestUri() throws Exception {
+     private int size;
+     private byte[] material;
+ 
++    public MyKeyProvider(Configuration conf) {
++      super(conf);
++    }
++
+     @Override
+     public KeyVersion getKeyVersion(String versionName)
+         throws IOException {
+@@ -216,7 +220,7 @@ public void flush() throws IOException {
+ 
+   @Test
+   public void testMaterialGeneration() throws Exception {
+-    MyKeyProvider kp = new MyKeyProvider();
++    MyKeyProvider kp = new MyKeyProvider(new Configuration());
+     KeyProvider.Options options = new KeyProvider.Options(new Configuration());
+     options.setCipher(CIPHER);
+     options.setBitLength(128);
+@@ -225,10 +229,19 @@ public void testMaterialGeneration() throws Exception {
+     Assert.assertEquals(CIPHER, kp.algorithm);
+     Assert.assertNotNull(kp.material);
+ 
+-    kp = new MyKeyProvider();
++    kp = new MyKeyProvider(new Configuration());
+     kp.rollNewVersion("hello");
+     Assert.assertEquals(128, kp.size);
+     Assert.assertEquals(CIPHER, kp.algorithm);
+     Assert.assertNotNull(kp.material);
+   }
++
++  @Test
++  public void testConfiguration() throws Exception {
++    Configuration conf = new Configuration(false);
++    conf.set("a", "A");
++    MyKeyProvider kp = new MyKeyProvider(conf);
++    Assert.assertEquals("A", kp.getConf().get("a"));
++  }
++
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java
+index 1505f4b..7cf42f3 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java
+@@ -29,11 +29,16 @@
+ import org.apache.hadoop.security.token.Token;
+ import org.junit.Assert;
+ import org.junit.Test;
++import org.mockito.Mockito;
+ 
+ public class TestKeyProviderDelegationTokenExtension {
+ 
+   public static abstract class MockKeyProvider extends
+       KeyProvider implements DelegationTokenExtension {
++
++    public MockKeyProvider() {
++      super(new Configuration(false));
++    }
+   }
+ 
+   @Test
+@@ -50,9 +55,11 @@ public void testCreateExtension() throws Exception {
+     Assert.assertNull(kpDTE1.addDelegationTokens("user", credentials));
+ 
+     MockKeyProvider mock = mock(MockKeyProvider.class);
++    Mockito.when(mock.getConf()).thenReturn(new Configuration());
+     when(mock.addDelegationTokens("renewer", credentials)).thenReturn(
+-        new Token<?>[] { new Token(null, null, new Text("kind"), new Text(
+-            "service")) });
++        new Token<?>[]{new Token(null, null, new Text("kind"), new Text(
++            "service"))}
++    );
+     KeyProviderDelegationTokenExtension kpDTE2 =
+         KeyProviderDelegationTokenExtension
+         .createKeyProviderDelegationTokenExtension(mock);
+-- 
+1.7.9.5
+

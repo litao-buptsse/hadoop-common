@@ -1,0 +1,38 @@
+From d20e7972d54474e43758c00248b67993e5a9bc9c Mon Sep 17 00:00:00 2001
+From: Lei Xu <lei@cloudera.com>
+Date: Wed, 1 Oct 2014 17:17:59 -0700
+Subject: [PATCH 545/813] CLOUDERA-BUILD. Build shaded hadoop-aws.jar for CDH
+ 5.2.0 (CDH-22019)
+
+Shade all dependencies of hadoop-aws into its jar file to avoid expose
+conflicted jackson 2 jar to other projects.
+---
+ hadoop-tools/hadoop-aws/pom.xml |   12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/hadoop-tools/hadoop-aws/pom.xml b/hadoop-tools/hadoop-aws/pom.xml
+index 9444604..bbc2923 100644
+--- a/hadoop-tools/hadoop-aws/pom.xml
++++ b/hadoop-tools/hadoop-aws/pom.xml
+@@ -83,6 +83,18 @@
+           <dependencyLocationsEnabled>false</dependencyLocationsEnabled>
+         </configuration>
+       </plugin>
++      <plugin>
++        <groupId>org.apache.maven.plugins</groupId>
++        <artifactId>maven-shade-plugin</artifactId>
++          <executions>
++            <execution>
++               <phase>package</phase>
++                <goals>
++                  <goal>shade</goal>
++                </goals>
++            </execution>
++          </executions>
++      </plugin>
+     </plugins>
+   </build>
+ 
+-- 
+1.7.9.5
+

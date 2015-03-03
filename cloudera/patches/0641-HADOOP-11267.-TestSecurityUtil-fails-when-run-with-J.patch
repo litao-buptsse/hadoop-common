@@ -1,0 +1,32 @@
+From d1b0a7e4ce4cdf36b322d07853afb00fd35b8bd4 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 5 Nov 2014 15:25:35 -0800
+Subject: [PATCH 641/813] HADOOP-11267. TestSecurityUtil fails when run with
+ JDK8 because of empty principal names. Contributed
+ by Stephen Chu.
+
+(cherry picked from commit 8549fa5dc95d3e94e49c9b92734aec0509693a2a)
+---
+ .../apache/hadoop/security/TestSecurityUtil.java   |    4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestSecurityUtil.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestSecurityUtil.java
+index 53fede9..3124ebd 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestSecurityUtil.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestSecurityUtil.java
+@@ -55,12 +55,8 @@ public void isOriginalTGTReturnsCorrectValues() {
+     assertFalse(SecurityUtil.isTGSPrincipal
+         (new KerberosPrincipal("blah")));
+     assertFalse(SecurityUtil.isTGSPrincipal
+-        (new KerberosPrincipal("")));
+-    assertFalse(SecurityUtil.isTGSPrincipal
+         (new KerberosPrincipal("krbtgt/hello")));
+     assertFalse(SecurityUtil.isTGSPrincipal
+-        (new KerberosPrincipal("/@")));
+-    assertFalse(SecurityUtil.isTGSPrincipal
+         (new KerberosPrincipal("krbtgt/foo@FOO")));
+   }
+   
+-- 
+1.7.9.5
+

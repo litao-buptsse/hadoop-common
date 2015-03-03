@@ -1,0 +1,155 @@
+From c2cc5a3420484462ee47e2cc26956614b6d495dd Mon Sep 17 00:00:00 2001
+From: XUAN <xgong@apache.org>
+Date: Wed, 10 Sep 2014 11:51:57 -0700
+Subject: [PATCH 477/813] YARN-2459. RM crashes if App gets rejected for any
+ reason and HA is enabled. Contributed by Jian He
+ (cherry picked from commit
+ b91ef0c502d2d0c98d8c66fa1a4e37cde5f07d24)
+
+---
+ .../yarn/server/resourcemanager/RMAppManager.java  |    2 +-
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |    6 ++-
+ .../yarn/server/resourcemanager/TestRMRestart.java |   50 ++++++++++++++++++++
+ .../rmapp/TestRMAppTransitions.java                |   20 +++++++-
+ 4 files changed, 74 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
+index 51024cf..a789e92 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
+@@ -401,7 +401,7 @@ private boolean isApplicationInFinalState(RMAppState rmAppState) {
+     }
+   }
+   
+-  private Credentials parseCredentials(ApplicationSubmissionContext application) 
++  protected Credentials parseCredentials(ApplicationSubmissionContext application)
+       throws IOException {
+     Credentials credentials = new Credentials();
+     DataInputByteBuffer dibb = new DataInputByteBuffer();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 65c7209..708be5e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -158,8 +158,10 @@
+         RMAppEventType.RECOVER, new RMAppRecoveredTransition())
+     .addTransition(RMAppState.NEW, RMAppState.KILLED, RMAppEventType.KILL,
+         new AppKilledTransition())
+-    .addTransition(RMAppState.NEW, RMAppState.FAILED,
+-        RMAppEventType.APP_REJECTED, new AppRejectedTransition())
++    .addTransition(RMAppState.NEW, RMAppState.FINAL_SAVING,
++        RMAppEventType.APP_REJECTED,
++        new FinalSavingTransition(new AppRejectedTransition(),
++          RMAppState.FAILED))
+ 
+     // Transitions from NEW_SAVING state
+     .addTransition(RMAppState.NEW_SAVING, RMAppState.NEW_SAVING,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index 79368d5..5bd0f43 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -65,6 +65,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ApplicationReport;
++import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.api.records.ContainerState;
+@@ -92,6 +93,8 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
++import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
+ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.apache.log4j.Level;
+@@ -1614,6 +1617,53 @@ public void testClientRetryOnKillingApplication() throws Exception {
+     Assert.assertEquals(2, ((TestMemoryRMStateStore) memStore).updateApp);
+   }
+ 
++  // Test Application that fails on submission is saved in state store.
++  @Test (timeout = 20000)
++  public void testAppFailedOnSubmissionSavedInStateStore() throws Exception {
++    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
++      "kerberos");
++    UserGroupInformation.setConfiguration(conf);
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++
++    MockRM rm1 = new TestSecurityMockRM(conf, memStore) {
++      @Override
++      protected RMAppManager createRMAppManager() {
++        return new TestRMAppManager(this.rmContext, this.scheduler,
++          this.masterService, this.applicationACLsManager, conf);
++      }
++
++      class TestRMAppManager extends RMAppManager {
++
++        public TestRMAppManager(RMContext context, YarnScheduler scheduler,
++            ApplicationMasterService masterService,
++            ApplicationACLsManager applicationACLsManager, Configuration conf) {
++          super(context, scheduler, masterService, applicationACLsManager, conf);
++        }
++
++        @Override
++        protected Credentials parseCredentials(
++            ApplicationSubmissionContext application) throws IOException {
++          throw new IOException("Parsing credential error.");
++        }
++      }
++    };
++    rm1.start();
++    RMApp app1 =
++        rm1.submitApp(200, "name", "user",
++          new HashMap<ApplicationAccessType, String>(), false, "default", -1,
++          null, "MAPREDUCE", false);
++    rm1.waitForState(app1.getApplicationId(), RMAppState.FAILED);
++    // Check app staet is saved in state store.
++    Assert.assertEquals(RMAppState.FAILED, memStore.getState()
++      .getApplicationState().get(app1.getApplicationId()).getState());
++
++    MockRM rm2 = new TestSecurityMockRM(conf, memStore);
++    rm2.start();
++    // Restarted RM has the failed app info too.
++    rm2.waitForState(app1.getApplicationId(), RMAppState.FAILED);
++  }
++
+   @SuppressWarnings("resource")
+   @Test (timeout = 60000)
+   public void testQueueMetricsOnRMRestart() throws Exception {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+index 0f1ec09..0ec9826 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+@@ -550,8 +550,26 @@ public void testAppNewReject() throws IOException {
+     rmDispatcher.await();
+     sendAppUpdateSavedEvent(application);
+     assertFailed(application, rejectedText);
+-    assertAppFinalStateNotSaved(application);
++    assertAppFinalStateSaved(application);
++    verifyApplicationFinished(RMAppState.FAILED);
++  }
++
++  @Test (timeout = 30000)
++  public void testAppNewRejectAddToStore() throws IOException {
++    LOG.info("--- START: testAppNewRejectAddToStore ---");
++
++    RMApp application = createNewTestApp(null);
++    // NEW => FAILED event RMAppEventType.APP_REJECTED
++    String rejectedText = "Test Application Rejected";
++    RMAppEvent event =
++        new RMAppRejectedEvent(application.getApplicationId(), rejectedText);
++    application.handle(event);
++    rmDispatcher.await();
++    sendAppUpdateSavedEvent(application);
++    assertFailed(application, rejectedText);
++    assertAppFinalStateSaved(application);
+     verifyApplicationFinished(RMAppState.FAILED);
++    rmContext.getStateStore().removeApplication(application);
+   }
+ 
+   @Test (timeout = 30000)
+-- 
+1.7.9.5
+

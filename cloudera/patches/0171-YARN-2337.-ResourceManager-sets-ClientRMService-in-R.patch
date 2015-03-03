@@ -1,0 +1,32 @@
+From e9b58e9a6745da14856eedd3caaef63d6ee3c719 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Mon, 11 Aug 2014 00:13:27 +0000
+Subject: [PATCH 171/813] YARN-2337. ResourceManager sets ClientRMService in
+ RMContext multiple times. (Zhihai Xu via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1617183 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2dc8937afb6c4b26bd8e57c8d871b24aedbe4ef5)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+
+(cherry picked from commit 9dd526c171543ce6563247c3b4ea81cb936efa6c)
+---
+ .../server/resourcemanager/ResourceManager.java    |    1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index f08d346..684490a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -458,7 +458,6 @@ protected void serviceInit(Configuration configuration) throws Exception {
+       rmDispatcher.register(RMAppManagerEventType.class, rmAppManager);
+ 
+       clientRM = createClientRMService();
+-      rmContext.setClientRMService(clientRM);
+       addService(clientRM);
+       rmContext.setClientRMService(clientRM);
+ 
+-- 
+1.7.9.5
+

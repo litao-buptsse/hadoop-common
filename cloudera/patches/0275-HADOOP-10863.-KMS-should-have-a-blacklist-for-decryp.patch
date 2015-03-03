@@ -1,0 +1,555 @@
+From 0474f44632449a0b719557d7a7471aea393ca5f2 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Wed, 3 Sep 2014 15:08:55 -0700
+Subject: [PATCH 275/813] HADOOP-10863. KMS should have a blacklist for
+ decrypting EEKs. (asuresh via tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+	hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+---
+ hadoop-common-project/hadoop-common/CHANGES.txt    |    5 +-
+ .../security/authorize/AccessControlList.java      |   12 ++-
+ .../apache/hadoop/crypto/key/kms/server/KMS.java   |   27 ++----
+ .../hadoop/crypto/key/kms/server/KMSACLs.java      |   55 ++++++++++-
+ .../hadoop-kms/src/site/apt/index.apt.vm           |   88 ++++++++++++++++-
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |  100 ++++++++++++++++++--
+ .../hadoop/crypto/key/kms/server/TestKMSACLs.java  |    2 +-
+ 7 files changed, 253 insertions(+), 36 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/CHANGES.txt b/hadoop-common-project/hadoop-common/CHANGES.txt
+index 370c7b5..e973c0e 100644
+--- a/hadoop-common-project/hadoop-common/CHANGES.txt
++++ b/hadoop-common-project/hadoop-common/CHANGES.txt
+@@ -1,6 +1,6 @@
+ Hadoop Change Log
+ 
+-Release 2.5.0 - 2014-08-11
++release 2.5.0 - 2014-08-11
+ 
+   INCOMPATIBLE CHANGES
+ 
+@@ -131,6 +131,9 @@ Release 2.5.0 - 2014-08-11
+     HADOOP-10896. Update compatibility doc to capture visibility of 
+     un-annotated classes/ methods. (kasha)
+ 
++    HADOOP-10863. KMS should have a blacklist for decrypting EEKs. 
++    (asuresh via tucu)
++
+   OPTIMIZATIONS
+ 
+     HADOOP-10674. Improve PureJavaCrc32 performance and use java.util.zip.CRC32
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/AccessControlList.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/AccessControlList.java
+index f78602a..d250df1 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/AccessControlList.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/AccessControlList.java
+@@ -221,7 +221,13 @@ public void removeGroup(String group) {
+     return groups;
+   }
+ 
+-  public boolean isUserAllowed(UserGroupInformation ugi) {
++  /**
++   * Checks if a user represented by the provided {@link UserGroupInformation}
++   * is a member of the Access Control List
++   * @param ugi UserGroupInformation to check if contained in the ACL
++   * @return true if ugi is member of the list
++   */
++  public final boolean isUserInList(UserGroupInformation ugi) {
+     if (allAllowed || users.contains(ugi.getShortUserName())) {
+       return true;
+     } else {
+@@ -234,6 +240,10 @@ public boolean isUserAllowed(UserGroupInformation ugi) {
+     return false;
+   }
+ 
++  public boolean isUserAllowed(UserGroupInformation ugi) {
++    return isUserInList(ugi);
++  }
++
+   /**
+    * Returns descriptive way of users and groups that are part of this ACL.
+    * Use {@link #getAclString()} to get the exact String that can be given to
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+index 608751a..8122dea 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+@@ -26,10 +26,10 @@
+ import org.apache.hadoop.crypto.key.kms.KMSRESTConstants;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
+ import org.apache.hadoop.security.token.delegation.web.HttpUserGroupInformation;
+ 
++
+ import javax.ws.rs.Consumes;
+ import javax.ws.rs.DELETE;
+ import javax.ws.rs.DefaultValue;
+@@ -73,29 +73,14 @@ public KMS() throws Exception {
+     kmsAudit= KMSWebApp.getKMSAudit();
+   }
+ 
+-
+-  private static final String UNAUTHORIZED_MSG_WITH_KEY =
+-      "User:%s not allowed to do '%s' on '%s'";
+-
+-  private static final String UNAUTHORIZED_MSG_WITHOUT_KEY =
+-      "User:%s not allowed to do '%s'";
+-
+   private void assertAccess(KMSACLs.Type aclType, UserGroupInformation ugi,
+       KMSOp operation) throws AccessControlException {
+-    assertAccess(aclType, ugi, operation, null);
++    KMSWebApp.getACLs().assertAccess(aclType, ugi, operation, null);
+   }
+-
+-  private void assertAccess(KMSACLs.Type aclType,
+-      UserGroupInformation ugi, KMSOp operation, String key)
+-      throws AccessControlException {
+-    if (!KMSWebApp.getACLs().hasAccess(aclType, ugi)) {
+-      KMSWebApp.getUnauthorizedCallsMeter().mark();
+-      kmsAudit.unauthorized(ugi, operation, key);
+-      throw new AuthorizationException(String.format(
+-          (key != null) ? UNAUTHORIZED_MSG_WITH_KEY
+-                        : UNAUTHORIZED_MSG_WITHOUT_KEY,
+-          ugi.getShortUserName(), operation, key));
+-    }
++  
++  private void assertAccess(KMSACLs.Type aclType, UserGroupInformation ugi,
++      KMSOp operation, String key) throws AccessControlException {
++    KMSWebApp.getACLs().assertAccess(aclType, ugi, operation, key);
+   }
+ 
+   private static KeyProvider.KeyVersion removeKeyMaterial(
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
+index a6c5bf4..8a10bb2 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
+@@ -19,8 +19,11 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.key.kms.server.KMS.KMSOp;
++import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authorize.AccessControlList;
++import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -39,14 +42,23 @@
+ public class KMSACLs implements Runnable {
+   private static final Logger LOG = LoggerFactory.getLogger(KMSACLs.class);
+ 
++  private static final String UNAUTHORIZED_MSG_WITH_KEY =
++      "User:%s not allowed to do '%s' on '%s'";
++
++  private static final String UNAUTHORIZED_MSG_WITHOUT_KEY =
++      "User:%s not allowed to do '%s'";
+ 
+   public enum Type {
+     CREATE, DELETE, ROLLOVER, GET, GET_KEYS, GET_METADATA,
+     SET_KEY_MATERIAL, GENERATE_EEK, DECRYPT_EEK;
+ 
+-    public String getConfigKey() {
++    public String getAclConfigKey() {
+       return KMSConfiguration.CONFIG_PREFIX + "acl." + this.toString();
+     }
++
++    public String getBlacklistConfigKey() {
++      return KMSConfiguration.CONFIG_PREFIX + "blacklist." + this.toString();
++    }
+   }
+ 
+   public static final String ACL_DEFAULT = AccessControlList.WILDCARD_ACL_VALUE;
+@@ -54,6 +66,7 @@ public String getConfigKey() {
+   public static final int RELOADER_SLEEP_MILLIS = 1000;
+ 
+   private volatile Map<Type, AccessControlList> acls;
++  private volatile Map<Type, AccessControlList> blacklistedAcls;
+   private ScheduledExecutorService executorService;
+   private long lastReload;
+ 
+@@ -70,12 +83,20 @@ public KMSACLs() {
+ 
+   private void setACLs(Configuration conf) {
+     Map<Type, AccessControlList> tempAcls = new HashMap<Type, AccessControlList>();
++    Map<Type, AccessControlList> tempBlacklist = new HashMap<Type, AccessControlList>();
+     for (Type aclType : Type.values()) {
+-      String aclStr = conf.get(aclType.getConfigKey(), ACL_DEFAULT);
++      String aclStr = conf.get(aclType.getAclConfigKey(), ACL_DEFAULT);
+       tempAcls.put(aclType, new AccessControlList(aclStr));
++      String blacklistStr = conf.get(aclType.getBlacklistConfigKey());
++      if (blacklistStr != null) {
++        // Only add if blacklist is present
++        tempBlacklist.put(aclType, new AccessControlList(blacklistStr));
++        LOG.info("'{}' Blacklist '{}'", aclType, blacklistStr);
++      }
+       LOG.info("'{}' ACL '{}'", aclType, aclStr);
+     }
+     acls = tempAcls;
++    blacklistedAcls = tempBlacklist;
+   }
+ 
+   @Override
+@@ -109,12 +130,38 @@ private Configuration loadACLs() {
+     lastReload = System.currentTimeMillis();
+     Configuration conf = KMSConfiguration.getACLsConf();
+     // triggering the resource loading.
+-    conf.get(Type.CREATE.getConfigKey());
++    conf.get(Type.CREATE.getAclConfigKey());
+     return conf;
+   }
+ 
++  /**
++   * First Check if user is in ACL for the KMS operation, if yes, then
++   * return true if user is not present in any configured blacklist for
++   * the operation
++   * @param type KMS Operation
++   * @param ugi UserGroupInformation of user
++   * @return true is user has access
++   */
+   public boolean hasAccess(Type type, UserGroupInformation ugi) {
+-    return acls.get(type).isUserAllowed(ugi);
++    boolean access = acls.get(type).isUserAllowed(ugi);
++    if (access) {
++      AccessControlList blacklist = blacklistedAcls.get(type);
++      access = (blacklist == null) || !blacklist.isUserInList(ugi);
++    }
++    return access;
++  }
++
++  public void assertAccess(KMSACLs.Type aclType,
++      UserGroupInformation ugi, KMSOp operation, String key)
++      throws AccessControlException {
++    if (!KMSWebApp.getACLs().hasAccess(aclType, ugi)) {
++      KMSWebApp.getUnauthorizedCallsMeter().mark();
++      KMSWebApp.getKMSAudit().unauthorized(ugi, operation, key);
++      throw new AuthorizationException(String.format(
++          (key != null) ? UNAUTHORIZED_MSG_WITH_KEY
++                        : UNAUTHORIZED_MSG_WITHOUT_KEY,
++          ugi.getShortUserName(), operation, key));
++    }
+   }
+ 
+ }
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index b7ea492..1fdee47 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -274,8 +274,13 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   KMS ACLs configuration are defined in the KMS <<<etc/hadoop/kms-acls.xml>>>
+   configuration file. This file is hot-reloaded when it changes.
+ 
+-  KMS supports a fine grained access control via a set ACL
+-  configuration properties:
++  KMS supports both fine grained access control as well as blacklist for kms
++  operations via a set ACL configuration properties.
++
++  A user accessing KMS is first checked for inclusion in the Access Control
++  List for the requested operation and then checked for exclusion in the
++  Black list for the operation before access is granted.
++
+ 
+ +---+
+   <property>
+@@ -289,6 +294,16 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.CREATE</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for create-key operations.
++      If the user does is in the Blacklist, the key material is not returned
++      as part of the response.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.DELETE</name>
+     <value>*</value>
+     <description>
+@@ -297,6 +312,14 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.DELETE</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for delete-key operations.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.ROLLOVER</name>
+     <value>*</value>
+     <description>
+@@ -307,6 +330,14 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.ROLLOVER</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for rollover-key operations.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.GET</name>
+     <value>*</value>
+     <description>
+@@ -315,6 +346,14 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.GET</name>
++    <value>hdfs,foo</value>
++    <description>
++      ACL for get-key-version and get-current-key operations.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.GET_KEYS</name>
+     <value>*</value>
+     <description>
+@@ -323,6 +362,14 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.GET_KEYS</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for get-keys operation.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.GET_METADATA</name>
+     <value>*</value>
+     <description>
+@@ -331,6 +378,14 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.GET_METADATA</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for get-key-metadata and get-keys-metadata operations.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.SET_KEY_MATERIAL</name>
+     <value>*</value>
+     <description>
+@@ -340,6 +395,15 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.SET_KEY_MATERIAL</name>
++    <value>hdfs,foo</value>
++    <description>
++        Complimentary Blacklist for CREATE and ROLLOVER operation to allow the client
++        to provide the key material when creating or rolling a key.
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.GENERATE_EEK</name>
+     <value>*</value>
+     <description>
+@@ -349,6 +413,15 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+   </property>
+ 
+   <property>
++    <name>hadoop.kms.blacklist.GENERATE_EEK</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for generateEncryptedKey
++      CryptoExtension operations
++    </description>
++  </property>
++
++  <property>
+     <name>hadoop.kms.acl.DECRYPT_EEK</name>
+     <value>*</value>
+     <description>
+@@ -357,6 +430,17 @@ $ keytool -genkey -alias tomcat -keyalg RSA
+     </description>
+   </property>
+ </configuration>
++
++  <property>
++    <name>hadoop.kms.blacklist.DECRYPT_EEK</name>
++    <value>hdfs,foo</value>
++    <description>
++      Blacklist for decrypt EncryptedKey
++      CryptoExtension operations
++    </description>
++  </property>
++</configuration>
++
+ +---+
+ 
+ ** KMS Delegation Token Configuration
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index be0a229..52f6354 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -268,6 +268,8 @@ public static void setUpMiniKdc() throws Exception {
+     List<String> principals = new ArrayList<String>();
+     principals.add("HTTP/localhost");
+     principals.add("client");
++    principals.add("hdfs");
++    principals.add("otheradmin");
+     principals.add("client/host");
+     principals.add("client1");
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+@@ -621,12 +623,12 @@ public void testACLs() throws Exception {
+     conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
+ 
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+-      conf.set(type.getConfigKey(), type.toString());
++      conf.set(type.getAclConfigKey(), type.toString());
+     }
+-    conf.set(KMSACLs.Type.CREATE.getConfigKey(),
++    conf.set(KMSACLs.Type.CREATE.getAclConfigKey(),
+         KMSACLs.Type.CREATE.toString() + ",SET_KEY_MATERIAL");
+ 
+-    conf.set(KMSACLs.Type.ROLLOVER.getConfigKey(),
++    conf.set(KMSACLs.Type.ROLLOVER.getAclConfigKey(),
+         KMSACLs.Type.ROLLOVER.toString() + ",SET_KEY_MATERIAL");
+ 
+     writeConf(testDir, conf);
+@@ -884,7 +886,7 @@ public Void run() throws Exception {
+ 
+         // test ACL reloading
+         Thread.sleep(10); // to ensure the ACLs file modifiedTime is newer
+-        conf.set(KMSACLs.Type.CREATE.getConfigKey(), "foo");
++        conf.set(KMSACLs.Type.CREATE.getAclConfigKey(), "foo");
+         writeConf(testDir, conf);
+         Thread.sleep(1000);
+ 
+@@ -915,6 +917,92 @@ public Void run() throws Exception {
+   }
+ 
+   @Test
++  public void testKMSBlackList() throws Exception {
++    Configuration conf = new Configuration();
++    conf.set("hadoop.security.authentication", "kerberos");
++    UserGroupInformation.setConfiguration(conf);
++    File testDir = getTestDir();
++    conf = createBaseKMSConf(testDir);
++    conf.set("hadoop.kms.authentication.type", "kerberos");
++    conf.set("hadoop.kms.authentication.kerberos.keytab",
++        keytab.getAbsolutePath());
++    conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
++    conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
++    for (KMSACLs.Type type : KMSACLs.Type.values()) {
++      conf.set(type.getAclConfigKey(), " ");
++    }
++    conf.set(KMSACLs.Type.CREATE.getAclConfigKey(), "client,hdfs,otheradmin");
++    conf.set(KMSACLs.Type.GENERATE_EEK.getAclConfigKey(), "client,hdfs,otheradmin");
++    conf.set(KMSACLs.Type.DECRYPT_EEK.getAclConfigKey(), "client,hdfs,otheradmin");
++    conf.set(KMSACLs.Type.DECRYPT_EEK.getBlacklistConfigKey(), "hdfs,otheradmin");
++
++    writeConf(testDir, conf);
++
++    runServer(null, null, testDir, new KMSCallable() {
++      @Override
++      public Void call() throws Exception {
++        final Configuration conf = new Configuration();
++        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
++        final URI uri = createKMSUri(getKMSUrl());
++
++        doAs("client", new PrivilegedExceptionAction<Void>() {
++          @Override
++          public Void run() throws Exception {
++            try {
++              KMSClientProvider kp = new KMSClientProvider(uri, conf);
++              KeyProvider.KeyVersion kv = kp.createKey("ck0",
++                  new KeyProvider.Options(conf));
++              EncryptedKeyVersion eek =
++                  kp.generateEncryptedKey("ck0");
++              kp.decryptEncryptedKey(eek);
++              Assert.assertNull(kv.getMaterial());
++            } catch (Exception ex) {
++              Assert.fail(ex.getMessage());
++            }
++            return null;
++          }
++        });
++
++        doAs("hdfs", new PrivilegedExceptionAction<Void>() {
++          @Override
++          public Void run() throws Exception {
++            try {
++              KMSClientProvider kp = new KMSClientProvider(uri, conf);
++              KeyProvider.KeyVersion kv = kp.createKey("ck1",
++                  new KeyProvider.Options(conf));
++              EncryptedKeyVersion eek =
++                  kp.generateEncryptedKey("ck1");
++              kp.decryptEncryptedKey(eek);
++              Assert.fail("admin user must not be allowed to decrypt !!");
++            } catch (Exception ex) {
++            }
++            return null;
++          }
++        });
++
++        doAs("otheradmin", new PrivilegedExceptionAction<Void>() {
++          @Override
++          public Void run() throws Exception {
++            try {
++              KMSClientProvider kp = new KMSClientProvider(uri, conf);
++              KeyProvider.KeyVersion kv = kp.createKey("ck2",
++                  new KeyProvider.Options(conf));
++              EncryptedKeyVersion eek =
++                  kp.generateEncryptedKey("ck2");
++              kp.decryptEncryptedKey(eek);
++              Assert.fail("admin user must not be allowed to decrypt !!");
++            } catch (Exception ex) {
++            }
++            return null;
++          }
++        });
++
++        return null;
++      }
++    });
++  }
++
++  @Test
+   public void testServicePrincipalACLs() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set("hadoop.security.authentication", "kerberos");
+@@ -927,9 +1015,9 @@ public void testServicePrincipalACLs() throws Exception {
+     conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
+     conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+-      conf.set(type.getConfigKey(), " ");
++      conf.set(type.getAclConfigKey(), " ");
+     }
+-    conf.set(KMSACLs.Type.CREATE.getConfigKey(), "client");
++    conf.set(KMSACLs.Type.CREATE.getAclConfigKey(), "client");
+ 
+     writeConf(testDir, conf);
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java
+index 7c0ad3b..abdf3c2 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSACLs.java
+@@ -37,7 +37,7 @@ public void testDefaults() {
+   public void testCustom() {
+     Configuration conf = new Configuration(false);
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+-      conf.set(type.getConfigKey(), type.toString() + " ");
++      conf.set(type.getAclConfigKey(), type.toString() + " ");
+     }
+     KMSACLs acls = new KMSACLs(conf);
+     for (KMSACLs.Type type : KMSACLs.Type.values()) {
+-- 
+1.7.9.5
+

@@ -1,0 +1,69 @@
+From 95d2a43224264a527f43e83deba94644af4498ef Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Fri, 31 Oct 2014 22:53:04 +0000
+Subject: [PATCH 713/813] YARN-2707. Potential null dereference in FSDownload.
+ Contributed by Gera Shegalov (cherry picked from
+ commit 7bc179f9f5e1e270fd5e6f1ad29b0f32fe371d15)
+
+(cherry picked from commit ada40aa9339acf09864edb1b2669da8f3d033b5f)
+---
+ .../org/apache/hadoop/yarn/util/FSDownload.java    |   13 +++++--------
+ .../apache/hadoop/yarn/util/TestFSDownload.java    |    3 +--
+ 2 files changed, 6 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/FSDownload.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/FSDownload.java
+index 514632a..2737cce 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/FSDownload.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/FSDownload.java
+@@ -267,7 +267,7 @@ private Path copy(Path sCopy, Path dstdir) throws IOException {
+     return dCopy;
+   }
+ 
+-  private long unpack(File localrsrc, File dst, Pattern pattern) throws IOException {
++  private long unpack(File localrsrc, File dst) throws IOException {
+     switch (resource.getType()) {
+     case ARCHIVE: {
+       String lowerDst = dst.getName().toLowerCase();
+@@ -291,7 +291,9 @@ private long unpack(File localrsrc, File dst, Pattern pattern) throws IOExceptio
+     case PATTERN: {
+       String lowerDst = dst.getName().toLowerCase();
+       if (lowerDst.endsWith(".jar")) {
+-        RunJar.unJar(localrsrc, dst, pattern);
++        String p = resource.getPattern();
++        RunJar.unJar(localrsrc, dst,
++            p == null ? RunJar.MATCH_ANY : Pattern.compile(p));
+         File newDst = new File(dst, dst.getName());
+         if (!dst.exists() && !dst.mkdir()) {
+           throw new IOException("Unable to create directory: [" + dst + "]");
+@@ -357,12 +359,7 @@ public Path run() throws Exception {
+               return files.makeQualified(copy(sCopy, dst_work));
+             };
+           });
+-      Pattern pattern = null;
+-      String p = resource.getPattern();
+-      if (p != null) {
+-        pattern = Pattern.compile(p);
+-      }
+-      unpack(new File(dTmp.toUri()), new File(dFinal.toUri()), pattern);
++      unpack(new File(dTmp.toUri()), new File(dFinal.toUri()));
+       changePermissions(dFinal.getFileSystem(conf), dFinal);
+       files.rename(dst_work, destDirPath, Rename.OVERWRITE);
+     } catch (Exception e) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestFSDownload.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestFSDownload.java
+index 02ba5fa..07dd630 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestFSDownload.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/util/TestFSDownload.java
+@@ -500,9 +500,8 @@ private void downloadWithFileType(TEST_FILE_TYPE fileType) throws IOException,
+     pending.put(rsrc, exec.submit(fsd));
+     exec.shutdown();
+     while (!exec.awaitTermination(1000, TimeUnit.MILLISECONDS));
+-    Assert.assertTrue(pending.get(rsrc).isDone());
+-    
+     try {
++      pending.get(rsrc).get(); // see if there was an Exception during download
+       FileStatus[] filesstatus = files.getDefaultFileSystem().listStatus(
+           basedir);
+       for (FileStatus filestatus : filesstatus) {
+-- 
+1.7.9.5
+

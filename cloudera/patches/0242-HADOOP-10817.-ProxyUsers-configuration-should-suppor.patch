@@ -1,0 +1,705 @@
+From d8dc0cb367e760848cd81e7d91992b5203ae04aa Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Fri, 18 Jul 2014 19:43:38 +0000
+Subject: [PATCH 242/813] HADOOP-10817. ProxyUsers configuration should
+ support configurable prefixes. (tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1611781 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../authorize/DefaultImpersonationProvider.java    |   65 +++++++---
+ .../security/authorize/ImpersonationProvider.java  |   15 +++
+ .../hadoop/security/authorize/ProxyUsers.java      |   29 ++++-
+ .../org/apache/hadoop/ipc/MiniRPCBenchmark.java    |    8 +-
+ .../hadoop/security/TestDoAsEffectiveUser.java     |   23 ++--
+ .../hadoop/security/authorize/TestProxyUsers.java  |  126 ++++++++++++++++----
+ .../apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java   |    8 +-
+ .../apache/hadoop/hdfs/nfs/nfs3/TestWrites.java    |    6 +-
+ .../security/TestDelegationTokenForProxyUser.java  |    6 +-
+ .../hadoop/hdfs/server/common/TestJspHelper.java   |    6 +-
+ .../hadoop/security/TestRefreshUserMappings.java   |    6 +-
+ 11 files changed, 224 insertions(+), 74 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java
+index afa4658..ab1c390 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java
+@@ -24,37 +24,64 @@
+ import java.util.Map.Entry;
+ import java.util.regex.Pattern;
+ 
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.util.MachineList;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
++@InterfaceStability.Unstable
++@InterfaceAudience.Public
+ public class DefaultImpersonationProvider implements ImpersonationProvider {
+   private static final String CONF_HOSTS = ".hosts";
+   private static final String CONF_USERS = ".users";
+   private static final String CONF_GROUPS = ".groups";
+-  private static final String CONF_HADOOP_PROXYUSER = "hadoop.proxyuser.";
+-  private static final String CONF_HADOOP_PROXYUSER_RE = "hadoop\\.proxyuser\\.";
+-  private static final String CONF_HADOOP_PROXYUSER_RE_USERS_GROUPS = 
+-      CONF_HADOOP_PROXYUSER_RE+"[^.]*(" + Pattern.quote(CONF_USERS) +
+-      "|" + Pattern.quote(CONF_GROUPS) + ")";
+-  private static final String CONF_HADOOP_PROXYUSER_RE_HOSTS = 
+-      CONF_HADOOP_PROXYUSER_RE+"[^.]*"+ Pattern.quote(CONF_HOSTS);
+   // acl and list of hosts per proxyuser
+   private Map<String, AccessControlList> proxyUserAcl = 
+     new HashMap<String, AccessControlList>();
+-  private static Map<String, MachineList> proxyHosts = 
++  private Map<String, MachineList> proxyHosts =
+     new HashMap<String, MachineList>();
+   private Configuration conf;
+ 
++
++  private static DefaultImpersonationProvider testProvider;
++
++  public static synchronized DefaultImpersonationProvider getTestProvider() {
++    if (testProvider == null) {
++      testProvider = new DefaultImpersonationProvider();
++      testProvider.setConf(new Configuration());
++      testProvider.init(ProxyUsers.CONF_HADOOP_PROXYUSER);
++    }
++    return testProvider;
++  }
++
+   @Override
+   public void setConf(Configuration conf) {
+     this.conf = conf;
++  }
++
++  private String configPrefix;
+ 
+-    // get list of users and groups per proxyuser
++  @Override
++  public void init(String configurationPrefix) {
++    configPrefix = configurationPrefix +
++        (configurationPrefix.endsWith(".") ? "" : ".");
++    
++    // constructing regex to match the following patterns:
++    //   $configPrefix.[ANY].users
++    //   $configPrefix.[ANY].groups
++    //   $configPrefix.[ANY].hosts
++    //
++    String prefixRegEx = configPrefix.replace(".", "\\.");
++    String usersGroupsRegEx = prefixRegEx + "[^.]*(" +
++        Pattern.quote(CONF_USERS) + "|" + Pattern.quote(CONF_GROUPS) + ")";
++    String hostsRegEx = prefixRegEx + "[^.]*" + Pattern.quote(CONF_HOSTS);
++
++  // get list of users and groups per proxyuser
+     Map<String,String> allMatchKeys = 
+-        conf.getValByRegex(CONF_HADOOP_PROXYUSER_RE_USERS_GROUPS); 
++        conf.getValByRegex(usersGroupsRegEx);
+     for(Entry<String, String> entry : allMatchKeys.entrySet()) {  
+       String aclKey = getAclKey(entry.getKey());
+       if (!proxyUserAcl.containsKey(aclKey)) {
+@@ -65,7 +92,7 @@ public void setConf(Configuration conf) {
+     }
+ 
+     // get hosts per proxyuser
+-    allMatchKeys = conf.getValByRegex(CONF_HADOOP_PROXYUSER_RE_HOSTS);
++    allMatchKeys = conf.getValByRegex(hostsRegEx);
+     for(Entry<String, String> entry : allMatchKeys.entrySet()) {
+       proxyHosts.put(entry.getKey(),
+           new MachineList(entry.getValue()));
+@@ -86,8 +113,8 @@ public void authorize(UserGroupInformation user,
+       return;
+     }
+     
+-    AccessControlList acl = proxyUserAcl.get(
+-        CONF_HADOOP_PROXYUSER+realUser.getShortUserName());
++    AccessControlList acl = proxyUserAcl.get(configPrefix +
++        realUser.getShortUserName());
+     if (acl == null || !acl.isUserAllowed(user)) {
+       throw new AuthorizationException("User: " + realUser.getUserName()
+           + " is not allowed to impersonate " + user.getUserName());
+@@ -116,8 +143,8 @@ private String getAclKey(String key) {
+    * @param userName name of the superuser
+    * @return configuration key for superuser usergroups
+    */
+-  public static String getProxySuperuserUserConfKey(String userName) {
+-    return CONF_HADOOP_PROXYUSER+userName+CONF_USERS;
++  public String getProxySuperuserUserConfKey(String userName) {
++    return configPrefix + userName + CONF_USERS;
+   }
+ 
+   /**
+@@ -126,8 +153,8 @@ public static String getProxySuperuserUserConfKey(String userName) {
+    * @param userName name of the superuser
+    * @return configuration key for superuser groups
+    */
+-  public static String getProxySuperuserGroupConfKey(String userName) {
+-    return CONF_HADOOP_PROXYUSER+userName+CONF_GROUPS;
++  public String getProxySuperuserGroupConfKey(String userName) {
++    return configPrefix + userName + CONF_GROUPS;
+   }
+ 
+   /**
+@@ -136,8 +163,8 @@ public static String getProxySuperuserGroupConfKey(String userName) {
+    * @param userName name of the superuser
+    * @return configuration key for superuser ip-addresses
+    */
+-  public static String getProxySuperuserIpConfKey(String userName) {
+-    return CONF_HADOOP_PROXYUSER+userName+CONF_HOSTS;
++  public String getProxySuperuserIpConfKey(String userName) {
++    return configPrefix + userName + CONF_HOSTS;
+   }
+ 
+   @VisibleForTesting
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ImpersonationProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ImpersonationProvider.java
+index 6e7a395..8b483f0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ImpersonationProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ImpersonationProvider.java
+@@ -18,10 +18,25 @@
+ 
+ package org.apache.hadoop.security.authorize;
+ 
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.conf.Configurable;
+ import org.apache.hadoop.security.UserGroupInformation;
+ 
++@InterfaceStability.Unstable
++@InterfaceAudience.Public
+ public interface ImpersonationProvider  extends Configurable {
++
++
++  /**
++   * Specifies the configuration prefix for the proxy user properties and
++   * initializes the provider.
++   *
++   * @param configurationPrefix the configuration prefix for the proxy user
++   * properties
++   */
++  public void init(String configurationPrefix);
++
+   /**
+    * Authorize the superuser which is doing doAs
+    * 
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ProxyUsers.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ProxyUsers.java
+index e221ae3..60d82cb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ProxyUsers.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/ProxyUsers.java
+@@ -18,7 +18,9 @@
+ 
+ package org.apache.hadoop.security.authorize;
+ 
++import com.google.common.base.Preconditions;
+ import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -26,9 +28,12 @@
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
++@InterfaceStability.Unstable
+ @InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce", "HBase", "Hive"})
+ public class ProxyUsers {
+ 
++  public static final String CONF_HADOOP_PROXYUSER = "hadoop.proxyuser";
++
+   private static volatile ImpersonationProvider sip ;
+ 
+   /**
+@@ -54,15 +59,31 @@ public static void refreshSuperUserGroupsConfiguration() {
+   }
+ 
+   /**
+-   * refresh configuration
+-   * @param conf
++   * Refreshes configuration using the specified Proxy user prefix for
++   * properties.
++   *
++   * @param conf configuration
++   * @param proxyUserPrefix proxy user configuration prefix
+    */
+-  public static void refreshSuperUserGroupsConfiguration(Configuration conf) { 
++  public static void refreshSuperUserGroupsConfiguration(Configuration conf,
++      String proxyUserPrefix) {
++    Preconditions.checkArgument(proxyUserPrefix != null && 
++        !proxyUserPrefix.isEmpty(), "prefix cannot be NULL or empty");
+     // sip is volatile. Any assignment to it as well as the object's state
+     // will be visible to all the other threads. 
+-    sip = getInstance(conf);
++    ImpersonationProvider ip = getInstance(conf);
++    ip.init(proxyUserPrefix);
++    sip = ip;
+     ProxyServers.refresh(conf);
+   }
++
++  /**
++   * Refreshes configuration using the default Proxy user prefix for properties.
++   * @param conf configuration
++   */
++  public static void refreshSuperUserGroupsConfiguration(Configuration conf) {
++    refreshSuperUserGroupsConfiguration(conf, CONF_HADOOP_PROXYUSER);
++  }
+   
+   /**
+    * Authorize the superuser which is doing doAs
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java
+index 0bc0b04..cdbd557 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java
+@@ -327,8 +327,8 @@ long runMiniBenchmarkWithDelegationToken(Configuration conf,
+     String shortUserName =
+       UserGroupInformation.createRemoteUser(user).getShortUserName();
+     try {
+-      conf.setStrings(DefaultImpersonationProvider.getProxySuperuserGroupConfKey(shortUserName),
+-          GROUP_NAME_1);
++      conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++              getProxySuperuserGroupConfKey(shortUserName), GROUP_NAME_1);
+       configureSuperUserIPAddresses(conf, shortUserName);
+       // start the server
+       miniServer = new MiniServer(conf, user, keytabFile);
+@@ -411,7 +411,7 @@ private void configureSuperUserIPAddresses(Configuration conf,
+     }
+     builder.append("127.0.1.1,");
+     builder.append(InetAddress.getLocalHost().getCanonicalHostName());
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserIpConfKey(superUserShortName),
+-        builder.toString());
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(superUserShortName), builder.toString());
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
+index 42e7881..b44fa8b 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
+@@ -101,7 +101,8 @@ private void configureSuperUserIPAddresses(Configuration conf,
+     builder.append("127.0.1.1,");
+     builder.append(InetAddress.getLocalHost().getCanonicalHostName());
+     LOG.info("Local Ip addresses: "+builder.toString());
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserIpConfKey(superUserShortName),
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(superUserShortName),
+         builder.toString());
+   }
+   
+@@ -181,8 +182,8 @@ public Void run() throws IOException {
+   @Test(timeout=4000)
+   public void testRealUserSetup() throws IOException {
+     final Configuration conf = new Configuration();
+-    conf.setStrings(DefaultImpersonationProvider
+-        .getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME), "group1");
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++        getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME), "group1");
+     configureSuperUserIPAddresses(conf, REAL_USER_SHORT_NAME);
+     Server server = new RPC.Builder(conf).setProtocol(TestProtocol.class)
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+@@ -214,7 +215,8 @@ public void testRealUserSetup() throws IOException {
+   public void testRealUserAuthorizationSuccess() throws IOException {
+     final Configuration conf = new Configuration();
+     configureSuperUserIPAddresses(conf, REAL_USER_SHORT_NAME);
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
+         "group1");
+     Server server = new RPC.Builder(conf).setProtocol(TestProtocol.class)
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+@@ -248,9 +250,11 @@ public void testRealUserAuthorizationSuccess() throws IOException {
+   @Test
+   public void testRealUserIPAuthorizationFailure() throws IOException {
+     final Configuration conf = new Configuration();
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_SHORT_NAME),
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(REAL_USER_SHORT_NAME),
+         "20.20.20.20"); //Authorized IP address
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
+         "group1");
+     Server server = new RPC.Builder(conf).setProtocol(TestProtocol.class)
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+@@ -293,8 +297,8 @@ public String run() throws IOException {
+   @Test
+   public void testRealUserIPNotSpecified() throws IOException {
+     final Configuration conf = new Configuration();
+-    conf.setStrings(DefaultImpersonationProvider
+-        .getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME), "group1");
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++        getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME), "group1");
+     Server server = new RPC.Builder(conf).setProtocol(TestProtocol.class)
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+         .setNumHandlers(2).setVerbose(false).build();
+@@ -377,7 +381,8 @@ public String run() throws IOException {
+   public void testRealUserGroupAuthorizationFailure() throws IOException {
+     final Configuration conf = new Configuration();
+     configureSuperUserIPAddresses(conf, REAL_USER_SHORT_NAME);
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_SHORT_NAME),
+         "group3");
+     Server server = new RPC.Builder(conf).setProtocol(TestProtocol.class)
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java
+index 3823d70..dbcac67 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java
+@@ -111,10 +111,12 @@ public void testNetgroups () throws IOException{
+       groupMappingClassName);
+ 
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_NAME),
+         StringUtils.join(",", Arrays.asList(NETGROUP_NAMES)));
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(REAL_USER_NAME),
+         PROXY_IP);
+     
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+@@ -135,10 +137,12 @@ public void testNetgroups () throws IOException{
+   public void testProxyUsers() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserGroupConfKey(REAL_USER_NAME),
+       StringUtils.join(",", Arrays.asList(GROUP_NAMES)));
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       PROXY_IP);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+ 
+@@ -168,10 +172,12 @@ public void testProxyUsers() throws Exception {
+   public void testProxyUsersWithUserConf() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserUserConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserUserConfKey(REAL_USER_NAME),
+         StringUtils.join(",", Arrays.asList(AUTHORIZED_PROXY_USER_NAME)));
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(REAL_USER_NAME),
+         PROXY_IP);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+ 
+@@ -202,10 +208,12 @@ public void testProxyUsersWithUserConf() throws Exception {
+   public void testWildcardGroup() {
+     Configuration conf = new Configuration();
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserGroupConfKey(REAL_USER_NAME),
+       "*");
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       PROXY_IP);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+ 
+@@ -236,10 +244,12 @@ public void testWildcardGroup() {
+   public void testWildcardUser() {
+     Configuration conf = new Configuration();
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserUserConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserUserConfKey(REAL_USER_NAME),
+       "*");
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       PROXY_IP);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+ 
+@@ -270,10 +280,12 @@ public void testWildcardUser() {
+   public void testWildcardIP() {
+     Configuration conf = new Configuration();
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserGroupConfKey(REAL_USER_NAME),
+       StringUtils.join(",", Arrays.asList(GROUP_NAMES)));
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       "*");
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+ 
+@@ -301,10 +313,12 @@ public void testWildcardIP() {
+   public void testIPRange() {
+     Configuration conf = new Configuration();
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_NAME),
+         "*");
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(REAL_USER_NAME),
+         PROXY_IP_RANGE);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+ 
+@@ -324,16 +338,19 @@ public void testIPRange() {
+   public void testWithDuplicateProxyGroups() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserGroupConfKey(REAL_USER_NAME),
+       StringUtils.join(",", Arrays.asList(GROUP_NAMES,GROUP_NAMES)));
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       PROXY_IP);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+     
+     Collection<String> groupsToBeProxied = 
+         ProxyUsers.getDefaultImpersonationProvider().getProxyGroups().get(
+-        DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME));
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_NAME));
+     
+     assertEquals (1,groupsToBeProxied.size());
+   }
+@@ -342,16 +359,19 @@ public void testWithDuplicateProxyGroups() throws Exception {
+   public void testWithDuplicateProxyHosts() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider()
++          .getProxySuperuserGroupConfKey(REAL_USER_NAME),
+       StringUtils.join(",", Arrays.asList(GROUP_NAMES)));
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       StringUtils.join(",", Arrays.asList(PROXY_IP,PROXY_IP)));
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+     
+     Collection<String> hosts = 
+         ProxyUsers.getDefaultImpersonationProvider().getProxyHosts().get(
+-        DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME));
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(REAL_USER_NAME));
+     
+     assertEquals (1,hosts.size());
+   }
+@@ -391,26 +411,73 @@ public void testProxyUsersWithProviderOverride() throws Exception {
+   public void testWithProxyGroupsAndUsersWithSpaces() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserUserConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserUserConfKey(REAL_USER_NAME),
+         StringUtils.join(",", Arrays.asList(PROXY_USER_NAME + " ",AUTHORIZED_PROXY_USER_NAME, "ONEMORE")));
+ 
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserGroupConfKey(REAL_USER_NAME),
+       StringUtils.join(",", Arrays.asList(GROUP_NAMES)));
+     
+     conf.set(
+-      DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++      DefaultImpersonationProvider.getTestProvider().
++          getProxySuperuserIpConfKey(REAL_USER_NAME),
+       PROXY_IP);
+     
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+     
+     Collection<String> groupsToBeProxied = 
+         ProxyUsers.getDefaultImpersonationProvider().getProxyGroups().get(
+-        DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME));
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_NAME));
+     
+     assertEquals (GROUP_NAMES.length, groupsToBeProxied.size());
+   }
+ 
++  @Test(expected = IllegalArgumentException.class)
++  public void testProxyUsersWithNullPrefix() throws Exception {
++    ProxyUsers.refreshSuperUserGroupsConfiguration(new Configuration(false), 
++        null);
++  }
++
++  @Test(expected = IllegalArgumentException.class)
++  public void testProxyUsersWithEmptyPrefix() throws Exception {
++    ProxyUsers.refreshSuperUserGroupsConfiguration(new Configuration(false), 
++        "");
++  }
++
++  @Test
++  public void testProxyUsersWithCustomPrefix() throws Exception {
++    Configuration conf = new Configuration(false);
++    conf.set("x." + REAL_USER_NAME + ".users",
++        StringUtils.join(",", Arrays.asList(AUTHORIZED_PROXY_USER_NAME)));
++    conf.set("x." + REAL_USER_NAME+ ".hosts", PROXY_IP);
++    ProxyUsers.refreshSuperUserGroupsConfiguration(conf, "x");
++
++
++    // First try proxying a user that's allowed
++    UserGroupInformation realUserUgi = UserGroupInformation
++        .createRemoteUser(REAL_USER_NAME);
++    UserGroupInformation proxyUserUgi = UserGroupInformation.createProxyUserForTesting(
++        AUTHORIZED_PROXY_USER_NAME, realUserUgi, GROUP_NAMES);
++
++    // From good IP
++    assertAuthorized(proxyUserUgi, "1.2.3.4");
++    // From bad IP
++    assertNotAuthorized(proxyUserUgi, "1.2.3.5");
++
++    // Now try proxying a user that's not allowed
++    realUserUgi = UserGroupInformation.createRemoteUser(REAL_USER_NAME);
++    proxyUserUgi = UserGroupInformation.createProxyUserForTesting(
++        PROXY_USER_NAME, realUserUgi, GROUP_NAMES);
++
++    // From good IP
++    assertNotAuthorized(proxyUserUgi, "1.2.3.4");
++    // From bad IP
++    assertNotAuthorized(proxyUserUgi, "1.2.3.5");
++  }
++
+ 
+   private void assertNotAuthorized(UserGroupInformation proxyUgi, String host) {
+     try {
+@@ -430,6 +497,11 @@ private void assertAuthorized(UserGroupInformation proxyUgi, String host) {
+   }
+ 
+   static class TestDummyImpersonationProvider implements ImpersonationProvider {
++
++    @Override
++    public void init(String configurationPrefix) {
++    }
++
+     /**
+      * Authorize a user (superuser) to impersonate another user (user1) if the 
+      * superuser belongs to the group "sudo_user1" .
+@@ -460,11 +532,13 @@ public Configuration getConf() {
+   public static void loadTest(String ipString, int testRange) {
+     Configuration conf = new Configuration();
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER_NAME),
+         StringUtils.join(",", Arrays.asList(GROUP_NAMES)));
+ 
+     conf.set(
+-        DefaultImpersonationProvider.getProxySuperuserIpConfKey(REAL_USER_NAME),
++        DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(REAL_USER_NAME),
+         ipString
+         );
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
+index 617c31d..05ba2db 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
+@@ -72,11 +72,11 @@
+   public static void setup() throws Exception {
+     String currentUser = System.getProperty("user.name");
+     config.set(
+-            DefaultImpersonationProvider.getProxySuperuserGroupConfKey(currentUser),
+-            "*");
++            DefaultImpersonationProvider.getTestProvider().
++                getProxySuperuserGroupConfKey(currentUser), "*");
+     config.set(
+-            DefaultImpersonationProvider.getProxySuperuserIpConfKey(currentUser),
+-            "*");
++            DefaultImpersonationProvider.getTestProvider().
++                getProxySuperuserIpConfKey(currentUser), "*");
+     ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+     cluster = new MiniDFSCluster.Builder(config).numDataNodes(1).build();
+     cluster.waitActive();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+index 3945b29..32f9b2b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+@@ -312,10 +312,12 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+         System.getProperty("user.name"));
+     String currentUser = System.getProperty("user.name");
+     config.set(
+-            DefaultImpersonationProvider.getProxySuperuserGroupConfKey(currentUser),
++            DefaultImpersonationProvider.getTestProvider().
++                getProxySuperuserGroupConfKey(currentUser),
+             "*");
+     config.set(
+-            DefaultImpersonationProvider.getProxySuperuserIpConfKey(currentUser),
++            DefaultImpersonationProvider.getTestProvider().
++                getProxySuperuserIpConfKey(currentUser),
+             "*");
+     ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/security/TestDelegationTokenForProxyUser.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/security/TestDelegationTokenForProxyUser.java
+index fa29b4b..e6493a2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/security/TestDelegationTokenForProxyUser.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/security/TestDelegationTokenForProxyUser.java
+@@ -89,7 +89,8 @@ private static void configureSuperUserIPAddresses(Configuration conf,
+     builder.append("127.0.1.1,");
+     builder.append(InetAddress.getLocalHost().getCanonicalHostName());
+     LOG.info("Local Ip addresses: " + builder.toString());
+-    conf.setStrings(DefaultImpersonationProvider.getProxySuperuserIpConfKey(superUserShortName),
++    conf.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserIpConfKey(superUserShortName),
+         builder.toString());
+   }
+   
+@@ -101,7 +102,8 @@ public static void setUp() throws Exception {
+         DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_MAX_LIFETIME_KEY, 10000);
+     config.setLong(
+         DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_RENEW_INTERVAL_KEY, 5000);
+-    config.setStrings(DefaultImpersonationProvider.getProxySuperuserGroupConfKey(REAL_USER),
++    config.setStrings(DefaultImpersonationProvider.getTestProvider().
++            getProxySuperuserGroupConfKey(REAL_USER),
+         "group1");
+     config.setBoolean(
+         DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY, true);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
+index 87a2239..873bc88 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
+@@ -328,8 +328,10 @@ public void testGetProxyUgi() throws IOException {
+     String user = "TheNurse";
+     conf.set(DFSConfigKeys.HADOOP_SECURITY_AUTHENTICATION, "kerberos");
+     
+-    conf.set(DefaultImpersonationProvider.getProxySuperuserGroupConfKey(realUser), "*");
+-    conf.set(DefaultImpersonationProvider.getProxySuperuserIpConfKey(realUser), "*");
++    conf.set(DefaultImpersonationProvider.getTestProvider().
++        getProxySuperuserGroupConfKey(realUser), "*");
++    conf.set(DefaultImpersonationProvider.getTestProvider().
++        getProxySuperuserIpConfKey(realUser), "*");
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+     UserGroupInformation.setConfiguration(conf);
+     UserGroupInformation ugi;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/security/TestRefreshUserMappings.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/security/TestRefreshUserMappings.java
+index aadc6b0..72776e0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/security/TestRefreshUserMappings.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/security/TestRefreshUserMappings.java
+@@ -151,8 +151,10 @@ public void testRefreshSuperUserGroupsConfiguration() throws Exception {
+     final String [] GROUP_NAMES2 = new String [] {"gr3" , "gr4"};
+     
+     //keys in conf
+-    String userKeyGroups = DefaultImpersonationProvider.getProxySuperuserGroupConfKey(SUPER_USER);
+-    String userKeyHosts = DefaultImpersonationProvider.getProxySuperuserIpConfKey (SUPER_USER);
++    String userKeyGroups = DefaultImpersonationProvider.getTestProvider().
++        getProxySuperuserGroupConfKey(SUPER_USER);
++    String userKeyHosts = DefaultImpersonationProvider.getTestProvider().
++        getProxySuperuserIpConfKey (SUPER_USER);
+     
+     config.set(userKeyGroups, "gr3,gr4,gr5"); // superuser can proxy for this group
+     config.set(userKeyHosts,"127.0.0.1");
+-- 
+1.7.9.5
+

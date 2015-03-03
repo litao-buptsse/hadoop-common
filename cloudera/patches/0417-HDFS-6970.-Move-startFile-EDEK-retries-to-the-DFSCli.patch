@@ -1,0 +1,301 @@
+From 1d7bc205fe6c80a000588525ce0879dd867895a0 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 18 Sep 2014 17:35:24 -0700
+Subject: [PATCH 417/813] HDFS-6970. Move startFile EDEK retries to the
+ DFSClient. (wang)
+
+(cherry picked from commit 20a076bafce548298729bab4fb81d12f829e8f7e)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+
+(cherry picked from commit ef693b541cc541bd048783c2acbe4751e45806f3)
+---
+ .../org/apache/hadoop/hdfs/DFSOutputStream.java    |   64 +++++++---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |  126 +++++++++-----------
+ .../server/namenode/RetryStartFileException.java   |   17 ++-
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |    2 +-
+ 4 files changed, 119 insertions(+), 90 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java
+index 29f9d58..a51bacb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java
+@@ -41,6 +41,7 @@
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicReference;
+ 
++import com.google.common.base.Preconditions;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.crypto.CipherSuite;
+ import org.apache.hadoop.fs.CanSetDropBehind;
+@@ -76,6 +77,7 @@
+ import org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException;
+ import org.apache.hadoop.hdfs.server.datanode.CachingStrategy;
+ import org.apache.hadoop.hdfs.server.namenode.NotReplicatedYetException;
++import org.apache.hadoop.hdfs.server.namenode.RetryStartFileException;
+ import org.apache.hadoop.hdfs.server.namenode.SafeModeException;
+ import org.apache.hadoop.io.EnumSetWritable;
+ import org.apache.hadoop.io.IOUtils;
+@@ -123,6 +125,13 @@
+     implements Syncable, CanSetDropBehind {
+   private final long dfsclientSlowLogThresholdMs;
+   private static final int MAX_PACKETS = 80; // each packet 64K, total 5MB
++  /**
++   * Number of times to retry creating a file when there are transient 
++   * errors (typically related to encryption zones and KeyProvider operations).
++   */
++  @VisibleForTesting
++  public static final int CREATE_RETRY_COUNT = 10;
++
+   private final DFSClient dfsClient;
+   private Socket s;
+   // closed is accessed by different threads under different locks.
+@@ -1622,23 +1631,46 @@ static DFSOutputStream newStreamForCreate(DFSClient dfsClient, String src,
+       short replication, long blockSize, Progressable progress, int buffersize,
+       DataChecksum checksum, String[] favoredNodes,
+       List<CipherSuite> cipherSuites) throws IOException {
+-    final HdfsFileStatus stat;
+-    try {
+-      stat = dfsClient.namenode.create(src, masked, dfsClient.clientName,
+-          new EnumSetWritable<CreateFlag>(flag), createParent, replication,
+-          blockSize, cipherSuites);
+-    } catch(RemoteException re) {
+-      throw re.unwrapRemoteException(AccessControlException.class,
+-                                     DSQuotaExceededException.class,
+-                                     FileAlreadyExistsException.class,
+-                                     FileNotFoundException.class,
+-                                     ParentNotDirectoryException.class,
+-                                     NSQuotaExceededException.class,
+-                                     SafeModeException.class,
+-                                     UnresolvedPathException.class,
+-                                     SnapshotAccessControlException.class,
+-                                     UnknownCipherSuiteException.class);
++    HdfsFileStatus stat = null;
++
++    // Retry the create if we get a RetryStartFileException up to a maximum
++    // number of times
++    boolean shouldRetry = true;
++    int retryCount = CREATE_RETRY_COUNT;
++    while (shouldRetry) {
++      shouldRetry = false;
++      try {
++        stat = dfsClient.namenode.create(src, masked, dfsClient.clientName,
++            new EnumSetWritable<CreateFlag>(flag), createParent, replication,
++            blockSize, cipherSuites);
++        break;
++      } catch (RemoteException re) {
++        IOException e = re.unwrapRemoteException(
++            AccessControlException.class,
++            DSQuotaExceededException.class,
++            FileAlreadyExistsException.class,
++            FileNotFoundException.class,
++            ParentNotDirectoryException.class,
++            NSQuotaExceededException.class,
++            RetryStartFileException.class,
++            SafeModeException.class,
++            UnresolvedPathException.class,
++            SnapshotAccessControlException.class,
++            UnknownCipherSuiteException.class);
++        if (e instanceof RetryStartFileException) {
++          if (retryCount > 0) {
++            shouldRetry = true;
++            retryCount--;
++          } else {
++            throw new IOException("Too many retries because of encryption" +
++                " zone operations", e);
++          }
++        } else {
++          throw e;
++        }
++      }
+     }
++    Preconditions.checkNotNull(stat, "HdfsFileStatus should not be null!");
+     final DFSOutputStream out = new DFSOutputStream(dfsClient, src, stat,
+         flag, progress, checksum, favoredNodes);
+     out.start();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 8850fa2..139b9d3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2448,84 +2448,66 @@ private HdfsFileStatus startFileInt(final String srcArg,
+ 
+     waitForLoadingFSImage();
+ 
+-    /*
+-     * We want to avoid holding any locks while doing KeyProvider operations,
+-     * since they can be very slow. Since the path can
+-     * flip flop between being in an encryption zone and not in the meantime,
+-     * we need to recheck the preconditions and redo KeyProvider operations
+-     * in some situations.
+-     *
+-     * A special RetryStartFileException is used to indicate that we should
+-     * retry creation of a FileEncryptionInfo.
++    /**
++     * If the file is in an encryption zone, we optimistically create an
++     * EDEK for the file by calling out to the configured KeyProvider.
++     * Since this typically involves doing an RPC, we take the readLock
++     * initially, then drop it to do the RPC.
++     * 
++     * Since the path can flip-flop between being in an encryption zone and not
++     * in the meantime, we need to recheck the preconditions when we retake the
++     * lock to do the create. If the preconditions are not met, we throw a
++     * special RetryStartFileException to ask the DFSClient to try the create
++     * again later.
+      */
+-    BlocksMapUpdateInfo toRemoveBlocks = null;
++    CipherSuite suite = null;
++    String ezKeyName = null;
++    readLock();
+     try {
+-      boolean shouldContinue = true;
+-      int iters = 0;
+-      while (shouldContinue) {
+-        skipSync = false;
+-        if (iters >= 10) {
+-          throw new IOException("Too many retries because of encryption zone " +
+-              "operations, something might be broken!");
+-        }
+-        shouldContinue = false;
+-        iters++;
+-
+-        // Optimistically determine CipherSuite and ezKeyName if the path is
+-        // currently within an encryption zone
+-        CipherSuite suite = null;
+-        String ezKeyName = null;
+-        readLock();
+-        try {
+-          src = resolvePath(src, pathComponents);
+-          INodesInPath iip = dir.getINodesInPath4Write(src);
+-          // Nothing to do if the path is not within an EZ
+-          if (dir.isInAnEZ(iip)) {
+-            suite = chooseCipherSuite(iip, cipherSuites);
+-            if (suite != null) {
+-              Preconditions.checkArgument(!suite.equals(CipherSuite.UNKNOWN),
+-                  "Chose an UNKNOWN CipherSuite!");
+-            }
+-            ezKeyName = dir.getKeyName(iip);
+-            Preconditions.checkState(ezKeyName != null);
+-          }
+-        } finally {
+-          readUnlock();
++      src = resolvePath(src, pathComponents);
++      INodesInPath iip = dir.getINodesInPath4Write(src);
++      // Nothing to do if the path is not within an EZ
++      if (dir.isInAnEZ(iip)) {
++        suite = chooseCipherSuite(iip, cipherSuites);
++        if (suite != null) {
++          Preconditions.checkArgument(!suite.equals(CipherSuite.UNKNOWN),
++              "Chose an UNKNOWN CipherSuite!");
+         }
++        ezKeyName = dir.getKeyName(iip);
++        Preconditions.checkState(ezKeyName != null);
++      }
++    } finally {
++      readUnlock();
++    }
+ 
+-        Preconditions.checkState(
+-            (suite == null && ezKeyName == null) ||
++    Preconditions.checkState(
++        (suite == null && ezKeyName == null) ||
+             (suite != null && ezKeyName != null),
+-            "Both suite and ezKeyName should both be null or not null");
+-        // Generate EDEK if necessary while not holding the lock
+-        EncryptedKeyVersion edek =
+-            generateEncryptedDataEncryptionKey(ezKeyName);
+-        EncryptionFaultInjector.getInstance().startFileAfterGenerateKey();
+-        // Try to create the file with the computed cipher suite and EDEK
+-        writeLock();
+-        try {
+-          checkOperation(OperationCategory.WRITE);
+-          checkNameNodeSafeMode("Cannot create file" + src);
+-          src = resolvePath(src, pathComponents);
+-          toRemoveBlocks = startFileInternal(pc, src, permissions, holder, 
+-              clientMachine, create, overwrite, createParent, replication, 
+-              blockSize, suite, edek, logRetryCache);
+-          stat = dir.getFileInfo(src, false,
+-              FSDirectory.isReservedRawName(srcArg));
+-        } catch (StandbyException se) {
+-          skipSync = true;
+-          throw se;
+-        } catch (RetryStartFileException e) {
+-          shouldContinue = true;
+-          if (LOG.isTraceEnabled()) {
+-            LOG.trace("Preconditions failed, retrying creation of " +
+-                    "FileEncryptionInfo", e);
+-          }
+-        } finally {
+-          writeUnlock();
+-        }
+-      }
++        "Both suite and ezKeyName should both be null or not null");
++
++    // Generate EDEK if necessary while not holding the lock
++    EncryptedKeyVersion edek =
++        generateEncryptedDataEncryptionKey(ezKeyName);
++    EncryptionFaultInjector.getInstance().startFileAfterGenerateKey();
++
++    // Proceed with the create, using the computed cipher suite and 
++    // generated EDEK
++    BlocksMapUpdateInfo toRemoveBlocks = null;
++    writeLock();
++    try {
++      checkOperation(OperationCategory.WRITE);
++      checkNameNodeSafeMode("Cannot create file" + src);
++      src = resolvePath(src, pathComponents);
++      toRemoveBlocks = startFileInternal(pc, src, permissions, holder, 
++          clientMachine, create, overwrite, createParent, replication, 
++          blockSize, suite, edek, logRetryCache);
++      stat = dir.getFileInfo(src, false,
++          FSDirectory.isReservedRawName(srcArg));
++    } catch (StandbyException se) {
++      skipSync = true;
++      throw se;
+     } finally {
++      writeUnlock();
+       // There might be transactions logged while trying to recover the lease.
+       // They need to be sync'ed even when an exception was thrown.
+       if (!skipSync) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/RetryStartFileException.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/RetryStartFileException.java
+index a5758a7..0bdd2a5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/RetryStartFileException.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/RetryStartFileException.java
+@@ -17,5 +17,20 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode;
+ 
+-public class RetryStartFileException extends Exception {
++import java.io.IOException;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++
++@InterfaceAudience.Private
++public class RetryStartFileException extends IOException {
++  private static final long serialVersionUID = 1L;
++
++  public RetryStartFileException() {
++    super("Preconditions for creating a file failed because of a " +
++        "transient error, retry create later.");
++  }
++
++  public RetryStartFileException(String s) {
++    super(s);
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index ff28200..52ca942 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -940,7 +940,7 @@ public void doCleanup() throws Exception {
+     Future<?> future = executor.submit(new CreateFileTask(fsWrapper, file));
+ 
+     // Flip-flop between two EZs to repeatedly fail
+-    for (int i=0; i<10; i++) {
++    for (int i=0; i<DFSOutputStream.CREATE_RETRY_COUNT+1; i++) {
+       injector.ready.await();
+       fsWrapper.delete(zone1, true);
+       fsWrapper.mkdir(zone1, FsPermission.getDirDefault(), true);
+-- 
+1.7.9.5
+

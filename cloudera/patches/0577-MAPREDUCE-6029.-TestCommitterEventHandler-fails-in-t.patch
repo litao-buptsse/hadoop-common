@@ -1,0 +1,44 @@
+From 48d5e54f880ced94444e1b8d154cd2e33e08e4bf Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Tue, 7 Oct 2014 14:10:39 +0000
+Subject: [PATCH 577/813] MAPREDUCE-6029. TestCommitterEventHandler fails in
+ trunk. Contributed by Mit Desai
+
+(cherry picked from commit 2e789eb2261fa607489d8ae630fb77e8147d0266)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../v2/app/commit/TestCommitterEventHandler.java   |    9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/commit/TestCommitterEventHandler.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/commit/TestCommitterEventHandler.java
+index 83e43f5..a553bbd 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/commit/TestCommitterEventHandler.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/commit/TestCommitterEventHandler.java
+@@ -58,6 +58,7 @@
+ import org.apache.hadoop.mapreduce.v2.app.job.event.JobCommitFailedEvent;
+ import org.apache.hadoop.mapreduce.v2.util.MRApps;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.util.Time;
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.event.Event;
+@@ -84,8 +85,12 @@ public synchronized void handle(Event event) {
+     
+     public synchronized Event getAndClearEvent() throws InterruptedException {
+       if (event == null) {
+-        //Wait for at most 10 ms
+-        wait(100);
++        final long waitTime = 5000;
++        long waitStartTime = Time.monotonicNow();
++        while(event == null && Time.monotonicNow() - waitStartTime < waitTime) {
++          //Wait for at most 5 sec
++          wait(waitTime);
++        }
+       }
+       Event e = event;
+       event = null;
+-- 
+1.7.9.5
+

@@ -1,0 +1,122 @@
+From efdfb0b2080ea0aa862589cb4ae9e705b8625e3b Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 22 Oct 2014 14:26:27 -0700
+Subject: [PATCH 636/813] HADOOP-11122. Fix findbugs in ZK
+ DelegationTokenSecretManagers. (Arun Suresh via
+ kasha)
+
+(cherry picked from commit 70719e5c62f32836914bea88e1ddd99c0ed009e1)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../AbstractDelegationTokenSecretManager.java      |   12 +++---------
+ .../delegation/ZKDelegationTokenSecretManager.java |   16 ++++++++++------
+ 2 files changed, 13 insertions(+), 15 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java
+index ac1dd2d..bbae776 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/AbstractDelegationTokenSecretManager.java
+@@ -163,11 +163,6 @@ protected void storeNewMasterKey(DelegationKey key) throws IOException {
+     return;
+   }
+ 
+-  // for ZK based secretManager
+-  protected void updateMasterKey(DelegationKey key) throws IOException{
+-    return;
+-  }
+-
+   // RM
+   protected void removeStoredMasterKey(DelegationKey key) {
+     return;
+@@ -191,7 +186,7 @@ protected void updateStoredToken(TokenIdent ident, long renewDate) throws IOExce
+    * For subclasses externalizing the storage, for example Zookeeper
+    * based implementations
+    */
+-  protected int getDelegationTokenSeqNum() {
++  protected synchronized int getDelegationTokenSeqNum() {
+     return delegationTokenSequenceNumber;
+   }
+ 
+@@ -199,7 +194,7 @@ protected int getDelegationTokenSeqNum() {
+    * For subclasses externalizing the storage, for example Zookeeper
+    * based implementations
+    */
+-  protected int incrementDelegationTokenSeqNum() {
++  protected synchronized int incrementDelegationTokenSeqNum() {
+     return ++delegationTokenSequenceNumber;
+   }
+ 
+@@ -207,7 +202,7 @@ protected int incrementDelegationTokenSeqNum() {
+    * For subclasses externalizing the storage, for example Zookeeper
+    * based implementations
+    */
+-  protected void setDelegationTokenSeqNum(int seqNum) {
++  protected synchronized void setDelegationTokenSeqNum(int seqNum) {
+     delegationTokenSequenceNumber = seqNum;
+   }
+ 
+@@ -234,7 +229,6 @@ protected void storeDelegationKey(DelegationKey key) throws IOException {
+    */
+   protected void updateDelegationKey(DelegationKey key) throws IOException {
+     allKeys.put(key.getKeyId(), key);
+-    updateMasterKey(key);
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/ZKDelegationTokenSecretManager.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/ZKDelegationTokenSecretManager.java
+index 23c7144..5f68844 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/ZKDelegationTokenSecretManager.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/ZKDelegationTokenSecretManager.java
+@@ -276,7 +276,7 @@ private String getKrb5LoginModuleName() {
+   }
+ 
+   @Override
+-  public void startThreads() throws IOException {
++  public synchronized void startThreads() throws IOException {
+     if (!isExternalClient) {
+       try {
+         zkClient.start();
+@@ -402,7 +402,7 @@ private void processTokenRemoved(byte[] data) throws IOException {
+   }
+ 
+   @Override
+-  public void stopThreads() {
++  public synchronized void stopThreads() {
+     try {
+       if (!isExternalClient && (zkClient != null)) {
+         zkClient.close();
+@@ -434,12 +434,12 @@ private void createPersistentNode(String nodePath) throws Exception {
+   }
+ 
+   @Override
+-  protected int getDelegationTokenSeqNum() {
++  protected synchronized int getDelegationTokenSeqNum() {
+     return seqCounter.getCount();
+   }
+ 
+   @Override
+-  protected int incrementDelegationTokenSeqNum() {
++  protected synchronized int incrementDelegationTokenSeqNum() {
+     try {
+       while (!seqCounter.trySetCount(seqCounter.getCount() + 1)) {
+       }
+@@ -450,8 +450,12 @@ protected int incrementDelegationTokenSeqNum() {
+   }
+ 
+   @Override
+-  protected void setDelegationTokenSeqNum(int seqNum) {
+-    delegationTokenSequenceNumber = seqNum;
++  protected synchronized void setDelegationTokenSeqNum(int seqNum) {
++    try {
++      seqCounter.setCount(seqNum);
++    } catch (Exception e) {
++      throw new RuntimeException("Could not set shared counter !!", e);
++    }
+   }
+ 
+   @Override
+-- 
+1.7.9.5
+

@@ -1,0 +1,124 @@
+From 5ec16e1af4454392bf724efac2a7463679fac308 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 17 Sep 2014 21:28:05 -0700
+Subject: [PATCH 412/813] HDFS-7078. Fix listEZs to work correctly with
+ snapshots. (wang)
+
+(cherry picked from commit 0ecefe60179968984b1892a14411566b7a0c8df3)
+(cherry picked from commit 008e2f68f1a929f6fcaa5ae71ccd0eeac8ecdf95)
+---
+ .../server/namenode/EncryptionZoneManager.java     |   17 ++++++++-
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |   38 +++++++++++++++++---
+ 2 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+index e72ae12..c428690 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+@@ -312,7 +312,22 @@ XAttr createEncryptionZone(String src, String keyName)
+ 
+     int count = 0;
+     for (EncryptionZoneInt ezi : tailMap.values()) {
+-      zones.add(new EncryptionZone(getFullPathName(ezi),
++      /*
++       Skip EZs that are only present in snapshots. Re-resolve the path to 
++       see if the path's current inode ID matches EZ map's INode ID.
++       
++       INode#getFullPathName simply calls getParent recursively, so will return
++       the INode's parents at the time it was snapshotted. It will not 
++       contain a reference INode.
++      */
++      final String pathName = getFullPathName(ezi);
++      INodesInPath iip = dir.getINodesInPath(pathName, false);
++      INode lastINode = iip.getLastINode();
++      if (lastINode == null || lastINode.getId() != ezi.getINodeId()) {
++        continue;
++      }
++      // Add the EZ to the result list
++      zones.add(new EncryptionZone(pathName,
+           ezi.getKeyName(), ezi.getINodeId()));
+       count++;
+       if (count >= numResponses) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index b4f6c1c..ff28200 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -27,6 +27,7 @@
+ import java.io.StringWriter;
+ import java.net.URI;
+ import java.security.PrivilegedExceptionAction;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.List;
+ import java.util.concurrent.Callable;
+@@ -1030,6 +1031,9 @@ public void testFsckOnEncryptionZones() throws Exception {
+    */
+   @Test(timeout = 60000)
+   public void testSnapshotsOnEncryptionZones() throws Exception {
++    final String TEST_KEY2 = "testkey2";
++    DFSTestUtil.createKey(TEST_KEY2, cluster, conf);
++
+     final int len = 8196;
+     final Path zoneParent = new Path("/zones");
+     final Path zone = new Path(zoneParent, "zone");
+@@ -1044,7 +1048,8 @@ public void testSnapshotsOnEncryptionZones() throws Exception {
+     assertEquals("Got unexpected ez path", zone.toString(),
+         dfsAdmin.getEncryptionZoneForPath(snap1Zone).getPath().toString());
+ 
+-    // Now delete the encryption zone, recreate the dir, and take another snapshot
++    // Now delete the encryption zone, recreate the dir, and take another
++    // snapshot
+     fsWrapper.delete(zone, true);
+     fsWrapper.mkdir(zone, FsPermission.getDirDefault(), true);
+     final Path snap2 = fs.createSnapshot(zoneParent);
+@@ -1053,11 +1058,35 @@ public void testSnapshotsOnEncryptionZones() throws Exception {
+         dfsAdmin.getEncryptionZoneForPath(snap2Zone));
+ 
+     // Create the encryption zone again
+-    dfsAdmin.createEncryptionZone(zone, TEST_KEY);
++    dfsAdmin.createEncryptionZone(zone, TEST_KEY2);
+     final Path snap3 = fs.createSnapshot(zoneParent);
+     final Path snap3Zone = new Path(snap3, zone.getName());
++    // Check that snap3's EZ has the correct settings
++    EncryptionZone ezSnap3 = dfsAdmin.getEncryptionZoneForPath(snap3Zone);
+     assertEquals("Got unexpected ez path", zone.toString(),
+-        dfsAdmin.getEncryptionZoneForPath(snap3Zone).getPath().toString());
++        ezSnap3.getPath().toString());
++    assertEquals("Unexpected ez key", TEST_KEY2, ezSnap3.getKeyName());
++    // Check that older snapshots still have the old EZ settings
++    EncryptionZone ezSnap1 = dfsAdmin.getEncryptionZoneForPath(snap1Zone);
++    assertEquals("Got unexpected ez path", zone.toString(),
++        ezSnap1.getPath().toString());
++    assertEquals("Unexpected ez key", TEST_KEY, ezSnap1.getKeyName());
++
++    // Check that listEZs only shows the current filesystem state
++    ArrayList<EncryptionZone> listZones = Lists.newArrayList();
++    RemoteIterator<EncryptionZone> it = dfsAdmin.listEncryptionZones();
++    while (it.hasNext()) {
++      listZones.add(it.next());
++    }
++    for (EncryptionZone z: listZones) {
++      System.out.println(z);
++    }
++    assertEquals("Did not expect additional encryption zones!", 1,
++        listZones.size());
++    EncryptionZone listZone = listZones.get(0);
++    assertEquals("Got unexpected ez path", zone.toString(),
++        listZone.getPath().toString());
++    assertEquals("Unexpected ez key", TEST_KEY2, listZone.getKeyName());
+ 
+     // Verify contents of the snapshotted file
+     final Path snapshottedZoneFile = new Path(
+@@ -1065,7 +1094,8 @@ public void testSnapshotsOnEncryptionZones() throws Exception {
+     assertEquals("Contents of snapshotted file have changed unexpectedly",
+         contents, DFSTestUtil.readFile(fs, snapshottedZoneFile));
+ 
+-    // Now delete the snapshots out of order and verify the zones are still correct
++    // Now delete the snapshots out of order and verify the zones are still
++    // correct
+     fs.deleteSnapshot(zoneParent, snap2.getName());
+     assertEquals("Got unexpected ez path", zone.toString(),
+         dfsAdmin.getEncryptionZoneForPath(snap1Zone).getPath().toString());
+-- 
+1.7.9.5
+

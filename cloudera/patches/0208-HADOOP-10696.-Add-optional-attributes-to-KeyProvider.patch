@@ -1,0 +1,432 @@
+From 35f965cb4d5d4f891c5f2f4471c3f8859dc3665e Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:07 +0000
+Subject: [PATCH 208/813] HADOOP-10696. Add optional attributes to KeyProvider
+ Options and Metadata. (tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619524 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 24cdd0890bce6b6edb30db783f26cf8066e3fc69)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |    2 +-
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |   48 +++++++++++++++++++-
+ .../org/apache/hadoop/crypto/key/UserProvider.java |    2 +-
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    9 +++-
+ .../hadoop/crypto/key/kms/KMSRESTConstants.java    |    1 +
+ .../apache/hadoop/crypto/key/TestKeyProvider.java  |   17 +++++--
+ .../apache/hadoop/crypto/key/kms/server/KMS.java   |    5 +-
+ .../crypto/key/kms/server/KMSServerJSONUtils.java  |    1 +
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |   43 ++++++++++++++++++
+ .../key/kms/server/TestKMSCacheKeyProvider.java    |    2 +-
+ 10 files changed, 119 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index ecf90ad..0f22f63 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -270,7 +270,7 @@ public KeyVersion createKey(String name, byte[] material,
+             e);
+       }
+       Metadata meta = new Metadata(options.getCipher(), options.getBitLength(),
+-          options.getDescription(), new Date(), 1);
++          options.getDescription(), options.getAttributes(), new Date(), 1);
+       if (options.getBitLength() != 8 * material.length) {
+         throw new IOException("Wrong key length. Required " +
+             options.getBitLength() + ", but got " + (8 * material.length));
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index 8511599..01d7b69 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -26,8 +26,11 @@
+ import java.net.URI;
+ import java.security.NoSuchAlgorithmException;
+ import java.text.MessageFormat;
++import java.util.Collections;
+ import java.util.Date;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ import com.google.gson.stream.JsonReader;
+ import com.google.gson.stream.JsonWriter;
+@@ -107,18 +110,22 @@ public String toString() {
+     private final static String CREATED_FIELD = "created";
+     private final static String DESCRIPTION_FIELD = "description";
+     private final static String VERSIONS_FIELD = "versions";
++    private final static String ATTRIBUTES_FIELD = "attributes";
+ 
+     private final String cipher;
+     private final int bitLength;
+     private final String description;
+     private final Date created;
+     private int versions;
++    private Map<String, String> attributes;
+ 
+-    protected Metadata(String cipher, int bitLength,
+-                       String description, Date created, int versions) {
++    protected Metadata(String cipher, int bitLength, String description,
++        Map<String, String> attributes, Date created, int versions) {
+       this.cipher = cipher;
+       this.bitLength = bitLength;
+       this.description = description;
++      this.attributes = (attributes == null || attributes.isEmpty())
++                        ? null : attributes;
+       this.created = created;
+       this.versions = versions;
+     }
+@@ -141,6 +148,11 @@ public String getCipher() {
+       return cipher;
+     }
+ 
++    @SuppressWarnings("unchecked")
++    public Map<String, String> getAttributes() {
++      return (attributes == null) ? Collections.EMPTY_MAP : attributes;
++    }
++
+     /**
+      * Get the algorithm from the cipher.
+      * @return the algorithm name
+@@ -188,6 +200,13 @@ protected int addVersion() {
+         if (description != null) {
+           writer.name(DESCRIPTION_FIELD).value(description);
+         }
++        if (attributes != null && attributes.size() > 0) {
++          writer.name(ATTRIBUTES_FIELD).beginObject();
++          for (Map.Entry<String, String> attribute : attributes.entrySet()) {
++            writer.name(attribute.getKey()).value(attribute.getValue());
++          }
++          writer.endObject();
++        }
+         writer.name(VERSIONS_FIELD).value(versions);
+         writer.endObject();
+         writer.flush();
+@@ -208,6 +227,7 @@ protected Metadata(byte[] bytes) throws IOException {
+       Date created = null;
+       int versions = 0;
+       String description = null;
++      Map<String, String> attributes = null;
+       JsonReader reader = new JsonReader(new InputStreamReader
+         (new ByteArrayInputStream(bytes)));
+       try {
+@@ -224,6 +244,13 @@ protected Metadata(byte[] bytes) throws IOException {
+             versions = reader.nextInt();
+           } else if (DESCRIPTION_FIELD.equals(field)) {
+             description = reader.nextString();
++          } else if (ATTRIBUTES_FIELD.equalsIgnoreCase(field)) {
++            reader.beginObject();
++            attributes = new HashMap<String, String>();
++            while (reader.hasNext()) {
++              attributes.put(reader.nextName(), reader.nextString());
++            }
++            reader.endObject();
+           }
+         }
+         reader.endObject();
+@@ -234,6 +261,7 @@ protected Metadata(byte[] bytes) throws IOException {
+       this.bitLength = bitLength;
+       this.created = created;
+       this.description = description;
++      this.attributes = attributes;
+       this.versions = versions;
+     }
+   }
+@@ -245,6 +273,7 @@ protected Metadata(byte[] bytes) throws IOException {
+     private String cipher;
+     private int bitLength;
+     private String description;
++    private Map<String, String> attributes;
+ 
+     public Options(Configuration conf) {
+       cipher = conf.get(DEFAULT_CIPHER_NAME, DEFAULT_CIPHER);
+@@ -266,6 +295,16 @@ public Options setDescription(String description) {
+       return this;
+     }
+ 
++    public Options setAttributes(Map<String, String> attributes) {
++      if (attributes != null) {
++        if (attributes.containsKey(null)) {
++          throw new IllegalArgumentException("attributes cannot have a NULL key");
++        }
++        this.attributes = new HashMap<String, String>(attributes);
++      }
++      return this;
++    }
++
+     public String getCipher() {
+       return cipher;
+     }
+@@ -277,6 +316,11 @@ public int getBitLength() {
+     public String getDescription() {
+       return description;
+     }
++
++    @SuppressWarnings("unchecked")
++    public Map<String, String> getAttributes() {
++      return (attributes == null) ? Collections.EMPTY_MAP : attributes;
++    }
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+index 371938b..6cfb46b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+@@ -89,7 +89,7 @@ public synchronized KeyVersion createKey(String name, byte[] material,
+           options.getBitLength() + ", but got " + (8 * material.length));
+     }
+     Metadata meta = new Metadata(options.getCipher(), options.getBitLength(),
+-        options.getDescription(), new Date(), 1);
++        options.getDescription(), options.getAttributes(), new Date(), 1);
+     cache.put(name, meta);
+     String versionName = buildVersionName(name, 0);
+     credentials.addSecretKey(nameT, meta.serialize());
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index 024a192..41c1f60 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -83,6 +83,7 @@ private static KeyVersion parseJSONKeyVersion(Map valueMap) {
+     return keyVersion;
+   }
+ 
++  @SuppressWarnings("unchecked")
+   private static Metadata parseJSONMetadata(Map valueMap) {
+     Metadata metadata = null;
+     if (!valueMap.isEmpty()) {
+@@ -90,6 +91,7 @@ private static Metadata parseJSONMetadata(Map valueMap) {
+           (String) valueMap.get(KMSRESTConstants.CIPHER_FIELD),
+           (Integer) valueMap.get(KMSRESTConstants.LENGTH_FIELD),
+           (String) valueMap.get(KMSRESTConstants.DESCRIPTION_FIELD),
++          (Map<String, String>) valueMap.get(KMSRESTConstants.ATTRIBUTES_FIELD),
+           new Date((Long) valueMap.get(KMSRESTConstants.CREATED_FIELD)),
+           (Integer) valueMap.get(KMSRESTConstants.VERSIONS_FIELD));
+     }
+@@ -351,8 +353,8 @@ public KeyVersion getCurrentKey(String name) throws IOException {
+ 
+   public static class KMSMetadata extends Metadata {
+     public KMSMetadata(String cipher, int bitLength, String description,
+-        Date created, int versions) {
+-      super(cipher, bitLength, description, created, versions);
++        Map<String, String> attributes, Date created, int versions) {
++      super(cipher, bitLength, description, attributes, created, versions);
+     }
+   }
+ 
+@@ -416,6 +418,9 @@ private KeyVersion createKeyInternal(String name, byte[] material,
+       jsonKey.put(KMSRESTConstants.DESCRIPTION_FIELD,
+           options.getDescription());
+     }
++    if (options.getAttributes() != null && !options.getAttributes().isEmpty()) {
++      jsonKey.put(KMSRESTConstants.ATTRIBUTES_FIELD, options.getAttributes());
++    }
+     URL url = createURL(KMSRESTConstants.KEYS_RESOURCE, null, null, null);
+     HttpURLConnection conn = createConnection(url, HTTP_POST);
+     conn.setRequestProperty(CONTENT_TYPE, APPLICATION_JSON_MIME);
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSRESTConstants.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSRESTConstants.java
+index 3d2ea34..807cba7 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSRESTConstants.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSRESTConstants.java
+@@ -42,6 +42,7 @@
+   public static final String CIPHER_FIELD = "cipher";
+   public static final String LENGTH_FIELD = "length";
+   public static final String DESCRIPTION_FIELD = "description";
++  public static final String ATTRIBUTES_FIELD = "attributes";
+   public static final String CREATED_FIELD = "created";
+   public static final String VERSIONS_FIELD = "versions";
+   public static final String MATERIAL_FIELD = "material";
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+index 71237cd..47e07a0 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+@@ -30,7 +30,9 @@
+ import java.text.DateFormat;
+ import java.text.SimpleDateFormat;
+ import java.util.Date;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertNull;
+@@ -73,7 +75,7 @@ public void testMetadata() throws Exception {
+     DateFormat format = new SimpleDateFormat("y/m/d");
+     Date date = format.parse("2013/12/25");
+     KeyProvider.Metadata meta = new KeyProvider.Metadata("myCipher", 100, null,
+-        date, 123);
++        null, date, 123);
+     assertEquals("myCipher", meta.getCipher());
+     assertEquals(100, meta.getBitLength());
+     assertNull(meta.getDescription());
+@@ -83,6 +85,7 @@ public void testMetadata() throws Exception {
+     assertEquals(meta.getCipher(), second.getCipher());
+     assertEquals(meta.getBitLength(), second.getBitLength());
+     assertNull(second.getDescription());
++    assertTrue(second.getAttributes().isEmpty());
+     assertEquals(meta.getCreated(), second.getCreated());
+     assertEquals(meta.getVersions(), second.getVersions());
+     int newVersion = second.addVersion();
+@@ -93,17 +96,21 @@ public void testMetadata() throws Exception {
+     //Metadata with description
+     format = new SimpleDateFormat("y/m/d");
+     date = format.parse("2013/12/25");
++    Map<String, String> attributes = new HashMap<String, String>();
++    attributes.put("a", "A");
+     meta = new KeyProvider.Metadata("myCipher", 100,
+-        "description", date, 123);
++        "description", attributes, date, 123);
+     assertEquals("myCipher", meta.getCipher());
+     assertEquals(100, meta.getBitLength());
+     assertEquals("description", meta.getDescription());
++    assertEquals(attributes, meta.getAttributes());
+     assertEquals(date, meta.getCreated());
+     assertEquals(123, meta.getVersions());
+     second = new KeyProvider.Metadata(meta.serialize());
+     assertEquals(meta.getCipher(), second.getCipher());
+     assertEquals(meta.getBitLength(), second.getBitLength());
+     assertEquals(meta.getDescription(), second.getDescription());
++    assertEquals(meta.getAttributes(), second.getAttributes());
+     assertEquals(meta.getCreated(), second.getCreated());
+     assertEquals(meta.getVersions(), second.getVersions());
+     newVersion = second.addVersion();
+@@ -117,15 +124,19 @@ public void testOptions() throws Exception {
+     Configuration conf = new Configuration();
+     conf.set(KeyProvider.DEFAULT_CIPHER_NAME, "myCipher");
+     conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 512);
++    Map<String, String> attributes = new HashMap<String, String>();
++    attributes.put("a", "A");
+     KeyProvider.Options options = KeyProvider.options(conf);
+     assertEquals("myCipher", options.getCipher());
+     assertEquals(512, options.getBitLength());
+     options.setCipher("yourCipher");
+     options.setDescription("description");
++    options.setAttributes(attributes);
+     options.setBitLength(128);
+     assertEquals("yourCipher", options.getCipher());
+     assertEquals(128, options.getBitLength());
+     assertEquals("description", options.getDescription());
++    assertEquals(attributes, options.getAttributes());
+     options = KeyProvider.options(new Configuration());
+     assertEquals(KeyProvider.DEFAULT_CIPHER, options.getCipher());
+     assertEquals(KeyProvider.DEFAULT_BITLENGTH, options.getBitLength());
+@@ -167,7 +178,7 @@ public KeyVersion getKeyVersion(String versionName)
+ 
+     @Override
+     public Metadata getMetadata(String name) throws IOException {
+-      return new Metadata(CIPHER, 128, "description", new Date(), 0);
++      return new Metadata(CIPHER, 128, "description", null, new Date(), 0);
+     }
+ 
+     @Override
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+index de8d844..3446c78 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+@@ -103,6 +103,7 @@ private static URI getKeyURI(String name) throws URISyntaxException {
+   @Path(KMSRESTConstants.KEYS_RESOURCE)
+   @Consumes(MediaType.APPLICATION_JSON)
+   @Produces(MediaType.APPLICATION_JSON)
++  @SuppressWarnings("unchecked")
+   public Response createKey(@Context SecurityContext securityContext,
+       Map jsonKey) throws Exception {
+     KMSWebApp.getAdminCallsMeter().mark();
+@@ -116,7 +117,8 @@ public Response createKey(@Context SecurityContext securityContext,
+                  ? (Integer) jsonKey.get(KMSRESTConstants.LENGTH_FIELD) : 0;
+     String description = (String)
+         jsonKey.get(KMSRESTConstants.DESCRIPTION_FIELD);
+-
++    Map<String, String> attributes = (Map<String, String>)
++        jsonKey.get(KMSRESTConstants.ATTRIBUTES_FIELD);
+     if (material != null) {
+       assertAccess(KMSACLs.Type.SET_KEY_MATERIAL, user,
+           CREATE_KEY + " with user provided material", name);
+@@ -130,6 +132,7 @@ public Response createKey(@Context SecurityContext securityContext,
+       options.setBitLength(length);
+     }
+     options.setDescription(description);
++    options.setAttributes(attributes);
+ 
+     KeyProvider.KeyVersion keyVersion = (material != null)
+         ? provider.createKey(name, Base64.decodeBase64(material), options)
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java
+index cc995cd..9131a18 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java
+@@ -61,6 +61,7 @@ public static Map toJSON(String keyName, KeyProvider.Metadata meta) {
+       json.put(KMSRESTConstants.CIPHER_FIELD, meta.getCipher());
+       json.put(KMSRESTConstants.LENGTH_FIELD, meta.getBitLength());
+       json.put(KMSRESTConstants.DESCRIPTION_FIELD, meta.getDescription());
++      json.put(KMSRESTConstants.ATTRIBUTES_FIELD, meta.getAttributes());
+       json.put(KMSRESTConstants.CREATED_FIELD,
+           meta.getCreated().getTime());
+       json.put(KMSRESTConstants.VERSIONS_FIELD,
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index 70aa598..0959dce 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -490,6 +490,49 @@ public Void call() throws Exception {
+         // getKeysMetadata() empty
+         Assert.assertEquals(0, kp.getKeysMetadata().length);
+ 
++        // createKey() no description, no tags
++        options = new KeyProvider.Options(conf);
++        options.setCipher("AES/CTR/NoPadding");
++        options.setBitLength(128);
++        kp.createKey("k2", options);
++        KeyProvider.Metadata meta = kp.getMetadata("k2");
++        Assert.assertNull(meta.getDescription());
++        Assert.assertTrue(meta.getAttributes().isEmpty());
++
++        // createKey() description, no tags
++        options = new KeyProvider.Options(conf);
++        options.setCipher("AES/CTR/NoPadding");
++        options.setBitLength(128);
++        options.setDescription("d");
++        kp.createKey("k3", options);
++        meta = kp.getMetadata("k3");
++        Assert.assertEquals("d", meta.getDescription());
++        Assert.assertTrue(meta.getAttributes().isEmpty());
++
++        Map<String, String> attributes = new HashMap<String, String>();
++        attributes.put("a", "A");
++
++        // createKey() no description, tags
++        options = new KeyProvider.Options(conf);
++        options.setCipher("AES/CTR/NoPadding");
++        options.setBitLength(128);
++        options.setAttributes(attributes);
++        kp.createKey("k4", options);
++        meta = kp.getMetadata("k4");
++        Assert.assertNull(meta.getDescription());
++        Assert.assertEquals(attributes, meta.getAttributes());
++
++        // createKey() description, tags
++        options = new KeyProvider.Options(conf);
++        options.setCipher("AES/CTR/NoPadding");
++        options.setBitLength(128);
++        options.setDescription("d");
++        options.setAttributes(attributes);
++        kp.createKey("k5", options);
++        meta = kp.getMetadata("k5");
++        Assert.assertEquals("d", meta.getDescription());
++        Assert.assertEquals(attributes, meta.getAttributes());
++
+         return null;
+       }
+     });
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java
+index 110b0c9..72b2191 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java
+@@ -102,7 +102,7 @@ public void testDeleteKey() throws Exception {
+     Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
+     Mockito.when(mockProv.getKeyVersion(Mockito.eq("k1@0"))).thenReturn(mockKey);
+     Mockito.when(mockProv.getMetadata(Mockito.eq("k1"))).thenReturn(
+-        new KMSClientProvider.KMSMetadata("c", 0, "l", new Date(), 1));
++        new KMSClientProvider.KMSMetadata("c", 0, "l", null, new Date(), 1));
+     KeyProvider cache = new KMSCacheKeyProvider(mockProv, 100);
+     Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+     Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+-- 
+1.7.9.5
+

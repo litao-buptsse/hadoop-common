@@ -1,0 +1,36 @@
+From 7c22ef51b0d5a4d0e57055777988c8c0ecb5242b Mon Sep 17 00:00:00 2001
+From: Allen Wittenauer <aw@apache.org>
+Date: Thu, 25 Sep 2014 11:32:35 -0700
+Subject: [PATCH 497/813] MAPREDUCE-6093. minor distcp doc edits (Charles Lamb
+ via aw) (cherry picked from
+ 7ffb636a54d665dba3a2ced959d5cfa0958980cc)
+
+Conflicts:
+
+    hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/DistCp.md.vm
+---
+ .../src/site/markdown/DistCp.md.vm                 |    8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/DistCp.md.vm b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/DistCp.md.vm
+index 75b4838..a70c17e 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/DistCp.md.vm
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/site/markdown/DistCp.md.vm
+@@ -122,10 +122,10 @@ $H3 Update and Overwrite
+   or have different contents. `-overwrite` overwrites target-files even if they
+   exist at the source, or have the same contents.
+ 
+-  Update and Overwrite options warrant special attention, since their handling
+-  of source-paths varies from the defaults in a very subtle manner. Consider a
+-  copy from `/source/first/` and `/source/second/` to `/target/`, where the
+-  source paths have the following contents:
++  The Update and Overwrite options warrant special attention since their
++  handling of source-paths varies from the defaults in a very subtle manner.
++  Consider a copy from `/source/first/` and `/source/second/` to `/target/`,
++  where the source paths have the following contents:
+ 
+     hdfs://nn1:8020/source/first/1
+     hdfs://nn1:8020/source/first/2
+-- 
+1.7.9.5
+

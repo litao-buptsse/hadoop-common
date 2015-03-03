@@ -1,0 +1,83 @@
+From ec7d400103dbdd5db09f986e1bfe9f9e776e290c Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Fri, 19 Sep 2014 08:52:16 -0500
+Subject: [PATCH 738/813] HDFS-6948. DN rejects blocks if it has older UC
+ block. Contributed by Eric Payne.
+
+(cherry picked from commit f02d934fedf00f0ce43d6f3f9b06d89ccc6851a5)
+(cherry picked from commit 2a6c9f0725891f62291c472aeba6b1c3eea21a50)
+---
+ .../datanode/fsdataset/impl/FsDatasetImpl.java     |   14 ++++++++---
+ .../fsdataset/impl/TestWriteToReplica.java         |   25 +++++++++++++++++++-
+ 2 files changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+index 40d1641..14f25ff 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+@@ -1033,9 +1033,17 @@ public synchronized ReplicaInPipeline createTemporary(StorageType storageType,
+       ExtendedBlock b) throws IOException {
+     ReplicaInfo replicaInfo = volumeMap.get(b.getBlockPoolId(), b.getBlockId());
+     if (replicaInfo != null) {
+-      throw new ReplicaAlreadyExistsException("Block " + b +
+-          " already exists in state " + replicaInfo.getState() +
+-          " and thus cannot be created.");
++      if (replicaInfo.getGenerationStamp() < b.getGenerationStamp()
++          && replicaInfo instanceof ReplicaInPipeline) {
++        // Stop the previous writer
++        ((ReplicaInPipeline)replicaInfo)
++                      .stopWriter(datanode.getDnConf().getXceiverStopTimeout());
++        invalidate(b.getBlockPoolId(), new Block[]{replicaInfo});
++      } else {
++        throw new ReplicaAlreadyExistsException("Block " + b +
++            " already exists in state " + replicaInfo.getState() +
++            " and thus cannot be created.");
++      }
+     }
+     
+     FsVolumeImpl v = volumes.getNextVolume(storageType, b.getNumBytes());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/TestWriteToReplica.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/TestWriteToReplica.java
+index b8246c3..6a3102b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/TestWriteToReplica.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/TestWriteToReplica.java
+@@ -111,7 +111,7 @@ public void testWriteToRbw() throws Exception {
+   
+   // test writeToTemporary
+   @Test
+-  public void testWriteToTempoary() throws Exception {
++  public void testWriteToTemporary() throws Exception {
+     MiniDFSCluster cluster = new MiniDFSCluster.Builder(new HdfsConfiguration()).build();
+     try {
+       cluster.waitActive();
+@@ -475,5 +475,28 @@ private void testWriteToTemporary(FsDatasetImpl dataSet, ExtendedBlock[] blocks)
+     }
+     
+     dataSet.createTemporary(StorageType.DEFAULT, blocks[NON_EXISTENT]);
++
++    try {
++      dataSet.createTemporary(StorageType.DEFAULT, blocks[NON_EXISTENT]);
++      Assert.fail("Should not have created a replica that had already been "
++          + "created " + blocks[NON_EXISTENT]);
++    } catch (Exception e) {
++      Assert.assertTrue(
++          e.getMessage().contains(blocks[NON_EXISTENT].getBlockName()));
++      Assert.assertTrue(e instanceof ReplicaAlreadyExistsException);
++    }
++
++    long newGenStamp = blocks[NON_EXISTENT].getGenerationStamp() * 10;
++    blocks[NON_EXISTENT].setGenerationStamp(newGenStamp);
++    try {
++      ReplicaInPipeline replicaInfo =
++                dataSet.createTemporary(StorageType.DEFAULT, blocks[NON_EXISTENT]);
++      Assert.assertTrue(replicaInfo.getGenerationStamp() == newGenStamp);
++      Assert.assertTrue(
++          replicaInfo.getBlockId() == blocks[NON_EXISTENT].getBlockId());
++    } catch (ReplicaAlreadyExistsException e) {
++      Assert.fail("createRbw() Should have removed the block with the older "
++          + "genstamp and replaced it with the newer one: " + blocks[NON_EXISTENT]);
++    }
+   }
+ }
+-- 
+1.7.9.5
+

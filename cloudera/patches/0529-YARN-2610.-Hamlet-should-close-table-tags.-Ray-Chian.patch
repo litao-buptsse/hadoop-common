@@ -1,0 +1,113 @@
+From 07fbe9fab0847bc34bc95b665f1c6c7624a6d7eb Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Mon, 29 Sep 2014 11:33:44 -0700
+Subject: [PATCH 529/813] YARN-2610. Hamlet should close table tags. (Ray
+ Chiang via kasha)
+
+(cherry picked from commit f7743dd07dfbe0dde9be71acfaba16ded52adba7)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/webapp/hamlet/Hamlet.java   |   10 +++++-----
+ .../hadoop/yarn/webapp/hamlet/TestHamlet.java      |    4 ++--
+ .../hadoop/yarn/webapp/view/TestInfoBlock.java     |   15 ++++++++-------
+ 3 files changed, 15 insertions(+), 14 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/hamlet/Hamlet.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/hamlet/Hamlet.java
+index 7076c9a..83fa5da 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/hamlet/Hamlet.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/hamlet/Hamlet.java
+@@ -2423,10 +2423,10 @@ public TR(String name, T parent, EnumSet<EOpt> opts) {
+   }
+ 
+   private <T extends _> TH<T> th_(T e, boolean inline) {
+-    return new TH<T>("th", e, opt(false, inline, false)); }
++    return new TH<T>("th", e, opt(true, inline, false)); }
+ 
+   private <T extends _> TD<T> td_(T e, boolean inline) {
+-    return new TD<T>("td", e, opt(false, inline, false)); }
++    return new TD<T>("td", e, opt(true, inline, false)); }
+ 
+   public class COL<T extends _> extends EImp<T> implements HamletSpec.COL {
+     public COL(String name, T parent, EnumSet<EOpt> opts) {
+@@ -3719,10 +3719,10 @@ public TABLE(String name, T parent, EnumSet<EOpt> opts) {
+     return new COLGROUP<T>("colgroup", e, opt(false, inline, false)); }
+ 
+   private <T extends _> THEAD<T> thead_(T e, boolean inline) {
+-    return new THEAD<T>("thead", e, opt(false, inline, false)); }
++    return new THEAD<T>("thead", e, opt(true, inline, false)); }
+ 
+   private <T extends _> TFOOT<T> tfoot_(T e, boolean inline) {
+-    return new TFOOT<T>("tfoot", e, opt(false, inline, false)); }
++    return new TFOOT<T>("tfoot", e, opt(true, inline, false)); }
+ 
+   private <T extends _> TBODY<T> tbody_(T e, boolean inline) {
+     return new TBODY<T>("tbody", e, opt(true, inline, false)); }
+@@ -3731,7 +3731,7 @@ public TABLE(String name, T parent, EnumSet<EOpt> opts) {
+     return new COL<T>("col", e, opt(false, inline, false)); }
+ 
+   private <T extends _> TR<T> tr_(T e, boolean inline) {
+-    return new TR<T>("tr", e, opt(false, inline, false)); }
++    return new TR<T>("tr", e, opt(true, inline, false)); }
+ 
+   public class BUTTON<T extends _> extends EImp<T> implements HamletSpec.BUTTON {
+     public BUTTON(String name, T parent, EnumSet<EOpt> opts) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/hamlet/TestHamlet.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/hamlet/TestHamlet.java
+index 1ea8bcf..d9eaa37 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/hamlet/TestHamlet.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/hamlet/TestHamlet.java
+@@ -88,8 +88,8 @@
+     assertEquals(0, h.nestLevel);
+     verify(out).print("<table");
+     verify(out).print("</table>");
+-    verify(out, never()).print("</td>");
+-    verify(out, never()).print("</tr>");
++    verify(out, atLeast(1)).print("</td>");
++    verify(out, atLeast(1)).print("</tr>");
+   }
+ 
+   @Test public void testEnumAttrs() {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java
+index 4ec1434..da5efbb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java
+@@ -68,7 +68,7 @@ public JavaScriptInfoBlock() {
+ 
+     static {
+       resInfo = new ResponseInfo();
+-      resInfo._("Single_line_value", "This is one line.");
++      resInfo._("Multiple_line_value", "This is one line.");
+       resInfo._("Multiple_line_value", "This is first line.\nThis is second line.");	
+     }
+ 
+@@ -98,13 +98,14 @@ public void testMultilineInfoBlock() throws Exception{
+     WebAppTests.testBlock(MultilineInfoBlock.class);
+     TestInfoBlock.pw.flush();
+     String output = TestInfoBlock.sw.toString().replaceAll(" +", " ");
+-    String expectedSinglelineData = String.format("<tr class=\"odd\">%n"
+-      + " <th>%n Single_line_value%n <td>%n This is one line.%n");
+-    String expectedMultilineData = String.format("<tr class=\"even\">%n"
+-      + " <th>%n Multiple_line_value%n <td>%n <div>%n"
++    String expectedMultilineData1 = String.format("<tr class=\"odd\">%n"
++      + " <th>%n Multiple_line_value%n </th>%n"
++      + " <td>%n This is one line.%n </td>%n");
++    String expectedMultilineData2 = String.format("<tr class=\"even\">%n"
++      + " <th>%n Multiple_line_value%n </th>%n <td>%n <div>%n"
+       + " This is first line.%n </div>%n <div>%n"
+       + " This is second line.%n </div>%n");
+-    assertTrue(output.contains(expectedSinglelineData) && output.contains(expectedMultilineData));
++    assertTrue(output.contains(expectedMultilineData1) && output.contains(expectedMultilineData2));
+   }
+   
+   @Test(timeout=60000L)
+@@ -115,4 +116,4 @@ public void testJavaScriptInfoBlock() throws Exception{
+     assertFalse(output.contains("<script>"));
+     assertTrue(output.contains(JAVASCRIPT_ESCAPED));
+   }
+-}
+\ No newline at end of file
++}
+-- 
+1.7.9.5
+

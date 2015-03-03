@@ -1,0 +1,29 @@
+From f521f0115269128c8bcab8c49d5278fb5f11d512 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Fri, 22 Aug 2014 18:14:55 +0000
+Subject: [PATCH 599/813] HDFS-6829. DFSAdmin
+ refreshSuperUserGroupsConfiguration failed in
+ security cluster. (Contributed by zhaoyunjiong)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1619882 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e6c36500705d3d756de82ee0ce9ff226f34b938f)
+---
+ .../org/apache/hadoop/hdfs/tools/DFSAdmin.java     |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+index 294e91b..db3e37a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+@@ -356,7 +356,7 @@ static int run(DistributedFileSystem dfs, String[] argv, int idx) throws IOExcep
+    * Construct a DFSAdmin object.
+    */
+   public DFSAdmin() {
+-    this(null);
++    this(new HdfsConfiguration());
+   }
+ 
+   /**
+-- 
+1.7.9.5
+

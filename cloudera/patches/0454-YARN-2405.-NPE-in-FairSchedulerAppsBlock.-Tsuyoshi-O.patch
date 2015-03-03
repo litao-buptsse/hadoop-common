@@ -1,0 +1,209 @@
+From 929507f8ec30570ce8c81e8abb13e572236236f1 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Thu, 28 Aug 2014 23:21:37 -0700
+Subject: [PATCH 454/813] YARN-2405. NPE in FairSchedulerAppsBlock. (Tsuyoshi
+ Ozawa via kasha)
+
+(cherry picked from commit fa80ca49bdd741823ff012ddbd7a0f1aecf26195)
+---
+ .../webapp/FairSchedulerAppsBlock.java             |    4 +
+ .../webapp/dao/FairSchedulerInfo.java              |   15 ++-
+ .../webapp/TestRMWebAppFairScheduler.java          |   96 +++++++++++++++++++-
+ 3 files changed, 112 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
+index b1aff90..2a1442e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
+@@ -110,6 +110,10 @@
+       String percent = String.format("%.1f", appInfo.getProgress());
+       ApplicationAttemptId attemptId = app.getCurrentAppAttempt().getAppAttemptId();
+       int fairShare = fsinfo.getAppFairShare(attemptId);
++      if (fairShare == FairSchedulerInfo.INVALID_FAIR_SHARE) {
++        // FairScheduler#applications don't have the entry. Skip it.
++        continue;
++      }
+       //AppID numerical value parsed by parseHadoopID in yarn.dt.plugins.js
+       appsTableData.append("[\"<a href='")
+       .append(url("app", appInfo.getAppId())).append("'>")
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/FairSchedulerInfo.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/FairSchedulerInfo.java
+index 23f8c01..f97ff8a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/FairSchedulerInfo.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/FairSchedulerInfo.java
+@@ -25,12 +25,14 @@
+ import javax.xml.bind.annotation.XmlType;
+ 
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+ 
+ @XmlRootElement(name = "fairScheduler")
+ @XmlType(name = "fairScheduler")
+ @XmlAccessorType(XmlAccessType.FIELD)
+ public class FairSchedulerInfo extends SchedulerInfo {
++  public static final int INVALID_FAIR_SHARE = -1;
+   private FairSchedulerQueueInfo rootQueue;
+   
+   @XmlTransient
+@@ -44,9 +46,18 @@ public FairSchedulerInfo(FairScheduler fs) {
+     rootQueue = new FairSchedulerQueueInfo(scheduler.getQueueManager().
+         getRootQueue(), scheduler);
+   }
+-  
++
++  /**
++   * Get the fair share assigned to the appAttemptId.
++   * @param appAttemptId
++   * @return The fair share assigned to the appAttemptId,
++   * <code>FairSchedulerInfo#INVALID_FAIR_SHARE</code> if the scheduler does
++   * not know about this application attempt.
++   */
+   public int getAppFairShare(ApplicationAttemptId appAttemptId) {
+-    return scheduler.getSchedulerApp(appAttemptId).getFairShare().getMemory();
++    FSAppAttempt fsAppAttempt = scheduler.getSchedulerApp(appAttemptId);
++    return fsAppAttempt == null ?
++        INVALID_FAIR_SHARE :  fsAppAttempt.getFairShare().getMemory();
+   }
+   
+   public FairSchedulerQueueInfo getRootQueueInfo() {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebAppFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebAppFairScheduler.java
+index 1de6489..111bf47 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebAppFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebAppFairScheduler.java
+@@ -22,20 +22,29 @@
+ import com.google.inject.Binder;
+ import com.google.inject.Injector;
+ import com.google.inject.Module;
++import org.apache.hadoop.util.StringUtils;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.api.records.Resource;
++import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContextImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.MockRMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppMetrics;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
++
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairSchedulerConfiguration;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+ import org.apache.hadoop.yarn.webapp.test.WebAppTests;
++import org.junit.Assert;
+ import org.junit.Test;
+ 
+ import java.io.IOException;
+@@ -75,12 +84,67 @@ public void configure(Binder binder) {
+     WebAppTests.flushOutput(injector);
+   }
+ 
++
++  /**
++   *  Testing inconsistent state between AbstractYarnScheduler#applications and
++   *  RMContext#applications
++   */
++  @Test
++  public void testFairSchedulerWebAppPageInInconsistentState() {
++    List<RMAppState> appStates = Arrays.asList(
++        RMAppState.NEW,
++        RMAppState.NEW_SAVING,
++        RMAppState.SUBMITTED,
++        RMAppState.RUNNING,
++        RMAppState.FINAL_SAVING,
++        RMAppState.ACCEPTED,
++        RMAppState.FINISHED
++    );
++    final RMContext rmContext = mockRMContext(appStates);
++    Injector injector = WebAppTests.createMockInjector(RMContext.class,
++        rmContext,
++        new Module() {
++          @Override
++          public void configure(Binder binder) {
++            try {
++              ResourceManager mockRmWithFairScheduler =
++                  mockRmWithApps(rmContext);
++              binder.bind(ResourceManager.class).toInstance
++                  (mockRmWithFairScheduler);
++
++            } catch (IOException e) {
++              throw new IllegalStateException(e);
++            }
++          }
++        });
++    FairSchedulerPage fsViewInstance =
++        injector.getInstance(FairSchedulerPage.class);
++    try {
++      fsViewInstance.render();
++    } catch (Exception e) {
++      Assert.fail("Failed to render FairSchedulerPage: " +
++          StringUtils.stringifyException(e));
++    }
++    WebAppTests.flushOutput(injector);
++  }
++
+   private static RMContext mockRMContext(List<RMAppState> states) {
+     final ConcurrentMap<ApplicationId, RMApp> applicationsMaps = Maps
+         .newConcurrentMap();
+     int i = 0;
+     for (RMAppState state : states) {
+-      MockRMApp app = new MockRMApp(i, i, state);
++      MockRMApp app = new MockRMApp(i, i, state) {
++        @Override
++        public RMAppMetrics getRMAppMetrics() {
++          return new RMAppMetrics(Resource.newInstance(0, 0), 0, 0);
++        }
++        @Override
++        public YarnApplicationState createApplicationState() {
++          return YarnApplicationState.ACCEPTED;
++        }
++      };
++      RMAppAttempt attempt = mock(RMAppAttempt.class);
++      app.setCurrentAppAttempt(attempt);
+       applicationsMaps.put(app.getApplicationId(), app);
+       i++;
+     }
+@@ -113,4 +177,34 @@ private static FairScheduler mockFairScheduler() throws IOException {
+     fs.init(conf);
+     return fs;
+   }
++
++  private static ResourceManager mockRmWithApps(RMContext rmContext) throws
++      IOException {
++    ResourceManager rm = mock(ResourceManager.class);
++    ResourceScheduler rs =  mockFairSchedulerWithoutApps(rmContext);
++    when(rm.getResourceScheduler()).thenReturn(rs);
++    when(rm.getRMContext()).thenReturn(rmContext);
++    return rm;
++  }
++
++  private static FairScheduler mockFairSchedulerWithoutApps(RMContext rmContext)
++      throws IOException {
++    FairScheduler fs = new FairScheduler() {
++      @Override
++      public FSAppAttempt getSchedulerApp(ApplicationAttemptId
++          applicationAttemptId) {
++        return null ;
++      }
++      @Override
++      public FSAppAttempt getApplicationAttempt(ApplicationAttemptId
++          applicationAttemptId) {
++        return null;
++      }
++    };
++    FairSchedulerConfiguration conf = new FairSchedulerConfiguration();
++    fs.setRMContext(rmContext);
++    fs.init(conf);
++    return fs;
++  }
++
+ }
+-- 
+1.7.9.5
+

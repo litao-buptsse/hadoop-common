@@ -1,0 +1,53 @@
+From 6d8cae3c3255b2f23e36ef3553eeb7df7a18d540 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 19:00:03 +0000
+Subject: [PATCH 238/813] HADOOP-10967. Improve
+ DefaultCryptoExtension#generateEncryptedKey
+ performance. (hitliuyi via tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619551 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../crypto/key/KeyProviderCryptoExtension.java     |   13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+index 4327785..00f8ff7 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+@@ -219,6 +219,13 @@ public KeyVersion decryptEncryptedKey(
+   private static class DefaultCryptoExtension implements CryptoExtension {
+ 
+     private final KeyProvider keyProvider;
++    private static final ThreadLocal<SecureRandom> RANDOM =
++        new ThreadLocal<SecureRandom>() {
++      @Override
++      protected SecureRandom initialValue() {
++        return new SecureRandom();
++      }
++    };
+ 
+     private DefaultCryptoExtension(KeyProvider keyProvider) {
+       this.keyProvider = keyProvider;
+@@ -233,10 +240,10 @@ public EncryptedKeyVersion generateEncryptedKey(String encryptionKeyName)
+           "No KeyVersion exists for key '%s' ", encryptionKeyName);
+       // Generate random bytes for new key and IV
+       Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
+-      SecureRandom random = SecureRandom.getInstance("SHA1PRNG");
+       final byte[] newKey = new byte[encryptionKey.getMaterial().length];
+-      random.nextBytes(newKey);
+-      final byte[] iv = random.generateSeed(cipher.getBlockSize());
++      RANDOM.get().nextBytes(newKey);
++      final byte[] iv = new byte[cipher.getBlockSize()];
++      RANDOM.get().nextBytes(iv);
+       // Encryption key IV is derived from new key's IV
+       final byte[] encryptionIV = EncryptedKeyVersion.deriveIV(iv);
+       // Encrypt the new key
+-- 
+1.7.9.5
+

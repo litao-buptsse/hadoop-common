@@ -1,0 +1,81 @@
+From e3d40bb624a783f943a34aa201ac91e466874e67 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Thu, 31 Jul 2014 06:44:48 +0000
+Subject: [PATCH 443/813] HDFS-3482. Merging r1358812 from trunk to branch-2
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1614814 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/balancer/Balancer.java      |    2 ++
+ .../hadoop/hdfs/server/balancer/TestBalancer.java  |   33 ++++++++++++++++++++
+ 2 files changed, 35 insertions(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java
+index bb03bc3..668df78 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/Balancer.java
+@@ -87,6 +87,7 @@
+ import org.apache.hadoop.util.Time;
+ import org.apache.hadoop.util.Tool;
+ import org.apache.hadoop.util.ToolRunner;
++import static com.google.common.base.Preconditions.checkArgument;
+ 
+ /** <p>The balancer is a tool that balances disk space usage on an HDFS cluster
+  * when some datanodes become full or when new empty nodes join the cluster.
+@@ -1584,6 +1585,7 @@ static Parameters parse(String[] args) {
+       if (args != null) {
+         try {
+           for(int i = 0; i < args.length; i++) {
++            checkArgument(args.length >= 2, "args = " + Arrays.toString(args));           
+             if ("-threshold".equalsIgnoreCase(args[i])) {
+               i++;
+               try {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+index 6000410..7453071 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+@@ -539,6 +539,39 @@ public void testExitZeroOnSuccess() throws Exception {
+   }
+   
+   /**
++   * Test parse method in Balancer#Cli class with wrong number of params
++   */
++
++  @Test
++  public void testBalancerCliParseWithWrongParams() {
++    String parameters[] = new String[] { "-threshold" };
++    String reason =
++        "IllegalArgumentException is expected when value is not specified";
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++    parameters = new String[] { "-policy" };
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++    parameters = new String[] { "-threshold 1 -policy" };
++    try {
++      Balancer.Cli.parse(parameters);
++      fail(reason);
++    } catch (IllegalArgumentException e) {
++
++    }
++
++  }
++
++
++  /**
+    * @param args
+    */
+   public static void main(String[] args) throws Exception {
+-- 
+1.7.9.5
+

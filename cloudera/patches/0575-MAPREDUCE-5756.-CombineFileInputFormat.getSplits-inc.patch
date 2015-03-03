@@ -1,0 +1,99 @@
+From 87e14bb191be38714d67b7fc72b5ea49a992ef77 Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Mon, 21 Jul 2014 21:24:15 +0000
+Subject: [PATCH 575/813] MAPREDUCE-5756. CombineFileInputFormat.getSplits()
+ including directories in its results. Contributed
+ by Jason Dere
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1612400 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c2174a55363e8f52acbe21319f072f6678441d47)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../lib/input/CombineFileInputFormat.java          |    2 +-
+ .../lib/input/TestCombineFileInputFormat.java      |   55 ++++++++++++++++++++
+ 2 files changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/input/CombineFileInputFormat.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/input/CombineFileInputFormat.java
+index 4cf5c36..040c54b 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/input/CombineFileInputFormat.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/input/CombineFileInputFormat.java
+@@ -579,7 +579,7 @@ private void addCreatedSplit(List<InputSplit> splitList,
+         blocks = new OneBlockInfo[0];
+       } else {
+ 
+-        if(locations.length == 0) {
++        if(locations.length == 0 && !stat.isDirectory()) {
+           locations = new BlockLocation[] { new BlockLocation() };
+         }
+ 
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java
+index 1e7386f..4290914 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestCombineFileInputFormat.java
+@@ -1275,6 +1275,61 @@ public void testForEmptyFile() throws Exception {
+   }
+ 
+   /**
++   * Test that directories do not get included as part of getSplits()
++   */
++  @Test
++  public void testGetSplitsWithDirectory() throws Exception {
++    MiniDFSCluster dfs = null;
++    try {
++      Configuration conf = new Configuration();
++      dfs = new MiniDFSCluster.Builder(conf).racks(rack1).hosts(hosts1)
++          .build();
++      dfs.waitActive();
++
++      dfs = new MiniDFSCluster.Builder(conf).racks(rack1).hosts(hosts1)
++          .build();
++      dfs.waitActive();
++
++      FileSystem fileSys = dfs.getFileSystem();
++
++      // Set up the following directory structure:
++      // /dir1/: directory
++      // /dir1/file: regular file
++      // /dir1/dir2/: directory
++      Path dir1 = new Path("/dir1");
++      Path file = new Path("/dir1/file1");
++      Path dir2 = new Path("/dir1/dir2");
++      if (!fileSys.mkdirs(dir1)) {
++        throw new IOException("Mkdirs failed to create " + dir1.toString());
++      }
++      FSDataOutputStream out = fileSys.create(file);
++      out.write(new byte[0]);
++      out.close();
++      if (!fileSys.mkdirs(dir2)) {
++        throw new IOException("Mkdirs failed to create " + dir2.toString());
++      }
++
++      // split it using a CombinedFile input format
++      DummyInputFormat inFormat = new DummyInputFormat();
++      Job job = Job.getInstance(conf);
++      FileInputFormat.setInputPaths(job, "/dir1");
++      List<InputSplit> splits = inFormat.getSplits(job);
++
++      // directories should be omitted from getSplits() - we should only see file1 and not dir2
++      assertEquals(1, splits.size());
++      CombineFileSplit fileSplit = (CombineFileSplit) splits.get(0);
++      assertEquals(1, fileSplit.getNumPaths());
++      assertEquals(file.getName(), fileSplit.getPath(0).getName());
++      assertEquals(0, fileSplit.getOffset(0));
++      assertEquals(0, fileSplit.getLength(0));
++    } finally {
++      if (dfs != null) {
++        dfs.shutdown();
++      }
++    }
++  }
++
++  /**
+    * Test when input files are from non-default file systems
+    */
+   @Test
+-- 
+1.7.9.5
+

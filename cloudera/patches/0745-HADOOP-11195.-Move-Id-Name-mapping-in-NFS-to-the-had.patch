@@ -1,0 +1,1867 @@
+From 743a945dace84844decb11fc5aa8fac4f24263ff Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Wed, 29 Oct 2014 11:05:29 -0700
+Subject: [PATCH 745/813] HADOOP-11195. Move Id-Name mapping in NFS to the
+ hadoop-common area for better maintenance.
+ Contributed by Yongjun Zhang
+
+(cherry picked from commit 72a556d3b0def0ab4e4509528cc513f6df06b084)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../apache/hadoop/security/IdMappingConstant.java  |   36 ++
+ .../hadoop/security/IdMappingServiceProvider.java  |   56 +++
+ .../hadoop/security/ShellBasedIdMapping.java       |  401 ++++++++++++++++++++
+ .../hadoop/security/TestShellBasedIdMapping.java   |  217 +++++++++++
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |  392 -------------------
+ .../org/apache/hadoop/nfs/nfs3/Nfs3Constant.java   |    8 +-
+ .../hadoop/oncrpc/security/SysSecurityHandler.java |   10 +-
+ .../apache/hadoop/nfs/nfs3/TestIdUserGroup.java    |  217 -----------
+ .../hadoop/hdfs/nfs/conf/NfsConfiguration.java     |    7 +-
+ .../org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java |    9 +-
+ .../apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java   |   16 +-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |   13 +-
+ .../apache/hadoop/hdfs/nfs/nfs3/WriteManager.java  |    8 +-
+ .../hadoop/hdfs/nfs/nfs3/TestOpenFileCtxCache.java |   20 +-
+ .../hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java   |    3 +-
+ .../apache/hadoop/hdfs/nfs/nfs3/TestWrites.java    |   16 +-
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |    2 +-
+ 17 files changed, 770 insertions(+), 661 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingConstant.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingServiceProvider.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedIdMapping.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestShellBasedIdMapping.java
+ delete mode 100644 hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+ delete mode 100644 hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingConstant.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingConstant.java
+new file mode 100644
+index 0000000..f43556f
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingConstant.java
+@@ -0,0 +1,36 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.security;
++
++/**
++ * Some constants for IdMapping
++ */
++public class IdMappingConstant {
++
++  /** Do user/group update every 15 minutes by default, minimum 1 minute */
++  public final static String USERGROUPID_UPDATE_MILLIS_KEY = "usergroupid.update.millis";
++  public final static long USERGROUPID_UPDATE_MILLIS_DEFAULT = 15 * 60 * 1000; // ms
++  public final static long USERGROUPID_UPDATE_MILLIS_MIN = 1 * 60 * 1000; // ms
++
++  public final static String UNKNOWN_USER = "nobody";
++  public final static String UNKNOWN_GROUP = "nobody";
++  
++  // Used for finding the configured static mapping file.
++  public static final String STATIC_ID_MAPPING_FILE_KEY = "static.id.mapping.file";
++  public static final String STATIC_ID_MAPPING_FILE_DEFAULT = "/etc/usergroupid.map";
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingServiceProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingServiceProvider.java
+new file mode 100644
+index 0000000..4a1185e
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/IdMappingServiceProvider.java
+@@ -0,0 +1,56 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.security;
++
++import java.io.IOException;
++import java.util.List;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
++import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
++
++/**
++ * An interface for the implementation of <userId, userName> mapping
++ * and <groupId, groupName> mapping
++ */
++@InterfaceAudience.Public
++@InterfaceStability.Evolving
++public interface IdMappingServiceProvider {
++
++  // Return uid for given user name
++  public int getUid(String user) throws IOException;
++
++  // Return gid for given group name
++  public int getGid(String group) throws IOException;
++
++  // Return user name for given user id uid, if not found, return 
++  // <unknown> passed to this method
++  public String getUserName(int uid, String unknown);
++
++  // Return group name for given groupd id gid, if not found, return 
++  // <unknown> passed to this method
++  public String getGroupName(int gid, String unknown);
++  
++  // Return uid for given user name.
++  // When can't map user, return user name's string hashcode
++  public int getUidAllowingUnknown(String user);
++
++  // Return gid for given group name.
++  // When can't map group, return group name's string hashcode
++  public int getGidAllowingUnknown(String group);
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedIdMapping.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedIdMapping.java
+new file mode 100644
+index 0000000..0502c74
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedIdMapping.java
+@@ -0,0 +1,401 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.security;
++
++import java.io.BufferedReader;
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.IOException;
++import java.io.InputStreamReader;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.util.Time;
++
++import com.google.common.annotations.VisibleForTesting;
++import com.google.common.collect.BiMap;
++import com.google.common.collect.HashBiMap;
++
++/**
++ * A simple shell-based implementation of {@link IdMappingServiceProvider} 
++ * Map id to user name or group name. It does update every 15 minutes. Only a
++ * single instance of this class is expected to be on the server.
++ */
++public class ShellBasedIdMapping implements IdMappingServiceProvider {
++
++  private static final Log LOG =
++      LogFactory.getLog(ShellBasedIdMapping.class);
++
++  private final static String OS = System.getProperty("os.name");
++
++  /** Shell commands to get users and groups */
++  static final String GET_ALL_USERS_CMD = "getent passwd | cut -d: -f1,3";
++  static final String GET_ALL_GROUPS_CMD = "getent group | cut -d: -f1,3";
++  static final String MAC_GET_ALL_USERS_CMD = "dscl . -list /Users UniqueID";
++  static final String MAC_GET_ALL_GROUPS_CMD = "dscl . -list /Groups PrimaryGroupID";
++
++  private final File staticMappingFile;
++
++  // Used for parsing the static mapping file.
++  private static final Pattern EMPTY_LINE = Pattern.compile("^\\s*$");
++  private static final Pattern COMMENT_LINE = Pattern.compile("^\\s*#.*$");
++  private static final Pattern MAPPING_LINE =
++      Pattern.compile("^(uid|gid)\\s+(\\d+)\\s+(\\d+)\\s*(#.*)?$");
++
++  final private long timeout;
++  
++  // Maps for id to name map. Guarded by this object monitor lock
++  private BiMap<Integer, String> uidNameMap = HashBiMap.create();
++  private BiMap<Integer, String> gidNameMap = HashBiMap.create();
++
++  private long lastUpdateTime = 0; // Last time maps were updated
++  
++  public ShellBasedIdMapping(Configuration conf,
++      final String defaultStaticIdMappingFile) throws IOException {
++    long updateTime = conf.getLong(
++        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY,
++        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT);
++    // Minimal interval is 1 minute
++    if (updateTime < IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN) {
++      LOG.info("User configured user account update time is less"
++          + " than 1 minute. Use 1 minute instead.");
++      timeout = IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN;
++    } else {
++      timeout = updateTime;
++    }
++    
++    String staticFilePath = conf.get(IdMappingConstant.STATIC_ID_MAPPING_FILE_KEY,
++        defaultStaticIdMappingFile);
++    staticMappingFile = new File(staticFilePath);
++    
++    updateMaps();
++  }
++
++  public ShellBasedIdMapping(Configuration conf) throws IOException {
++    this(conf, IdMappingConstant.STATIC_ID_MAPPING_FILE_DEFAULT);
++  }
++
++  @VisibleForTesting
++  public long getTimeout() {
++    return timeout;
++  }
++  
++  synchronized private boolean isExpired() {
++    return Time.monotonicNow() - lastUpdateTime > timeout;
++  }
++
++  // If can't update the maps, will keep using the old ones
++  private void checkAndUpdateMaps() {
++    if (isExpired()) {
++      LOG.info("Update cache now");
++      try {
++        updateMaps();
++      } catch (IOException e) {
++        LOG.error("Can't update the maps. Will use the old ones,"
++            + " which can potentially cause problem.", e);
++      }
++    }
++  }
++
++  private static final String DUPLICATE_NAME_ID_DEBUG_INFO =
++      "NFS gateway could have problem starting with duplicate name or id on the host system.\n"
++      + "This is because HDFS (non-kerberos cluster) uses name as the only way to identify a user or group.\n"
++      + "The host system with duplicated user/group name or id might work fine most of the time by itself.\n"
++      + "However when NFS gateway talks to HDFS, HDFS accepts only user and group name.\n"
++      + "Therefore, same name means the same user or same group. To find the duplicated names/ids, one can do:\n"
++      + "<getent passwd | cut -d: -f1,3> and <getent group | cut -d: -f1,3> on Linux systems,\n"
++      + "<dscl . -list /Users UniqueID> and <dscl . -list /Groups PrimaryGroupID> on MacOS.";
++  
++  private static void reportDuplicateEntry(final String header,
++      final Integer key, final String value,
++      final Integer ekey, final String evalue) {    
++      LOG.warn("\n" + header + String.format(
++          "new entry (%d, %s), existing entry: (%d, %s).\n%s\n%s",
++          key, value, ekey, evalue,
++          "The new entry is to be ignored for the following reason.",
++          DUPLICATE_NAME_ID_DEBUG_INFO));
++  }
++
++  /**
++   * uid and gid are defined as uint32 in linux. Some systems create
++   * (intended or unintended) <nfsnobody, 4294967294> kind of <name,Id>
++   * mapping, where 4294967294 is 2**32-2 as unsigned int32. As an example,
++   *   https://bugzilla.redhat.com/show_bug.cgi?id=511876.
++   * Because user or group id are treated as Integer (signed integer or int32)
++   * here, the number 4294967294 is out of range. The solution is to convert
++   * uint32 to int32, so to map the out-of-range ID to the negative side of
++   * Integer, e.g. 4294967294 maps to -2 and 4294967295 maps to -1.
++   */
++  private static Integer parseId(final String idStr) {
++    Long longVal = Long.parseLong(idStr);
++    int intVal = longVal.intValue();
++    return Integer.valueOf(intVal);
++  }
++  
++  /**
++   * Get the whole list of users and groups and save them in the maps.
++   * @throws IOException 
++   */
++  @VisibleForTesting
++  public static void updateMapInternal(BiMap<Integer, String> map, String mapName,
++      String command, String regex, Map<Integer, Integer> staticMapping)
++      throws IOException  {
++    BufferedReader br = null;
++    try {
++      Process process = Runtime.getRuntime().exec(
++          new String[] { "bash", "-c", command });
++      br = new BufferedReader(new InputStreamReader(process.getInputStream()));
++      String line = null;
++      while ((line = br.readLine()) != null) {
++        String[] nameId = line.split(regex);
++        if ((nameId == null) || (nameId.length != 2)) {
++          throw new IOException("Can't parse " + mapName + " list entry:" + line);
++        }
++        LOG.debug("add to " + mapName + "map:" + nameId[0] + " id:" + nameId[1]);
++        // HDFS can't differentiate duplicate names with simple authentication
++        final Integer key = staticMapping.get(parseId(nameId[1]));
++        final String value = nameId[0];
++        if (map.containsKey(key)) {
++          final String prevValue = map.get(key);
++          if (value.equals(prevValue)) {
++            // silently ignore equivalent entries
++            continue;
++          }
++          reportDuplicateEntry(
++              "Got multiple names associated with the same id: ",
++              key, value, key, prevValue);           
++          continue;
++        }
++        if (map.containsValue(value)) {
++          final Integer prevKey = map.inverse().get(value);
++          reportDuplicateEntry(
++              "Got multiple ids associated with the same name: ",
++              key, value, prevKey, value);
++          continue;
++        }
++        map.put(key, value);
++      }
++      LOG.info("Updated " + mapName + " map size: " + map.size());
++      
++    } catch (IOException e) {
++      LOG.error("Can't update " + mapName + " map");
++      throw e;
++    } finally {
++      if (br != null) {
++        try {
++          br.close();
++        } catch (IOException e1) {
++          LOG.error("Can't close BufferedReader of command result", e1);
++        }
++      }
++    }
++  }
++
++  synchronized public void updateMaps() throws IOException {
++    BiMap<Integer, String> uMap = HashBiMap.create();
++    BiMap<Integer, String> gMap = HashBiMap.create();
++
++    if (!OS.startsWith("Linux") && !OS.startsWith("Mac")) {
++      LOG.error("Platform is not supported:" + OS
++          + ". Can't update user map and group map and"
++          + " 'nobody' will be used for any user and group.");
++      return;
++    }
++    
++    StaticMapping staticMapping = new StaticMapping(
++        new HashMap<Integer, Integer>(), new HashMap<Integer, Integer>());
++    if (staticMappingFile.exists()) {
++      LOG.info("Using '" + staticMappingFile + "' for static UID/GID mapping...");
++      staticMapping = parseStaticMap(staticMappingFile);
++    } else {
++      LOG.info("Not doing static UID/GID mapping because '" + staticMappingFile
++          + "' does not exist.");
++    }
++
++    if (OS.startsWith("Mac")) {
++      updateMapInternal(uMap, "user", MAC_GET_ALL_USERS_CMD, "\\s+",
++          staticMapping.uidMapping);
++      updateMapInternal(gMap, "group", MAC_GET_ALL_GROUPS_CMD, "\\s+",
++          staticMapping.gidMapping);
++    } else {
++      updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
++          staticMapping.uidMapping);
++      updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
++          staticMapping.gidMapping);
++    }
++
++    uidNameMap = uMap;
++    gidNameMap = gMap;
++    lastUpdateTime = Time.monotonicNow();
++  }
++  
++  @SuppressWarnings("serial")
++  static final class PassThroughMap<K> extends HashMap<K, K> {
++    
++    public PassThroughMap() {
++      this(new HashMap<K, K>());
++    }
++    
++    public PassThroughMap(Map<K, K> mapping) {
++      super();
++      for (Map.Entry<K, K> entry : mapping.entrySet()) {
++        super.put(entry.getKey(), entry.getValue());
++      }
++    }
++
++    @SuppressWarnings("unchecked")
++    @Override
++    public K get(Object key) {
++      if (super.containsKey(key)) {
++        return super.get(key);
++      } else {
++        return (K) key;
++      }
++    }
++  }
++  
++  @VisibleForTesting
++  static final class StaticMapping {
++    final Map<Integer, Integer> uidMapping;
++    final Map<Integer, Integer> gidMapping;
++    
++    public StaticMapping(Map<Integer, Integer> uidMapping,
++        Map<Integer, Integer> gidMapping) {
++      this.uidMapping = new PassThroughMap<Integer>(uidMapping);
++      this.gidMapping = new PassThroughMap<Integer>(gidMapping);
++    }
++  }
++  
++  static StaticMapping parseStaticMap(File staticMapFile)
++      throws IOException {
++    
++    Map<Integer, Integer> uidMapping = new HashMap<Integer, Integer>();
++    Map<Integer, Integer> gidMapping = new HashMap<Integer, Integer>();
++    
++    BufferedReader in = new BufferedReader(new InputStreamReader(
++        new FileInputStream(staticMapFile)));
++    
++    try {
++      String line = null;
++      while ((line = in.readLine()) != null) {
++        // Skip entirely empty and comment lines.
++        if (EMPTY_LINE.matcher(line).matches() ||
++            COMMENT_LINE.matcher(line).matches()) {
++          continue;
++        }
++        
++        Matcher lineMatcher = MAPPING_LINE.matcher(line);
++        if (!lineMatcher.matches()) {
++          LOG.warn("Could not parse line '" + line + "'. Lines should be of " +
++              "the form '[uid|gid] [remote id] [local id]'. Blank lines and " +
++              "everything following a '#' on a line will be ignored.");
++          continue;
++        }
++        
++        // We know the line is fine to parse without error checking like this
++        // since it matched the regex above.
++        String firstComponent = lineMatcher.group(1);
++        int remoteId = Integer.parseInt(lineMatcher.group(2));
++        int localId = Integer.parseInt(lineMatcher.group(3));
++        if (firstComponent.equals("uid")) {
++          uidMapping.put(localId, remoteId);
++        } else {
++          gidMapping.put(localId, remoteId);
++        }
++      }
++    } finally {
++      in.close();
++    }
++    
++    return new StaticMapping(uidMapping, gidMapping);
++  }
++
++  synchronized public int getUid(String user) throws IOException {
++    checkAndUpdateMaps();
++
++    Integer id = uidNameMap.inverse().get(user);
++    if (id == null) {
++      throw new IOException("User just deleted?:" + user);
++    }
++    return id.intValue();
++  }
++
++  synchronized public int getGid(String group) throws IOException {
++    checkAndUpdateMaps();
++
++    Integer id = gidNameMap.inverse().get(group);
++    if (id == null) {
++      throw new IOException("No such group:" + group);
++
++    }
++    return id.intValue();
++  }
++
++  synchronized public String getUserName(int uid, String unknown) {
++    checkAndUpdateMaps();
++    String uname = uidNameMap.get(uid);
++    if (uname == null) {
++      LOG.warn("Can't find user name for uid " + uid
++          + ". Use default user name " + unknown);
++      uname = unknown;
++    }
++    return uname;
++  }
++
++  synchronized public String getGroupName(int gid, String unknown) {
++    checkAndUpdateMaps();
++    String gname = gidNameMap.get(gid);
++    if (gname == null) {
++      LOG.warn("Can't find group name for gid " + gid
++          + ". Use default group name " + unknown);
++      gname = unknown;
++    }
++    return gname;
++  }
++
++  // When can't map user, return user name's string hashcode
++  public int getUidAllowingUnknown(String user) {
++    checkAndUpdateMaps();
++    int uid;
++    try {
++      uid = getUid(user);
++    } catch (IOException e) {
++      uid = user.hashCode();
++      LOG.info("Can't map user " + user + ". Use its string hashcode:" + uid);
++    }
++    return uid;
++  }
++
++  // When can't map group, return group name's string hashcode
++  public int getGidAllowingUnknown(String group) {
++    checkAndUpdateMaps();
++    int gid;
++    try {
++      gid = getGid(group);
++    } catch (IOException e) {
++      gid = group.hashCode();
++      LOG.info("Can't map group " + group + ". Use its string hashcode:" + gid);
++    }
++    return gid;
++  }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestShellBasedIdMapping.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestShellBasedIdMapping.java
+new file mode 100644
+index 0000000..a3857e3
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestShellBasedIdMapping.java
+@@ -0,0 +1,217 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.security;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.OutputStream;
++import java.util.Map;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.security.ShellBasedIdMapping.PassThroughMap;
++import org.apache.hadoop.security.ShellBasedIdMapping.StaticMapping;
++import org.junit.Test;
++
++import com.google.common.collect.BiMap;
++import com.google.common.collect.HashBiMap;
++
++public class TestShellBasedIdMapping {
++  
++  private static final Map<Integer, Integer> EMPTY_PASS_THROUGH_MAP =
++      new PassThroughMap<Integer>();
++  
++  @Test
++  public void testStaticMapParsing() throws IOException {
++    File tempStaticMapFile = File.createTempFile("nfs-", ".map");
++    final String staticMapFileContents =
++        "uid 10 100\n" +
++        "gid 10 200\n" +
++        "uid 11 201 # comment at the end of a line\n" +
++        "uid 12 301\n" +
++        "# Comment at the beginning of a line\n" +
++        "    # Comment that starts late in the line\n" +
++        "uid 10000 10001# line without whitespace before comment\n" +
++        "uid 13 302\n" +
++        "gid\t11\t201\n" + // Tabs instead of spaces.
++        "\n" + // Entirely empty line.
++        "gid 12 202";
++    OutputStream out = new FileOutputStream(tempStaticMapFile);
++    out.write(staticMapFileContents.getBytes());
++    out.close();
++    StaticMapping parsedMap = ShellBasedIdMapping.parseStaticMap(tempStaticMapFile);
++    
++    assertEquals(10, (int)parsedMap.uidMapping.get(100));
++    assertEquals(11, (int)parsedMap.uidMapping.get(201));
++    assertEquals(12, (int)parsedMap.uidMapping.get(301));
++    assertEquals(13, (int)parsedMap.uidMapping.get(302));
++    assertEquals(10, (int)parsedMap.gidMapping.get(200));
++    assertEquals(11, (int)parsedMap.gidMapping.get(201));
++    assertEquals(12, (int)parsedMap.gidMapping.get(202));
++    assertEquals(10000, (int)parsedMap.uidMapping.get(10001));
++    // Ensure pass-through of unmapped IDs works.
++    assertEquals(1000, (int)parsedMap.uidMapping.get(1000));
++  }
++  
++  @Test
++  public void testStaticMapping() throws IOException {
++    Map<Integer, Integer> uidStaticMap = new PassThroughMap<Integer>();
++    Map<Integer, Integer> gidStaticMap = new PassThroughMap<Integer>();
++    
++    uidStaticMap.put(11501, 10);
++    gidStaticMap.put(497, 200);
++    
++    // Maps for id to name map
++    BiMap<Integer, String> uMap = HashBiMap.create();
++    BiMap<Integer, String> gMap = HashBiMap.create();
++    
++    String GET_ALL_USERS_CMD =
++        "echo \"atm:x:1000:1000:Aaron T. Myers,,,:/home/atm:/bin/bash\n"
++        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\""
++        + " | cut -d: -f1,3";
++    
++    String GET_ALL_GROUPS_CMD = "echo \"hdfs:*:11501:hrt_hdfs\n"
++        + "mapred:x:497\n"
++        + "mapred2:x:498\""
++        + " | cut -d: -f1,3";
++
++    ShellBasedIdMapping.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
++        uidStaticMap);
++    ShellBasedIdMapping.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
++        gidStaticMap);
++    
++    assertEquals("hdfs", uMap.get(10));
++    assertEquals(10, (int)uMap.inverse().get("hdfs"));
++    assertEquals("atm", uMap.get(1000));
++    assertEquals(1000, (int)uMap.inverse().get("atm"));
++    
++    assertEquals("hdfs", gMap.get(11501));
++    assertEquals(11501, (int)gMap.inverse().get("hdfs"));
++    assertEquals("mapred", gMap.get(200));
++    assertEquals(200, (int)gMap.inverse().get("mapred"));
++    assertEquals("mapred2", gMap.get(498));
++    assertEquals(498, (int)gMap.inverse().get("mapred2"));
++  }
++
++  @Test
++  public void testDuplicates() throws IOException {
++    String GET_ALL_USERS_CMD = "echo \"root:x:0:0:root:/root:/bin/bash\n"
++        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "hdfs:x:11502:10788:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "hdfs1:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "hdfs2:x:11502:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "bin:x:2:2:bin:/bin:/bin/sh\n"
++        + "bin:x:1:1:bin:/bin:/sbin/nologin\n"
++        + "daemon:x:1:1:daemon:/usr/sbin:/bin/sh\n"
++        + "daemon:x:2:2:daemon:/sbin:/sbin/nologin\""
++        + " | cut -d: -f1,3";
++    String GET_ALL_GROUPS_CMD = "echo \"hdfs:*:11501:hrt_hdfs\n"
++        + "mapred:x:497\n"
++        + "mapred2:x:497\n"
++        + "mapred:x:498\n" 
++        + "mapred3:x:498\"" 
++        + " | cut -d: -f1,3";
++    // Maps for id to name map
++    BiMap<Integer, String> uMap = HashBiMap.create();
++    BiMap<Integer, String> gMap = HashBiMap.create();
++
++    ShellBasedIdMapping.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
++        EMPTY_PASS_THROUGH_MAP);
++    assertEquals(5, uMap.size());
++    assertEquals("root", uMap.get(0));
++    assertEquals("hdfs", uMap.get(11501));
++    assertEquals("hdfs2",uMap.get(11502));
++    assertEquals("bin", uMap.get(2));
++    assertEquals("daemon", uMap.get(1));
++
++    ShellBasedIdMapping.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
++        EMPTY_PASS_THROUGH_MAP);
++    assertTrue(gMap.size() == 3);
++    assertEquals("hdfs",gMap.get(11501));
++    assertEquals("mapred", gMap.get(497));
++    assertEquals("mapred3", gMap.get(498));
++  }
++
++  @Test
++  public void testIdOutOfIntegerRange() throws IOException {
++    String GET_ALL_USERS_CMD = "echo \""
++        + "nfsnobody:x:4294967294:4294967294:Anonymous NFS User:/var/lib/nfs:/sbin/nologin\n"
++        + "nfsnobody1:x:4294967295:4294967295:Anonymous NFS User:/var/lib/nfs1:/sbin/nologin\n"
++        + "maxint:x:2147483647:2147483647:Grid Distributed File System:/home/maxint:/bin/bash\n"
++        + "minint:x:2147483648:2147483648:Grid Distributed File System:/home/minint:/bin/bash\n"
++        + "archivebackup:*:1031:4294967294:Archive Backup:/home/users/archivebackup:/bin/sh\n"
++        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "daemon:x:2:2:daemon:/sbin:/sbin/nologin\""
++        + " | cut -d: -f1,3";
++    String GET_ALL_GROUPS_CMD = "echo \""
++        + "hdfs:*:11501:hrt_hdfs\n"
++        + "rpcuser:*:29:\n"
++        + "nfsnobody:*:4294967294:\n"
++        + "nfsnobody1:*:4294967295:\n"
++        + "maxint:*:2147483647:\n"
++        + "minint:*:2147483648:\n"
++        + "mapred3:x:498\"" 
++        + " | cut -d: -f1,3";
++    // Maps for id to name map
++    BiMap<Integer, String> uMap = HashBiMap.create();
++    BiMap<Integer, String> gMap = HashBiMap.create();
++
++    ShellBasedIdMapping.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
++        EMPTY_PASS_THROUGH_MAP);
++    assertTrue(uMap.size() == 7);
++    assertEquals("nfsnobody", uMap.get(-2));
++    assertEquals("nfsnobody1", uMap.get(-1));
++    assertEquals("maxint", uMap.get(2147483647));
++    assertEquals("minint", uMap.get(-2147483648));
++    assertEquals("archivebackup", uMap.get(1031));
++    assertEquals("hdfs",uMap.get(11501));
++    assertEquals("daemon", uMap.get(2));
++
++    ShellBasedIdMapping.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
++        EMPTY_PASS_THROUGH_MAP);
++    assertTrue(gMap.size() == 7);
++    assertEquals("hdfs",gMap.get(11501));
++    assertEquals("rpcuser", gMap.get(29));
++    assertEquals("nfsnobody", gMap.get(-2));
++    assertEquals("nfsnobody1", gMap.get(-1));
++    assertEquals("maxint", gMap.get(2147483647));
++    assertEquals("minint", gMap.get(-2147483648));
++    assertEquals("mapred3", gMap.get(498));
++  }
++
++  @Test
++  public void testUserUpdateSetting() throws IOException {
++    ShellBasedIdMapping iug = new ShellBasedIdMapping(new Configuration());
++    assertEquals(iug.getTimeout(),
++        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT);
++
++    Configuration conf = new Configuration();
++    conf.setLong(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY, 0);
++    iug = new ShellBasedIdMapping(conf);
++    assertEquals(iug.getTimeout(), IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN);
++
++    conf.setLong(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY,
++        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT * 2);
++    iug = new ShellBasedIdMapping(conf);
++    assertEquals(iug.getTimeout(),
++        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT * 2);
++  }
++}
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+deleted file mode 100644
+index c174533..0000000
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ /dev/null
+@@ -1,392 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.nfs.nfs3;
+-
+-import java.io.BufferedReader;
+-import java.io.File;
+-import java.io.FileInputStream;
+-import java.io.IOException;
+-import java.io.InputStreamReader;
+-import java.util.HashMap;
+-import java.util.Map;
+-import java.util.regex.Matcher;
+-import java.util.regex.Pattern;
+-
+-import org.apache.commons.logging.Log;
+-import org.apache.commons.logging.LogFactory;
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.util.Time;
+-
+-import com.google.common.annotations.VisibleForTesting;
+-import com.google.common.collect.BiMap;
+-import com.google.common.collect.HashBiMap;
+-
+-/**
+- * Map id to user name or group name. It does update every 15 minutes. Only a
+- * single instance of this class is expected to be on the server.
+- */
+-public class IdUserGroup {
+-  static final Log LOG = LogFactory.getLog(IdUserGroup.class);
+-  private final static String OS = System.getProperty("os.name");
+-
+-  /** Shell commands to get users and groups */
+-  static final String GET_ALL_USERS_CMD = "getent passwd | cut -d: -f1,3";
+-  static final String GET_ALL_GROUPS_CMD = "getent group | cut -d: -f1,3";
+-  static final String MAC_GET_ALL_USERS_CMD = "dscl . -list /Users UniqueID";
+-  static final String MAC_GET_ALL_GROUPS_CMD = "dscl . -list /Groups PrimaryGroupID";
+-
+-  private final File staticMappingFile;
+-
+-  // Used for parsing the static mapping file.
+-  private static final Pattern EMPTY_LINE = Pattern.compile("^\\s*$");
+-  private static final Pattern COMMENT_LINE = Pattern.compile("^\\s*#.*$");
+-  private static final Pattern MAPPING_LINE =
+-      Pattern.compile("^(uid|gid)\\s+(\\d+)\\s+(\\d+)\\s*(#.*)?$");
+-
+-  final private long timeout;
+-  
+-  // Maps for id to name map. Guarded by this object monitor lock
+-  private BiMap<Integer, String> uidNameMap = HashBiMap.create();
+-  private BiMap<Integer, String> gidNameMap = HashBiMap.create();
+-
+-  private long lastUpdateTime = 0; // Last time maps were updated
+-  
+-  public IdUserGroup(Configuration conf) throws IOException {
+-    long updateTime = conf.getLong(
+-        Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_KEY,
+-        Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_DEFAULT);
+-    // Minimal interval is 1 minute
+-    if (updateTime < Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_MIN) {
+-      LOG.info("User configured user account update time is less"
+-          + " than 1 minute. Use 1 minute instead.");
+-      timeout = Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_MIN;
+-    } else {
+-      timeout = updateTime;
+-    }
+-    
+-    String staticFilePath = conf.get(Nfs3Constant.NFS_STATIC_MAPPING_FILE_KEY,
+-        Nfs3Constant.NFS_STATIC_MAPPING_FILE_DEFAULT);
+-    staticMappingFile = new File(staticFilePath);
+-    
+-    updateMaps();
+-  }
+-
+-  @VisibleForTesting
+-  public long getTimeout() {
+-    return timeout;
+-  }
+-  
+-  synchronized private boolean isExpired() {
+-    return Time.monotonicNow() - lastUpdateTime > timeout;
+-  }
+-
+-  // If can't update the maps, will keep using the old ones
+-  private void checkAndUpdateMaps() {
+-    if (isExpired()) {
+-      LOG.info("Update cache now");
+-      try {
+-        updateMaps();
+-      } catch (IOException e) {
+-        LOG.error("Can't update the maps. Will use the old ones,"
+-            + " which can potentially cause problem.", e);
+-      }
+-    }
+-  }
+-
+-  private static final String DUPLICATE_NAME_ID_DEBUG_INFO =
+-      "NFS gateway could have problem starting with duplicate name or id on the host system.\n"
+-      + "This is because HDFS (non-kerberos cluster) uses name as the only way to identify a user or group.\n"
+-      + "The host system with duplicated user/group name or id might work fine most of the time by itself.\n"
+-      + "However when NFS gateway talks to HDFS, HDFS accepts only user and group name.\n"
+-      + "Therefore, same name means the same user or same group. To find the duplicated names/ids, one can do:\n"
+-      + "<getent passwd | cut -d: -f1,3> and <getent group | cut -d: -f1,3> on Linux systems,\n"
+-      + "<dscl . -list /Users UniqueID> and <dscl . -list /Groups PrimaryGroupID> on MacOS.";
+-  
+-  private static void reportDuplicateEntry(final String header,
+-      final Integer key, final String value,
+-      final Integer ekey, final String evalue) {    
+-      LOG.warn("\n" + header + String.format(
+-          "new entry (%d, %s), existing entry: (%d, %s).\n%s\n%s",
+-          key, value, ekey, evalue,
+-          "The new entry is to be ignored for the following reason.",
+-          DUPLICATE_NAME_ID_DEBUG_INFO));
+-  }
+-
+-  /**
+-   * uid and gid are defined as uint32 in linux. Some systems create
+-   * (intended or unintended) <nfsnobody, 4294967294> kind of <name,Id>
+-   * mapping, where 4294967294 is 2**32-2 as unsigned int32. As an example,
+-   *   https://bugzilla.redhat.com/show_bug.cgi?id=511876.
+-   * Because user or group id are treated as Integer (signed integer or int32)
+-   * here, the number 4294967294 is out of range. The solution is to convert
+-   * uint32 to int32, so to map the out-of-range ID to the negative side of
+-   * Integer, e.g. 4294967294 maps to -2 and 4294967295 maps to -1.
+-   */
+-  private static Integer parseId(final String idStr) {
+-    Long longVal = Long.parseLong(idStr);
+-    int intVal = longVal.intValue();
+-    return Integer.valueOf(intVal);
+-  }
+-  
+-  /**
+-   * Get the whole list of users and groups and save them in the maps.
+-   * @throws IOException 
+-   */
+-  @VisibleForTesting
+-  public static void updateMapInternal(BiMap<Integer, String> map, String mapName,
+-      String command, String regex, Map<Integer, Integer> staticMapping)
+-      throws IOException  {
+-    BufferedReader br = null;
+-    try {
+-      Process process = Runtime.getRuntime().exec(
+-          new String[] { "bash", "-c", command });
+-      br = new BufferedReader(new InputStreamReader(process.getInputStream()));
+-      String line = null;
+-      while ((line = br.readLine()) != null) {
+-        String[] nameId = line.split(regex);
+-        if ((nameId == null) || (nameId.length != 2)) {
+-          throw new IOException("Can't parse " + mapName + " list entry:" + line);
+-        }
+-        LOG.debug("add to " + mapName + "map:" + nameId[0] + " id:" + nameId[1]);
+-        // HDFS can't differentiate duplicate names with simple authentication
+-        final Integer key = staticMapping.get(parseId(nameId[1]));
+-        final String value = nameId[0];
+-        if (map.containsKey(key)) {
+-          final String prevValue = map.get(key);
+-          if (value.equals(prevValue)) {
+-            // silently ignore equivalent entries
+-            continue;
+-          }
+-          reportDuplicateEntry(
+-              "Got multiple names associated with the same id: ",
+-              key, value, key, prevValue);           
+-          continue;
+-        }
+-        if (map.containsValue(value)) {
+-          final Integer prevKey = map.inverse().get(value);
+-          reportDuplicateEntry(
+-              "Got multiple ids associated with the same name: ",
+-              key, value, prevKey, value);
+-          continue;
+-        }
+-        map.put(key, value);
+-      }
+-      LOG.info("Updated " + mapName + " map size: " + map.size());
+-      
+-    } catch (IOException e) {
+-      LOG.error("Can't update " + mapName + " map");
+-      throw e;
+-    } finally {
+-      if (br != null) {
+-        try {
+-          br.close();
+-        } catch (IOException e1) {
+-          LOG.error("Can't close BufferedReader of command result", e1);
+-        }
+-      }
+-    }
+-  }
+-
+-  synchronized public void updateMaps() throws IOException {
+-    BiMap<Integer, String> uMap = HashBiMap.create();
+-    BiMap<Integer, String> gMap = HashBiMap.create();
+-
+-    if (!OS.startsWith("Linux") && !OS.startsWith("Mac")) {
+-      LOG.error("Platform is not supported:" + OS
+-          + ". Can't update user map and group map and"
+-          + " 'nobody' will be used for any user and group.");
+-      return;
+-    }
+-    
+-    StaticMapping staticMapping = new StaticMapping(
+-        new HashMap<Integer, Integer>(), new HashMap<Integer, Integer>());
+-    if (staticMappingFile.exists()) {
+-      LOG.info("Using '" + staticMappingFile + "' for static UID/GID mapping...");
+-      staticMapping = parseStaticMap(staticMappingFile);
+-    } else {
+-      LOG.info("Not doing static UID/GID mapping because '" + staticMappingFile
+-          + "' does not exist.");
+-    }
+-
+-    if (OS.startsWith("Mac")) {
+-      updateMapInternal(uMap, "user", MAC_GET_ALL_USERS_CMD, "\\s+",
+-          staticMapping.uidMapping);
+-      updateMapInternal(gMap, "group", MAC_GET_ALL_GROUPS_CMD, "\\s+",
+-          staticMapping.gidMapping);
+-    } else {
+-      updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
+-          staticMapping.uidMapping);
+-      updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
+-          staticMapping.gidMapping);
+-    }
+-
+-    uidNameMap = uMap;
+-    gidNameMap = gMap;
+-    lastUpdateTime = Time.monotonicNow();
+-  }
+-  
+-  @SuppressWarnings("serial")
+-  static final class PassThroughMap<K> extends HashMap<K, K> {
+-    
+-    public PassThroughMap() {
+-      this(new HashMap<K, K>());
+-    }
+-    
+-    public PassThroughMap(Map<K, K> mapping) {
+-      super();
+-      for (Map.Entry<K, K> entry : mapping.entrySet()) {
+-        super.put(entry.getKey(), entry.getValue());
+-      }
+-    }
+-
+-    @SuppressWarnings("unchecked")
+-    @Override
+-    public K get(Object key) {
+-      if (super.containsKey(key)) {
+-        return super.get(key);
+-      } else {
+-        return (K) key;
+-      }
+-    }
+-  }
+-  
+-  @VisibleForTesting
+-  static final class StaticMapping {
+-    final Map<Integer, Integer> uidMapping;
+-    final Map<Integer, Integer> gidMapping;
+-    
+-    public StaticMapping(Map<Integer, Integer> uidMapping,
+-        Map<Integer, Integer> gidMapping) {
+-      this.uidMapping = new PassThroughMap<Integer>(uidMapping);
+-      this.gidMapping = new PassThroughMap<Integer>(gidMapping);
+-    }
+-  }
+-  
+-  static StaticMapping parseStaticMap(File staticMapFile)
+-      throws IOException {
+-    
+-    Map<Integer, Integer> uidMapping = new HashMap<Integer, Integer>();
+-    Map<Integer, Integer> gidMapping = new HashMap<Integer, Integer>();
+-    
+-    BufferedReader in = new BufferedReader(new InputStreamReader(
+-        new FileInputStream(staticMapFile)));
+-    
+-    try {
+-      String line = null;
+-      while ((line = in.readLine()) != null) {
+-        // Skip entirely empty and comment lines.
+-        if (EMPTY_LINE.matcher(line).matches() ||
+-            COMMENT_LINE.matcher(line).matches()) {
+-          continue;
+-        }
+-        
+-        Matcher lineMatcher = MAPPING_LINE.matcher(line);
+-        if (!lineMatcher.matches()) {
+-          LOG.warn("Could not parse line '" + line + "'. Lines should be of " +
+-              "the form '[uid|gid] [remote id] [local id]'. Blank lines and " +
+-              "everything following a '#' on a line will be ignored.");
+-          continue;
+-        }
+-        
+-        // We know the line is fine to parse without error checking like this
+-        // since it matched the regex above.
+-        String firstComponent = lineMatcher.group(1);
+-        int remoteId = Integer.parseInt(lineMatcher.group(2));
+-        int localId = Integer.parseInt(lineMatcher.group(3));
+-        if (firstComponent.equals("uid")) {
+-          uidMapping.put(localId, remoteId);
+-        } else {
+-          gidMapping.put(localId, remoteId);
+-        }
+-      }
+-    } finally {
+-      in.close();
+-    }
+-    
+-    return new StaticMapping(uidMapping, gidMapping);
+-  }
+-
+-  synchronized public int getUid(String user) throws IOException {
+-    checkAndUpdateMaps();
+-
+-    Integer id = uidNameMap.inverse().get(user);
+-    if (id == null) {
+-      throw new IOException("User just deleted?:" + user);
+-    }
+-    return id.intValue();
+-  }
+-
+-  synchronized public int getGid(String group) throws IOException {
+-    checkAndUpdateMaps();
+-
+-    Integer id = gidNameMap.inverse().get(group);
+-    if (id == null) {
+-      throw new IOException("No such group:" + group);
+-
+-    }
+-    return id.intValue();
+-  }
+-
+-  synchronized public String getUserName(int uid, String unknown) {
+-    checkAndUpdateMaps();
+-    String uname = uidNameMap.get(uid);
+-    if (uname == null) {
+-      LOG.warn("Can't find user name for uid " + uid
+-          + ". Use default user name " + unknown);
+-      uname = unknown;
+-    }
+-    return uname;
+-  }
+-
+-  synchronized public String getGroupName(int gid, String unknown) {
+-    checkAndUpdateMaps();
+-    String gname = gidNameMap.get(gid);
+-    if (gname == null) {
+-      LOG.warn("Can't find group name for gid " + gid
+-          + ". Use default group name " + unknown);
+-      gname = unknown;
+-    }
+-    return gname;
+-  }
+-
+-  // When can't map user, return user name's string hashcode
+-  public int getUidAllowingUnknown(String user) {
+-    checkAndUpdateMaps();
+-    int uid;
+-    try {
+-      uid = getUid(user);
+-    } catch (IOException e) {
+-      uid = user.hashCode();
+-      LOG.info("Can't map user " + user + ". Use its string hashcode:" + uid);
+-    }
+-    return uid;
+-  }
+-
+-  // When can't map group, return group name's string hashcode
+-  public int getGidAllowingUnknown(String group) {
+-    checkAndUpdateMaps();
+-    int gid;
+-    try {
+-      gid = getGid(group);
+-    } catch (IOException e) {
+-      gid = group.hashCode();
+-      LOG.info("Can't map group " + group + ". Use its string hashcode:" + gid);
+-    }
+-    return gid;
+-  }
+-}
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java
+index 37df44c..8b269af 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java
+@@ -194,15 +194,11 @@ public static WriteStableHow fromValue(int id) {
+   public static final String NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_KEY = "nfs.exports.cache.expirytime.millis";
+   public static final long NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_DEFAULT = 15 * 60 * 1000; // 15 min
+ 
+-  /** Do user/group update every 15 minutes by default, minimum 1 minute */
++  @Deprecated
+   public final static String NFS_USERGROUP_UPDATE_MILLIS_KEY = "nfs.usergroup.update.millis";
+-  public final static long NFS_USERGROUP_UPDATE_MILLIS_DEFAULT = 15 * 60 * 1000; // ms
+-  final static long NFS_USERGROUP_UPDATE_MILLIS_MIN = 1 * 60 * 1000; // ms
+-  
+-  public final static String UNKNOWN_USER = "nobody";
+-  public final static String UNKNOWN_GROUP = "nobody";
+   
+   // Used for finding the configured static mapping file.
++  @Deprecated
+   public static final String NFS_STATIC_MAPPING_FILE_KEY = "nfs.static.mapping.file";
+   public static final String NFS_STATIC_MAPPING_FILE_DEFAULT = "/etc/nfs.map";
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/security/SysSecurityHandler.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/security/SysSecurityHandler.java
+index 7423776..884bebc 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/security/SysSecurityHandler.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/security/SysSecurityHandler.java
+@@ -17,24 +17,26 @@
+  */
+ package org.apache.hadoop.oncrpc.security;
+ 
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.oncrpc.RpcCall;
++import org.apache.hadoop.security.IdMappingConstant;
++import org.apache.hadoop.security.IdMappingServiceProvider;
+ 
+ public class SysSecurityHandler extends SecurityHandler {
+   
+-  private final IdUserGroup iug;
++  private final IdMappingServiceProvider iug;
+   private final CredentialsSys mCredentialsSys;
+   
+   public SysSecurityHandler(CredentialsSys credentialsSys,
+-      IdUserGroup iug) {
++      IdMappingServiceProvider iug) {
+     this.mCredentialsSys = credentialsSys;
+     this.iug = iug;
+   }
+   
+   @Override
+   public String getUser() {
+-    return iug.getUserName(mCredentialsSys.getUID(), Nfs3Constant.UNKNOWN_USER);
++    return iug.getUserName(mCredentialsSys.getUID(),
++        IdMappingConstant.UNKNOWN_USER);
+   }
+ 
+   @Override
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+deleted file mode 100644
+index b27c68d..0000000
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
++++ /dev/null
+@@ -1,217 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.nfs.nfs3;
+-
+-import static org.junit.Assert.assertEquals;
+-import static org.junit.Assert.assertTrue;
+-
+-import java.io.File;
+-import java.io.FileOutputStream;
+-import java.io.IOException;
+-import java.io.OutputStream;
+-import java.util.Map;
+-
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup.PassThroughMap;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup.StaticMapping;
+-import org.junit.Test;
+-
+-import com.google.common.collect.BiMap;
+-import com.google.common.collect.HashBiMap;
+-
+-public class TestIdUserGroup {
+-  
+-  private static final Map<Integer, Integer> EMPTY_PASS_THROUGH_MAP =
+-      new PassThroughMap<Integer>();
+-  
+-  @Test
+-  public void testStaticMapParsing() throws IOException {
+-    File tempStaticMapFile = File.createTempFile("nfs-", ".map");
+-    final String staticMapFileContents =
+-        "uid 10 100\n" +
+-        "gid 10 200\n" +
+-        "uid 11 201 # comment at the end of a line\n" +
+-        "uid 12 301\n" +
+-        "# Comment at the beginning of a line\n" +
+-        "    # Comment that starts late in the line\n" +
+-        "uid 10000 10001# line without whitespace before comment\n" +
+-        "uid 13 302\n" +
+-        "gid\t11\t201\n" + // Tabs instead of spaces.
+-        "\n" + // Entirely empty line.
+-        "gid 12 202";
+-    OutputStream out = new FileOutputStream(tempStaticMapFile);
+-    out.write(staticMapFileContents.getBytes());
+-    out.close();
+-    StaticMapping parsedMap = IdUserGroup.parseStaticMap(tempStaticMapFile);
+-    
+-    assertEquals(10, (int)parsedMap.uidMapping.get(100));
+-    assertEquals(11, (int)parsedMap.uidMapping.get(201));
+-    assertEquals(12, (int)parsedMap.uidMapping.get(301));
+-    assertEquals(13, (int)parsedMap.uidMapping.get(302));
+-    assertEquals(10, (int)parsedMap.gidMapping.get(200));
+-    assertEquals(11, (int)parsedMap.gidMapping.get(201));
+-    assertEquals(12, (int)parsedMap.gidMapping.get(202));
+-    assertEquals(10000, (int)parsedMap.uidMapping.get(10001));
+-    // Ensure pass-through of unmapped IDs works.
+-    assertEquals(1000, (int)parsedMap.uidMapping.get(1000));
+-  }
+-  
+-  @Test
+-  public void testStaticMapping() throws IOException {
+-    Map<Integer, Integer> uidStaticMap = new PassThroughMap<Integer>();
+-    Map<Integer, Integer> gidStaticMap = new PassThroughMap<Integer>();
+-    
+-    uidStaticMap.put(11501, 10);
+-    gidStaticMap.put(497, 200);
+-    
+-    // Maps for id to name map
+-    BiMap<Integer, String> uMap = HashBiMap.create();
+-    BiMap<Integer, String> gMap = HashBiMap.create();
+-    
+-    String GET_ALL_USERS_CMD =
+-        "echo \"atm:x:1000:1000:Aaron T. Myers,,,:/home/atm:/bin/bash\n"
+-        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\""
+-        + " | cut -d: -f1,3";
+-    
+-    String GET_ALL_GROUPS_CMD = "echo \"hdfs:*:11501:hrt_hdfs\n"
+-        + "mapred:x:497\n"
+-        + "mapred2:x:498\""
+-        + " | cut -d: -f1,3";
+-
+-    IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
+-        uidStaticMap);
+-    IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
+-        gidStaticMap);
+-    
+-    assertEquals("hdfs", uMap.get(10));
+-    assertEquals(10, (int)uMap.inverse().get("hdfs"));
+-    assertEquals("atm", uMap.get(1000));
+-    assertEquals(1000, (int)uMap.inverse().get("atm"));
+-    
+-    assertEquals("hdfs", gMap.get(11501));
+-    assertEquals(11501, (int)gMap.inverse().get("hdfs"));
+-    assertEquals("mapred", gMap.get(200));
+-    assertEquals(200, (int)gMap.inverse().get("mapred"));
+-    assertEquals("mapred2", gMap.get(498));
+-    assertEquals(498, (int)gMap.inverse().get("mapred2"));
+-  }
+-
+-  @Test
+-  public void testDuplicates() throws IOException {
+-    String GET_ALL_USERS_CMD = "echo \"root:x:0:0:root:/root:/bin/bash\n"
+-        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
+-        + "hdfs:x:11502:10788:Grid Distributed File System:/home/hdfs:/bin/bash\n"
+-        + "hdfs1:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
+-        + "hdfs2:x:11502:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
+-        + "bin:x:2:2:bin:/bin:/bin/sh\n"
+-        + "bin:x:1:1:bin:/bin:/sbin/nologin\n"
+-        + "daemon:x:1:1:daemon:/usr/sbin:/bin/sh\n"
+-        + "daemon:x:2:2:daemon:/sbin:/sbin/nologin\""
+-        + " | cut -d: -f1,3";
+-    String GET_ALL_GROUPS_CMD = "echo \"hdfs:*:11501:hrt_hdfs\n"
+-        + "mapred:x:497\n"
+-        + "mapred2:x:497\n"
+-        + "mapred:x:498\n" 
+-        + "mapred3:x:498\"" 
+-        + " | cut -d: -f1,3";
+-    // Maps for id to name map
+-    BiMap<Integer, String> uMap = HashBiMap.create();
+-    BiMap<Integer, String> gMap = HashBiMap.create();
+-
+-    IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
+-        EMPTY_PASS_THROUGH_MAP);
+-    assertEquals(5, uMap.size());
+-    assertEquals("root", uMap.get(0));
+-    assertEquals("hdfs", uMap.get(11501));
+-    assertEquals("hdfs2",uMap.get(11502));
+-    assertEquals("bin", uMap.get(2));
+-    assertEquals("daemon", uMap.get(1));
+-
+-    IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
+-        EMPTY_PASS_THROUGH_MAP);
+-    assertTrue(gMap.size() == 3);
+-    assertEquals("hdfs",gMap.get(11501));
+-    assertEquals("mapred", gMap.get(497));
+-    assertEquals("mapred3", gMap.get(498));
+-  }
+-
+-  @Test
+-  public void testIdOutOfIntegerRange() throws IOException {
+-    String GET_ALL_USERS_CMD = "echo \""
+-        + "nfsnobody:x:4294967294:4294967294:Anonymous NFS User:/var/lib/nfs:/sbin/nologin\n"
+-        + "nfsnobody1:x:4294967295:4294967295:Anonymous NFS User:/var/lib/nfs1:/sbin/nologin\n"
+-        + "maxint:x:2147483647:2147483647:Grid Distributed File System:/home/maxint:/bin/bash\n"
+-        + "minint:x:2147483648:2147483648:Grid Distributed File System:/home/minint:/bin/bash\n"
+-        + "archivebackup:*:1031:4294967294:Archive Backup:/home/users/archivebackup:/bin/sh\n"
+-        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
+-        + "daemon:x:2:2:daemon:/sbin:/sbin/nologin\""
+-        + " | cut -d: -f1,3";
+-    String GET_ALL_GROUPS_CMD = "echo \""
+-        + "hdfs:*:11501:hrt_hdfs\n"
+-        + "rpcuser:*:29:\n"
+-        + "nfsnobody:*:4294967294:\n"
+-        + "nfsnobody1:*:4294967295:\n"
+-        + "maxint:*:2147483647:\n"
+-        + "minint:*:2147483648:\n"
+-        + "mapred3:x:498\"" 
+-        + " | cut -d: -f1,3";
+-    // Maps for id to name map
+-    BiMap<Integer, String> uMap = HashBiMap.create();
+-    BiMap<Integer, String> gMap = HashBiMap.create();
+-
+-    IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":",
+-        EMPTY_PASS_THROUGH_MAP);
+-    assertTrue(uMap.size() == 7);
+-    assertEquals("nfsnobody", uMap.get(-2));
+-    assertEquals("nfsnobody1", uMap.get(-1));
+-    assertEquals("maxint", uMap.get(2147483647));
+-    assertEquals("minint", uMap.get(-2147483648));
+-    assertEquals("archivebackup", uMap.get(1031));
+-    assertEquals("hdfs",uMap.get(11501));
+-    assertEquals("daemon", uMap.get(2));
+-
+-    IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":",
+-        EMPTY_PASS_THROUGH_MAP);
+-    assertTrue(gMap.size() == 7);
+-    assertEquals("hdfs",gMap.get(11501));
+-    assertEquals("rpcuser", gMap.get(29));
+-    assertEquals("nfsnobody", gMap.get(-2));
+-    assertEquals("nfsnobody1", gMap.get(-1));
+-    assertEquals("maxint", gMap.get(2147483647));
+-    assertEquals("minint", gMap.get(-2147483648));
+-    assertEquals("mapred3", gMap.get(498));
+-  }
+-
+-  @Test
+-  public void testUserUpdateSetting() throws IOException {
+-    IdUserGroup iug = new IdUserGroup(new Configuration());
+-    assertEquals(iug.getTimeout(),
+-        Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_DEFAULT);
+-
+-    Configuration conf = new Configuration();
+-    conf.setLong(Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_KEY, 0);
+-    iug = new IdUserGroup(conf);
+-    assertEquals(iug.getTimeout(), Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_MIN);
+-
+-    conf.setLong(Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_KEY,
+-        Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_DEFAULT * 2);
+-    iug = new IdUserGroup(conf);
+-    assertEquals(iug.getTimeout(),
+-        Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_DEFAULT * 2);
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
+index ff92794..5e73afb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
+@@ -21,6 +21,7 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
++import org.apache.hadoop.security.IdMappingConstant;
+ 
+ /**
+  * Adds deprecated keys into the configuration.
+@@ -41,7 +42,11 @@ private static void addDeprecatedKeys() {
+         new DeprecationDelta("dfs.nfs.exports.cache.expirytime.millis",
+             Nfs3Constant.NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_KEY),
+         new DeprecationDelta("hadoop.nfs.userupdate.milly",
+-            Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_KEY),
++            IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY),
++        new DeprecationDelta(Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_KEY,
++            IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY),
++        new DeprecationDelta(Nfs3Constant.NFS_STATIC_MAPPING_FILE_KEY,
++            IdMappingConstant.STATIC_ID_MAPPING_FILE_KEY),
+         new DeprecationDelta("dfs.nfs3.enableDump",
+             NfsConfigKeys.DFS_NFS_FILE_DUMP_KEY),
+         new DeprecationDelta("dfs.nfs3.dump.dir",
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java
+index 71b0185..6c42c84 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java
+@@ -24,12 +24,12 @@
+ import org.apache.hadoop.nfs.NfsFileType;
+ import org.apache.hadoop.nfs.NfsTime;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+ import org.apache.hadoop.nfs.nfs3.response.WccAttr;
+ import org.apache.hadoop.nfs.nfs3.response.WccData;
+ import org.apache.hadoop.oncrpc.XDR;
++import org.apache.hadoop.security.IdMappingServiceProvider;
+ import org.jboss.netty.buffer.ChannelBuffer;
+ import org.jboss.netty.channel.Channel;
+ 
+@@ -59,7 +59,7 @@ public static HdfsFileStatus getFileStatus(DFSClient client, String fileIdPath)
+   }
+ 
+   public static Nfs3FileAttributes getNfs3FileAttrFromFileStatus(
+-      HdfsFileStatus fs, IdUserGroup iug) {
++      HdfsFileStatus fs, IdMappingServiceProvider iug) {
+     /**
+      * Some 32bit Linux client has problem with 64bit fileId: it seems the 32bit
+      * client takes only the lower 32bit of the fileId and treats it as signed
+@@ -75,7 +75,7 @@ public static Nfs3FileAttributes getNfs3FileAttrFromFileStatus(
+   }
+ 
+   public static Nfs3FileAttributes getFileAttr(DFSClient client,
+-      String fileIdPath, IdUserGroup iug) throws IOException {
++      String fileIdPath, IdMappingServiceProvider iug) throws IOException {
+     HdfsFileStatus fs = getFileStatus(client, fileIdPath);
+     return fs == null ? null : getNfs3FileAttrFromFileStatus(fs, iug);
+   }
+@@ -100,7 +100,8 @@ public static WccAttr getWccAttr(Nfs3FileAttributes attr) {
+ 
+   // TODO: maybe not efficient
+   public static WccData createWccData(final WccAttr preOpAttr,
+-      DFSClient dfsClient, final String fileIdPath, final IdUserGroup iug)
++      DFSClient dfsClient, final String fileIdPath,
++      final IdMappingServiceProvider iug)
+       throws IOException {
+     Nfs3FileAttributes postOpDirAttr = getFileAttr(dfsClient, fileIdPath, iug);
+     return new WccData(preOpAttr, postOpDirAttr);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
+index b48a015..20a2d4d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
+@@ -43,7 +43,6 @@
+ import org.apache.hadoop.io.BytesWritable.Comparator;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant.WriteStableHow;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+@@ -55,6 +54,7 @@
+ import org.apache.hadoop.nfs.nfs3.response.WccData;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.VerifierNone;
++import org.apache.hadoop.security.IdMappingServiceProvider;
+ import org.apache.hadoop.util.Daemon;
+ import org.apache.hadoop.util.Time;
+ import org.jboss.netty.channel.Channel;
+@@ -101,7 +101,7 @@
+   }
+ 
+   private final DFSClient client;
+-  private final IdUserGroup iug;
++  private final IdMappingServiceProvider iug;
+   
+   // The stream status. False means the stream is closed.
+   private volatile boolean activeState;
+@@ -223,13 +223,13 @@ private long updateNonSequentialWriteInMemory(long count) {
+   }
+   
+   OpenFileCtx(HdfsDataOutputStream fos, Nfs3FileAttributes latestAttr,
+-      String dumpFilePath, DFSClient client, IdUserGroup iug) {
++      String dumpFilePath, DFSClient client, IdMappingServiceProvider iug) {
+     this(fos, latestAttr, dumpFilePath, client, iug, false,
+         new NfsConfiguration());
+   }
+   
+   OpenFileCtx(HdfsDataOutputStream fos, Nfs3FileAttributes latestAttr,
+-      String dumpFilePath, DFSClient client, IdUserGroup iug,
++      String dumpFilePath, DFSClient client, IdMappingServiceProvider iug,
+       boolean aixCompatMode, NfsConfiguration config) {
+     this.fos = fos;
+     this.latestAttr = latestAttr;
+@@ -441,7 +441,7 @@ private WriteCtx checkRepeatedWriteRequest(WRITE3Request request,
+   
+   public void receivedNewWrite(DFSClient dfsClient, WRITE3Request request,
+       Channel channel, int xid, AsyncDataService asyncDataService,
+-      IdUserGroup iug) {
++      IdMappingServiceProvider iug) {
+     
+     if (!activeState) {
+       LOG.info("OpenFileCtx is inactive, fileId:"
+@@ -596,7 +596,7 @@ private synchronized WriteCtx addWritesToCache(WRITE3Request request,
+   
+   /** Process an overwrite write request */
+   private void processOverWrite(DFSClient dfsClient, WRITE3Request request,
+-      Channel channel, int xid, IdUserGroup iug) {
++      Channel channel, int xid, IdMappingServiceProvider iug) {
+     WccData wccData = new WccData(latestAttr.getWccAttr(), null);
+     long offset = request.getOffset();
+     int count = request.getCount();
+@@ -655,7 +655,7 @@ private synchronized boolean checkAndStartWrite(
+ 
+   private void receivedNewWriteInternal(DFSClient dfsClient,
+       WRITE3Request request, Channel channel, int xid,
+-      AsyncDataService asyncDataService, IdUserGroup iug) {
++      AsyncDataService asyncDataService, IdMappingServiceProvider iug) {
+     WriteStableHow stableHow = request.getStableHow();
+     WccAttr preOpAttr = latestAttr.getWccAttr();
+     int count = request.getCount();
+@@ -704,7 +704,7 @@ private void receivedNewWriteInternal(DFSClient dfsClient,
+    */
+   private WRITE3Response processPerfectOverWrite(DFSClient dfsClient,
+       long offset, int count, WriteStableHow stableHow, byte[] data,
+-      String path, WccData wccData, IdUserGroup iug) {
++      String path, WccData wccData, IdMappingServiceProvider iug) {
+     WRITE3Response response;
+ 
+     // Read the content back
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 0f89b83..fb21565 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -52,7 +52,6 @@
+ import org.apache.hadoop.nfs.NfsFileType;
+ import org.apache.hadoop.nfs.NfsTime;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant.NFSPROC3;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant.WriteStableHow;
+@@ -123,7 +122,10 @@
+ import org.apache.hadoop.oncrpc.security.Verifier;
+ import org.apache.hadoop.oncrpc.security.VerifierNone;
+ import org.apache.hadoop.security.AccessControlException;
++import org.apache.hadoop.security.IdMappingConstant;
++import org.apache.hadoop.security.IdMappingServiceProvider;
+ import org.apache.hadoop.security.SecurityUtil;
++import org.apache.hadoop.security.ShellBasedIdMapping;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.apache.hadoop.util.JvmPauseMonitor;
+@@ -146,7 +148,7 @@
+ 
+   private final NfsConfiguration config;
+   private final WriteManager writeManager;
+-  private final IdUserGroup iug;
++  private final IdMappingServiceProvider iug;
+   private final DFSClientCache clientCache;
+ 
+   private final NfsExports exports;
+@@ -171,7 +173,8 @@ public RpcProgramNfs3(NfsConfiguration config, DatagramSocket registrationSocket
+ 
+     this.config = config;
+     config.set(FsPermission.UMASK_LABEL, "000");
+-    iug = new IdUserGroup(config);
++    iug = new ShellBasedIdMapping(config,
++        Nfs3Constant.NFS_STATIC_MAPPING_FILE_DEFAULT);
+ 
+     aixCompatMode = config.getBoolean(
+         NfsConfigKeys.AIX_COMPAT_MODE_KEY,
+@@ -341,9 +344,9 @@ private void setattrInternal(DFSClient dfsClient, String fileIdPath,
+     if (updateFields.contains(SetAttrField.UID)
+         || updateFields.contains(SetAttrField.GID)) {
+       String uname = updateFields.contains(SetAttrField.UID) ? iug.getUserName(
+-          newAttr.getUid(), Nfs3Constant.UNKNOWN_USER) : null;
++          newAttr.getUid(), IdMappingConstant.UNKNOWN_USER) : null;
+       String gname = updateFields.contains(SetAttrField.GID) ? iug
+-          .getGroupName(newAttr.getGid(), Nfs3Constant.UNKNOWN_GROUP) : null;
++          .getGroupName(newAttr.getGid(), IdMappingConstant.UNKNOWN_GROUP) : null;
+       dfsClient.setOwner(fileIdPath, uname, gname);
+     }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
+index 9bded49..e71eaa5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
+@@ -31,7 +31,6 @@
+ import org.apache.hadoop.ipc.RemoteException;
+ import org.apache.hadoop.nfs.NfsFileType;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Status;
+@@ -41,6 +40,7 @@
+ import org.apache.hadoop.nfs.nfs3.response.WccData;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.VerifierNone;
++import org.apache.hadoop.security.IdMappingServiceProvider;
+ import org.jboss.netty.channel.Channel;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+@@ -52,7 +52,7 @@
+   public static final Log LOG = LogFactory.getLog(WriteManager.class);
+ 
+   private final NfsConfiguration config;
+-  private final IdUserGroup iug;
++  private final IdMappingServiceProvider iug;
+  
+   private AsyncDataService asyncDataService;
+   private boolean asyncDataServiceStarted = false;
+@@ -80,7 +80,7 @@ boolean addOpenFileStream(FileHandle h, OpenFileCtx ctx) {
+     return fileContextCache.put(h, ctx);
+   }
+   
+-  WriteManager(IdUserGroup iug, final NfsConfiguration config,
++  WriteManager(IdMappingServiceProvider iug, final NfsConfiguration config,
+       boolean aixCompatMode) {
+     this.iug = iug;
+     this.config = config;
+@@ -315,7 +315,7 @@ void handleCommit(DFSClient dfsClient, FileHandle fileHandle,
+    * If the file is in cache, update the size based on the cached data size
+    */
+   Nfs3FileAttributes getFileAttr(DFSClient client, FileHandle fileHandle,
+-      IdUserGroup iug) throws IOException {
++      IdMappingServiceProvider iug) throws IOException {
+     String fileIdPath = Nfs3Utils.getFileIdPath(fileHandle);
+     Nfs3FileAttributes attr = Nfs3Utils.getFileAttr(client, fileIdPath, iug);
+     if (attr != null) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestOpenFileCtxCache.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestOpenFileCtxCache.java
+index 68b4264..29b00c5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestOpenFileCtxCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestOpenFileCtxCache.java
+@@ -28,8 +28,8 @@
+ import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
+ import org.apache.hadoop.hdfs.nfs.nfs3.OpenFileCtx.CommitCtx;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
++import org.apache.hadoop.security.ShellBasedIdMapping;
+ import org.junit.Test;
+ import org.mockito.Mockito;
+ 
+@@ -49,15 +49,15 @@ public void testEviction() throws IOException, InterruptedException {
+     Mockito.when(fos.getPos()).thenReturn((long) 0);
+ 
+     OpenFileCtx context1 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context2 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context3 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context4 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context5 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+ 
+     OpenFileCtxCache cache = new OpenFileCtxCache(conf, 10 * 60 * 100);
+ 
+@@ -108,13 +108,13 @@ public void testScan() throws IOException, InterruptedException {
+     Mockito.when(fos.getPos()).thenReturn((long) 0);
+ 
+     OpenFileCtx context1 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context2 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context3 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+     OpenFileCtx context4 = new OpenFileCtx(fos, attr, "/dumpFilePath",
+-        dfsClient, new IdUserGroup(new NfsConfiguration()));
++        dfsClient, new ShellBasedIdMapping(new NfsConfiguration()));
+ 
+     OpenFileCtxCache cache = new OpenFileCtxCache(conf, 10 * 60 * 100);
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+index 301d4ef..10a175c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+@@ -89,6 +89,7 @@
+ import org.apache.hadoop.nfs.nfs3.response.WRITE3Response;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.SecurityHandler;
++import org.apache.hadoop.security.IdMappingConstant;
+ import org.apache.hadoop.security.authorize.DefaultImpersonationProvider;
+ import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.jboss.netty.channel.Channel;
+@@ -802,7 +803,7 @@ public void testDeprecatedKeys() {
+         Nfs3Constant.NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_KEY, 0) == 1000);
+ 
+     conf.setInt("hadoop.nfs.userupdate.milly", 10);
+-    assertTrue(conf.getInt(Nfs3Constant.NFS_USERGROUP_UPDATE_MILLIS_KEY, 0) == 10);
++    assertTrue(conf.getInt(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY, 0) == 10);
+ 
+     conf.set("dfs.nfs3.dump.dir", "/nfs/tmp");
+     assertTrue(conf.get(NfsConfigKeys.DFS_NFS_FILE_DUMP_DIR_KEY).equals(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+index c156fc0..96e6393 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+@@ -37,7 +37,6 @@
+ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant.WriteStableHow;
+ import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
+@@ -50,6 +49,7 @@
+ import org.apache.hadoop.nfs.nfs3.response.READ3Response;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.SecurityHandler;
++import org.apache.hadoop.security.ShellBasedIdMapping;
+ import org.apache.hadoop.security.authorize.DefaultImpersonationProvider;
+ import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.jboss.netty.channel.Channel;
+@@ -141,7 +141,7 @@ public void testCheckCommit() throws IOException {
+     NfsConfiguration conf = new NfsConfiguration();
+     conf.setBoolean(NfsConfigKeys.LARGE_FILE_UPLOAD, false);
+     OpenFileCtx ctx = new OpenFileCtx(fos, attr, "/dumpFilePath", dfsClient,
+-        new IdUserGroup(conf), false, conf);
++        new ShellBasedIdMapping(conf), false, conf);
+ 
+     COMMIT_STATUS ret;
+ 
+@@ -207,7 +207,7 @@ public void testCheckCommitLargeFileUpload() throws IOException {
+     NfsConfiguration conf = new NfsConfiguration();
+     conf.setBoolean(NfsConfigKeys.LARGE_FILE_UPLOAD, true);
+     OpenFileCtx ctx = new OpenFileCtx(fos, attr, "/dumpFilePath", dfsClient,
+-        new IdUserGroup(conf), false, conf);
++        new ShellBasedIdMapping(conf), false, conf);
+ 
+     COMMIT_STATUS ret;
+ 
+@@ -273,7 +273,7 @@ public void testCheckCommitAixCompatMode() throws IOException {
+     conf.setBoolean(NfsConfigKeys.LARGE_FILE_UPLOAD, false);
+     // Enable AIX compatibility mode.
+     OpenFileCtx ctx = new OpenFileCtx(fos, attr, "/dumpFilePath", dfsClient,
+-        new IdUserGroup(new NfsConfiguration()), true, conf);
++        new ShellBasedIdMapping(new NfsConfiguration()), true, conf);
+     
+     // Test fall-through to pendingWrites check in the event that commitOffset
+     // is greater than the number of bytes we've so far flushed.
+@@ -303,11 +303,11 @@ public void testCheckCommitFromRead() throws IOException {
+ 
+     config.setBoolean(NfsConfigKeys.LARGE_FILE_UPLOAD, false);
+     OpenFileCtx ctx = new OpenFileCtx(fos, attr, "/dumpFilePath", dfsClient,
+-        new IdUserGroup(config), false, config);
++        new ShellBasedIdMapping(config), false, config);
+ 
+     FileHandle h = new FileHandle(1); // fake handle for "/dumpFilePath"
+     COMMIT_STATUS ret;
+-    WriteManager wm = new WriteManager(new IdUserGroup(config), config, false);
++    WriteManager wm = new WriteManager(new ShellBasedIdMapping(config), config, false);
+     assertTrue(wm.addOpenFileStream(h, ctx));
+     
+     // Test inactive open file context
+@@ -372,11 +372,11 @@ public void testCheckCommitFromReadLargeFileUpload() throws IOException {
+ 
+     config.setBoolean(NfsConfigKeys.LARGE_FILE_UPLOAD, true);
+     OpenFileCtx ctx = new OpenFileCtx(fos, attr, "/dumpFilePath", dfsClient,
+-        new IdUserGroup(config), false, config);
++        new ShellBasedIdMapping(config), false, config);
+ 
+     FileHandle h = new FileHandle(1); // fake handle for "/dumpFilePath"
+     COMMIT_STATUS ret;
+-    WriteManager wm = new WriteManager(new IdUserGroup(config), config, false);
++    WriteManager wm = new WriteManager(new ShellBasedIdMapping(config), config, false);
+     assertTrue(wm.addOpenFileStream(h, ctx));
+     
+     // Test inactive open file context
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index 0244014..f467b00 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -382,7 +382,7 @@ HDFS NFS Gateway
+   file in the event one wishes to access the HDFS NFS Gateway from a system with
+   a completely disparate set of UIDs/GIDs. By default this file is located at
+   "/etc/nfs.map", but a custom location can be configured by setting the
+-  "nfs.static.mapping.file" property to the path of the static mapping file.
++  "static.id.mapping.file" property to the path of the static mapping file.
+   The format of the static mapping file is similar to what is described in the
+   exports(5) manual page, but roughly it is:
+ 
+-- 
+1.7.9.5
+

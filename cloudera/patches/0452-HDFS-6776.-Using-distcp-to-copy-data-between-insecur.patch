@@ -1,0 +1,168 @@
+From 20409a5a1cb6f845ccdca088a67e70195a7cfc8a Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Tue, 9 Sep 2014 22:16:42 -0700
+Subject: [PATCH 452/813] HDFS-6776. Using distcp to copy data between
+ insecure and secure cluster via webdhfs doesn't
+ work. (yzhangal via tucu)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../delegation/DelegationTokenSecretManager.java   |    3 +-
+ .../web/resources/NamenodeWebHdfsMethods.java      |    3 ++
+ .../apache/hadoop/hdfs/web/WebHdfsFileSystem.java  |   18 ++++++++-
+ .../org/apache/hadoop/hdfs/web/TestWebHDFS.java    |   41 ++++++++++++++++++++
+ 4 files changed, 62 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+index 175e3ed..8af7eba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+@@ -402,8 +402,7 @@ public static Credentials createCredentials(final NameNode namenode,
+     final Token<DelegationTokenIdentifier> token = namenode.getRpcServer(
+         ).getDelegationToken(new Text(renewer));
+     if (token == null) {
+-      throw new IOException("Failed to get the token for " + renewer
+-          + ", user=" + ugi.getShortUserName());
++      return null;
+     }
+ 
+     final InetSocketAddress addr = namenode.getNameNodeAddress();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+index 991885b..3949fbd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+@@ -283,6 +283,9 @@ private static DatanodeInfo bestNode(DatanodeInfo[] nodes,
+       final String renewer) throws IOException {
+     final Credentials c = DelegationTokenSecretManager.createCredentials(
+         namenode, ugi, renewer != null? renewer: ugi.getShortUserName());
++    if (c == null) {
++      return null;
++    }
+     final Token<? extends TokenIdentifier> t = c.getAllTokens().iterator().next();
+     Text kind = request.getScheme().equals("http") ? WebHdfsFileSystem.TOKEN_KIND
+         : SWebHdfsFileSystem.TOKEN_KIND;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+index 1d30dd1..4ecf829 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+@@ -41,6 +41,7 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.BlockLocation;
++import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.fs.ContentSummary;
+ import org.apache.hadoop.fs.DelegationTokenRenewer;
+ import org.apache.hadoop.fs.FSDataInputStream;
+@@ -102,6 +103,11 @@
+ 
+   /** Delegation token kind */
+   public static final Text TOKEN_KIND = new Text("WEBHDFS delegation");
++
++  @VisibleForTesting
++  public static final String CANT_FALLBACK_TO_INSECURE_MSG =
++      "The client is configured to only allow connecting to secure cluster";
++
+   private boolean canRefreshDelegationToken;
+ 
+   private UserGroupInformation ugi;
+@@ -112,6 +118,7 @@
+   private Path workingDir;
+   private InetSocketAddress nnAddrs[];
+   private int currentNNAddrIndex;
++  private boolean disallowFallbackToInsecureCluster;
+ 
+   /**
+    * Return the protocol scheme for the FileSystem.
+@@ -193,6 +200,9 @@ public synchronized void initialize(URI uri, Configuration conf
+ 
+     this.workingDir = getHomeDirectory();
+     this.canRefreshDelegationToken = UserGroupInformation.isSecurityEnabled();
++    this.disallowFallbackToInsecureCluster = !conf.getBoolean(
++        CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_KEY,
++        CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_DEFAULT);
+     this.delegationToken = null;
+   }
+ 
+@@ -1294,7 +1304,13 @@ protected URL getResolvedUrl(final HttpURLConnection connection
+         return JsonUtil.toDelegationToken(json);
+       }
+     }.run();
+-    token.setService(tokenServiceName);
++    if (token != null) {
++      token.setService(tokenServiceName);
++    } else {
++      if (disallowFallbackToInsecureCluster) {
++        throw new AccessControlException(CANT_FALLBACK_TO_INSECURE_MSG);
++      }
++    }
+     return token;
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
+index 1431211..eec49d8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
+@@ -29,6 +29,7 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.commons.logging.impl.Log4JLogger;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+ import org.apache.hadoop.fs.FileSystem;
+@@ -45,6 +46,7 @@
+ import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+ import org.apache.hadoop.ipc.RetriableException;
++import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.apache.log4j.Level;
+@@ -482,4 +484,43 @@ public void testRaceWhileNNStartup() throws Exception {
+       }
+     }
+   }
++
++  @Test
++  public void testDTInInsecureClusterWithFallback()
++      throws IOException, URISyntaxException {
++    MiniDFSCluster cluster = null;
++    final Configuration conf = WebHdfsTestUtil.createConf();
++    conf.setBoolean(CommonConfigurationKeys
++        .IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_KEY, true);
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
++      final FileSystem webHdfs = WebHdfsTestUtil.getWebHdfsFileSystem(conf,
++          WebHdfsFileSystem.SCHEME);
++      Assert.assertNull(webHdfs.getDelegationToken(null));
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++
++  @Test
++  public void testDTInInsecureCluster() throws Exception {
++    MiniDFSCluster cluster = null;
++    final Configuration conf = WebHdfsTestUtil.createConf();
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
++      final FileSystem webHdfs = WebHdfsTestUtil.getWebHdfsFileSystem(conf,
++          WebHdfsFileSystem.SCHEME);
++      webHdfs.getDelegationToken(null);
++      fail("No exception is thrown.");
++    } catch (AccessControlException ace) {
++      Assert.assertTrue(ace.getMessage().startsWith(
++          WebHdfsFileSystem.CANT_FALLBACK_TO_INSECURE_MSG));
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+-- 
+1.7.9.5
+

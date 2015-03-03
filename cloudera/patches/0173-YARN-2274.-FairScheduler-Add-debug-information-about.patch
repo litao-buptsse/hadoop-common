@@ -1,0 +1,67 @@
+From b152506e4e73717284c6bcbb36c6ce27830488e3 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Mon, 18 Aug 2014 15:52:39 -0700
+Subject: [PATCH 173/813] YARN-2274. FairScheduler: Add debug information
+ about cluster capacity, availability and
+ reservations. (kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1610542 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c43e7cb7605574d312ee45b3d164374734c3cf83)
+(cherry picked from commit f03192ba62f91360ce293d1c65f98d72864169f1)
+---
+ .../scheduler/fair/FairScheduler.java              |   20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index dc0648a..7e86755 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -136,6 +136,8 @@
+ 
+   // How often fair shares are re-calculated (ms)
+   protected long UPDATE_INTERVAL = 500;
++  private final int UPDATE_DEBUG_FREQUENCY = 5;
++  private int updatesToSkipForDebug = UPDATE_DEBUG_FREQUENCY;
+ 
+   private Thread updateThread;
+   private Thread schedulingThread;
+@@ -275,6 +277,18 @@ protected synchronized void update() {
+     // Recursively compute fair shares for all queues
+     // and update metrics
+     rootQueue.recomputeShares();
++
++    if (LOG.isDebugEnabled()) {
++      if (--updatesToSkipForDebug < 0) {
++        updatesToSkipForDebug = UPDATE_DEBUG_FREQUENCY;
++        LOG.debug("Cluster Capacity: " + clusterResource +
++            "  Allocations: " + rootMetrics.getAllocatedResources() +
++            "  Availability: " + Resource.newInstance(
++            rootMetrics.getAvailableMB(),
++            rootMetrics.getAvailableVirtualCores()) +
++            "  Demand: " + rootQueue.getDemand());
++      }
++    }
+   }
+ 
+   /**
+@@ -880,14 +894,14 @@ public Allocation allocate(ApplicationAttemptId appAttemptId,
+         // Update application requests
+         application.updateResourceRequests(ask);
+ 
+-        LOG.debug("allocate: post-update");
+         application.showRequests();
+       }
+ 
+       if (LOG.isDebugEnabled()) {
+-        LOG.debug("allocate:" +
++        LOG.debug("allocate: post-update" +
+             " applicationAttemptId=" + appAttemptId +
+-            " #ask=" + ask.size());
++            " #ask=" + ask.size() +
++            " reservation= " + application.getCurrentReservation());
+ 
+         LOG.debug("Preempting " + application.getPreemptionContainers().size()
+             + " container(s)");
+-- 
+1.7.9.5
+

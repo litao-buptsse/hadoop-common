@@ -1,0 +1,116 @@
+From 72d58f719b58d2943800fe5e04783d639cc9b3a0 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 20 Aug 2014 18:14:43 +0000
+Subject: [PATCH 387/813] HDFS-6870. Merge r1619192 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619193 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f87e8dc4b864019745bdedb0e0cd41073e0e7e6a)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   15 ++++---
+ .../java/org/apache/hadoop/hdfs/TestDFSRename.java |   44 ++++++++++++++++++++
+ 2 files changed, 54 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 2221ccd..70c8640 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -668,15 +668,20 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+         tx.updateMtimeAndLease(timestamp);
+ 
+         // Collect the blocks and remove the lease for previous dst
+-        long filesDeleted = -1;
++        boolean filesDeleted = false;
+         if (removedDst != null) {
+           undoRemoveDst = false;
+           if (removedNum > 0) {
+             BlocksMapUpdateInfo collectedBlocks = new BlocksMapUpdateInfo();
+             List<INode> removedINodes = new ChunkedArrayList<INode>();
+-            filesDeleted = removedDst.cleanSubtree(Snapshot.CURRENT_STATE_ID,
+-                dstIIP.getLatestSnapshotId(), collectedBlocks, removedINodes,
+-                true).get(Quota.NAMESPACE);
++            if (!removedDst.isInLatestSnapshot(dstIIP.getLatestSnapshotId())) {
++              removedDst.destroyAndCollectBlocks(collectedBlocks, removedINodes);
++              filesDeleted = true;
++            } else {
++              filesDeleted = removedDst.cleanSubtree(Snapshot.CURRENT_STATE_ID,
++                  dstIIP.getLatestSnapshotId(), collectedBlocks, removedINodes,
++                  true).get(Quota.NAMESPACE) >= 0;
++            }
+             getFSNamesystem().removePathAndBlocks(src, collectedBlocks,
+                 removedINodes, false);
+           }
+@@ -689,7 +694,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+         }
+ 
+         tx.updateQuotasInSourceTree();
+-        return filesDeleted >= 0;
++        return filesDeleted;
+       }
+     } finally {
+       if (undoRemoveSrc) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRename.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRename.java
+index 1c00e50..2e748b5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRename.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRename.java
+@@ -27,6 +27,9 @@
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.fs.Options.Rename;
++import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+ import org.junit.Test;
+ 
+@@ -125,4 +128,45 @@ public void testRename() throws Exception {
+       if (cluster != null) {cluster.shutdown();}
+     }
+   }
++  
++  /**
++   * Check the blocks of dst file are cleaned after rename with overwrite
++   */
++  @Test(timeout = 120000)
++  public void testRenameWithOverwrite() throws Exception {
++    final short replFactor = 2;
++    final long blockSize = 512;
++    Configuration conf = new Configuration();
++    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).
++        numDataNodes(replFactor).build();
++    DistributedFileSystem dfs = cluster.getFileSystem();
++    try {
++      
++      long fileLen = blockSize*3;
++      String src = "/foo/src";
++      String dst = "/foo/dst";
++      Path srcPath = new Path(src);
++      Path dstPath = new Path(dst);
++      
++      DFSTestUtil.createFile(dfs, srcPath, fileLen, replFactor, 1);
++      DFSTestUtil.createFile(dfs, dstPath, fileLen, replFactor, 1);
++      
++      LocatedBlocks lbs = NameNodeAdapter.getBlockLocations(
++          cluster.getNameNode(), dst, 0, fileLen);
++      BlockManager bm = NameNodeAdapter.getNamesystem(cluster.getNameNode()).
++          getBlockManager();
++      assertTrue(bm.getStoredBlock(lbs.getLocatedBlocks().get(0).getBlock().
++          getLocalBlock()) != null);
++      dfs.rename(srcPath, dstPath, Rename.OVERWRITE);
++      assertTrue(bm.getStoredBlock(lbs.getLocatedBlocks().get(0).getBlock().
++          getLocalBlock()) == null);
++    } finally {
++      if (dfs != null) {
++        dfs.close();
++      }
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+-- 
+1.7.9.5
+

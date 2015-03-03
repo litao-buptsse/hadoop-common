@@ -1,0 +1,104 @@
+From 9f1102990867ad9beae8ce9c6c00c270ebe6de03 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Wed, 3 Sep 2014 19:35:39 -0700
+Subject: [PATCH 513/813] HADOOP-11056. OsSecureRandom.setConf() might leak
+ file descriptors.  Contributed by Yongjun Zhang.
+
+(cherry picked from commit 8f1a668575d35bee11f4cd8173335be5352ec620)
+(cherry picked from commit 7b287d5ba61c4f26e110b05ff9d739542dc8f809)
+---
+ .../hadoop/crypto/random/OsSecureRandom.java       |   21 +++++++++++++++++---
+ .../hadoop/crypto/random/TestOsSecureRandom.java   |   15 ++++++++++++++
+ 2 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OsSecureRandom.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OsSecureRandom.java
+index c6cb0a8..fee4186 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OsSecureRandom.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/random/OsSecureRandom.java
+@@ -23,6 +23,8 @@
+ import java.io.IOException;
+ import java.util.Random;
+ 
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configurable;
+ import org.apache.hadoop.conf.Configuration;
+@@ -37,6 +39,8 @@
+  */
+ @InterfaceAudience.Private
+ public class OsSecureRandom extends Random implements Closeable, Configurable {
++  public static final Log LOG = LogFactory.getLog(OsSecureRandom.class);
++  
+   private static final long serialVersionUID = 6391500337172057900L;
+ 
+   private transient Configuration conf;
+@@ -72,12 +76,20 @@ synchronized public void setConf(Configuration conf) {
+         HADOOP_SECURITY_SECURE_RANDOM_DEVICE_FILE_PATH_KEY,
+         HADOOP_SECURITY_SECURE_RANDOM_DEVICE_FILE_PATH_DEFAULT);
+     File randomDevFile = new File(randomDevPath);
++
+     try {
++      close();
+       this.stream = new FileInputStream(randomDevFile);
+-      fillReservoir(0);
+     } catch (IOException e) {
+       throw new RuntimeException(e);
+     }
++
++    try {
++      fillReservoir(0);
++    } catch (RuntimeException e) {
++      close();
++      throw e;
++    }
+   }
+ 
+   @Override
+@@ -109,7 +121,10 @@ synchronized protected int next(int nbits) {
+   }
+ 
+   @Override
+-  synchronized public void close() throws IOException {
+-    stream.close();
++  synchronized public void close() {
++    if (stream != null) {
++      IOUtils.cleanup(LOG, stream);
++      stream = null;
++    }
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/random/TestOsSecureRandom.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/random/TestOsSecureRandom.java
+index 8fc5c70..50a0031 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/random/TestOsSecureRandom.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/random/TestOsSecureRandom.java
+@@ -22,6 +22,7 @@
+ 
+ import org.apache.commons.lang.SystemUtils;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.util.Shell.ShellCommandExecutor;
+ import org.junit.Assume;
+ import org.junit.Test;
+ 
+@@ -136,4 +137,18 @@ public void testRefillReservoir() throws Exception {
+     }
+     random.close();
+   }
++  
++  @Test(timeout=120000)
++  public void testOsSecureRandomSetConf() throws IOException {
++    Assume.assumeTrue(SystemUtils.IS_OS_LINUX);
++    OsSecureRandom random = new OsSecureRandom();
++    for(int n = 0; n < 10; ++n) {
++      random.setConf(new Configuration());
++      String[] scmd = new String[] {"/bin/sh", "-c", "lsof | wc -l"};
++      ShellCommandExecutor sce = new ShellCommandExecutor(scmd);
++      sce.execute(); 
++      System.out.println("==lsof result " + n + ":");
++      System.out.println(sce.getOutput());
++    }
++  }
+ }
+-- 
+1.7.9.5
+

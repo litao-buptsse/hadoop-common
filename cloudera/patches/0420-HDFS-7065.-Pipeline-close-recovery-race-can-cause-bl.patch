@@ -1,0 +1,32 @@
+From d1339100c62e31175b98c6a0c7bfdda765453c27 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Fri, 19 Sep 2014 09:01:27 -0500
+Subject: [PATCH 420/813] HDFS-7065. Pipeline close recovery race can cause
+ block corruption. Contributed by Kihwal Lee.
+ (cherry picked from commit
+ bf27b9ca574592ef603e126bacb9b6a37c9eb5c6)
+
+(cherry picked from commit 35fccfda3ebc9f7b7c271e7897f666f5aa980ea7)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../datanode/fsdataset/impl/FsDatasetImpl.java     |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+index c15a5a2..6d62b8b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+@@ -730,7 +730,7 @@ public synchronized ReplicaInPipeline recoverAppend(ExtendedBlock b,
+   }
+ 
+   @Override // FsDatasetSpi
+-  public String recoverClose(ExtendedBlock b, long newGS,
++  public synchronized String recoverClose(ExtendedBlock b, long newGS,
+       long expectedBlockLen) throws IOException {
+     LOG.info("Recover failed close " + b);
+     // check replica's state
+-- 
+1.7.9.5
+

@@ -1,0 +1,582 @@
+From 6ebb82e205c80a992a11b2a64104bae4ef1865f4 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 17 Sep 2014 11:23:47 -0700
+Subject: [PATCH 401/813] HDFS-6705. Create an XAttr that disallows the HDFS
+ admin from accessing a file. (clamb via wang)
+
+(cherry picked from commit ea4e2e843ecadd8019ea35413f4a34b97a424923)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+---
+ .../hdfs/server/common/HdfsServerConstants.java    |    3 +-
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   42 +++++-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   25 +++-
+ .../server/namenode/XAttrPermissionFilter.java     |   14 ++
+ .../src/site/apt/ExtendedAttributes.apt.vm         |    3 +-
+ .../hdfs/server/namenode/FSXAttrBaseTest.java      |  148 ++++++++++++++++++--
+ .../src/test/resources/testXAttrConf.xml           |   73 ++++++++++
+ 7 files changed, 284 insertions(+), 24 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+index a15661b..ca4fc49 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+@@ -298,5 +298,6 @@ public void write(DataOutput out) throws IOException {
+       "raw.hdfs.crypto.encryption.zone";
+   public static final String CRYPTO_XATTR_FILE_ENCRYPTION_INFO =
+       "raw.hdfs.crypto.file.encryption.info";
++  public static final String SECURITY_XATTR_UNREADABLE_BY_SUPERUSER =
++      "security.hdfs.unreadable.by.superuser";
+ }
+-
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 4df89bf..94d6c10 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -20,6 +20,7 @@
+ import static org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
+ import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_ENCRYPTION_ZONE;
+ import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_FILE_ENCRYPTION_INFO;
++import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
+ import static org.apache.hadoop.util.Time.now;
+ 
+ import java.io.Closeable;
+@@ -90,6 +91,7 @@
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Preconditions;
+ import com.google.common.collect.Lists;
++import org.apache.hadoop.security.AccessControlException;
+ 
+ /**
+  * Both FSDirectory and FSNamesystem manage the state of the namespace.
+@@ -128,6 +130,8 @@ private static INodeDirectorySnapshottable createRoot(FSNamesystem namesystem) {
+       DFSUtil.string2Bytes(DOT_INODES_STRING);
+   private final XAttr KEYID_XATTR =
+       XAttrHelper.buildXAttr(CRYPTO_XATTR_ENCRYPTION_ZONE, null);
++  private final XAttr UNREADABLE_BY_SUPERUSER_XATTR =
++      XAttrHelper.buildXAttr(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER, null);
+ 
+   INodeDirectory rootDir;
+   private final FSNamesystem namesystem;
+@@ -2614,7 +2618,8 @@ AclStatus getAclStatus(String src) throws IOException {
+    */
+   @VisibleForTesting
+   List<XAttr> filterINodeXAttrs(final List<XAttr> existingXAttrs,
+-      final List<XAttr> toFilter, final List<XAttr> filtered) {
++      final List<XAttr> toFilter, final List<XAttr> filtered)
++    throws AccessControlException {
+     if (existingXAttrs == null || existingXAttrs.isEmpty() ||
+         toFilter == null || toFilter.isEmpty()) {
+       return existingXAttrs;
+@@ -2630,6 +2635,10 @@ AclStatus getAclStatus(String src) throws IOException {
+         XAttr filter = it.next();
+         Preconditions.checkArgument(!KEYID_XATTR.equalsIgnoreValue(filter),
+             "The encryption zone xattr should never be deleted.");
++        if (UNREADABLE_BY_SUPERUSER_XATTR.equalsIgnoreValue(filter)) {
++          throw new AccessControlException("The xattr '" +
++              SECURITY_XATTR_UNREADABLE_BY_SUPERUSER + "' can not be deleted.");
++        }
+         if (a.equalsIgnoreValue(filter)) {
+           add = false;
+           it.remove();
+@@ -2768,16 +2777,23 @@ INode unprotectedSetXAttrs(final String src, final List<XAttr> xAttrs,
+     int snapshotId = iip.getLatestSnapshotId();
+     List<XAttr> existingXAttrs = XAttrStorage.readINodeXAttrs(inode);
+     List<XAttr> newXAttrs = setINodeXAttrs(existingXAttrs, xAttrs, flag);
++    final boolean isFile = inode.isFile();
+ 
+-    /*
+-     * If we're adding the encryption zone xattr, then add src to the list
+-     * of encryption zones.
+-     */
+     for (XAttr xattr : newXAttrs) {
+       final String xaName = XAttrHelper.getPrefixName(xattr);
++
++      /*
++       * If we're adding the encryption zone xattr, then add src to the list
++       * of encryption zones.
++       */
+       if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
+         ezManager.addEncryptionZone(inode.getId(), new String(xattr.getValue()));
+       }
++
++      if (!isFile && SECURITY_XATTR_UNREADABLE_BY_SUPERUSER.equals(xaName)) {
++        throw new IOException("Can only set '" +
++            SECURITY_XATTR_UNREADABLE_BY_SUPERUSER + "' on a file.");
++      }
+     }
+ 
+     XAttrStorage.updateINodeXAttrs(inode, newXAttrs, snapshotId);
+@@ -2868,12 +2884,26 @@ private boolean isUserVisible(XAttr xAttr) {
+       INodesInPath iip = getLastINodeInPath(srcs, true);
+       INode inode = resolveLastINode(src, iip);
+       int snapshotId = iip.getPathSnapshotId();
+-      return XAttrStorage.readINodeXAttrs(inode, snapshotId);
++      return unprotectedGetXAttrs(inode, snapshotId);
++    } finally {
++      readUnlock();
++    }
++  }
++
++  List<XAttr> getXAttrs(INode inode, int snapshotId) throws IOException {
++    readLock();
++    try {
++      return unprotectedGetXAttrs(inode, snapshotId);
+     } finally {
+       readUnlock();
+     }
+   }
+ 
++  private List<XAttr> unprotectedGetXAttrs(INode inode, int snapshotId)
++      throws IOException {
++    return XAttrStorage.readINodeXAttrs(inode, snapshotId);
++  }
++
+   private static INode resolveLastINode(String src, INodesInPath iip)
+       throws FileNotFoundException {
+     INode inode = iip.getLastINode();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 83cd697..8850fa2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -92,7 +92,7 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SUPPORT_APPEND_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RANDOMIZE_BLOCK_LOCATIONS_PER_BLOCK;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RANDOMIZE_BLOCK_LOCATIONS_PER_BLOCK_DEFAULT;
+-
++import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
+ import static org.apache.hadoop.util.Time.now;
+ 
+ import java.io.BufferedWriter;
+@@ -176,6 +176,7 @@
+ import org.apache.hadoop.hdfs.HAUtil;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.StorageType;
++import org.apache.hadoop.hdfs.XAttrHelper;
+ import org.apache.hadoop.hdfs.UnknownCipherSuiteException;
+ import org.apache.hadoop.hdfs.protocol.AclException;
+ import org.apache.hadoop.hdfs.protocol.AlreadyBeingCreatedException;
+@@ -1841,6 +1842,9 @@ private LocatedBlocks getBlockLocationsUpdateTimes(final String srcArg,
+ 
+         final INodesInPath iip = dir.getLastINodeInPath(src);
+         final INodeFile inode = INodeFile.valueOf(iip.getLastINode(), src);
++        if (isPermissionEnabled) {
++          checkUnreadableBySuperuser(pc, inode, iip.getPathSnapshotId());
++        }
+         if (!iip.isSnapshot() //snapshots are readonly, so don't update atime.
+             && doAccessTime && isAccessTimeSupported()) {
+           final long now = now();
+@@ -6159,6 +6163,21 @@ private void checkPathAccess(FSPermissionChecker pc,
+     checkPermission(pc, path, false, null, null, access, null);
+   }
+ 
++  private void checkUnreadableBySuperuser(FSPermissionChecker pc,
++      INode inode, int snapshotId)
++      throws IOException {
++    for (XAttr xattr : dir.getXAttrs(inode, snapshotId)) {
++      if (XAttrHelper.getPrefixName(xattr).
++          equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
++        if (pc.isSuperUser()) {
++          throw new AccessControlException("Access is denied for " +
++              pc.getUser() + " since the superuser is not allowed to " +
++              "perform this operation.");
++        }
++      }
++    }
++  }
++
+   private void checkParentAccess(FSPermissionChecker pc,
+       String path, FsAction access) throws AccessControlException,
+       UnresolvedLinkException {
+@@ -8922,7 +8941,9 @@ private void checkXAttrChangeAccess(String src, XAttr xAttr,
+       AccessControlException {
+     if (isPermissionEnabled && xAttr.getNameSpace() == XAttr.NameSpace.USER) {
+       final INode inode = dir.getINode(src);
+-      if (inode.isDirectory() && inode.getFsPermission().getStickyBit()) {
++      if (inode != null &&
++          inode.isDirectory() &&
++          inode.getFsPermission().getStickyBit()) {
+         if (!pc.isSuperUser()) {
+           checkOwner(pc, src);
+         }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/XAttrPermissionFilter.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/XAttrPermissionFilter.java
+index 237f9d3..79dabb3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/XAttrPermissionFilter.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/XAttrPermissionFilter.java
+@@ -28,6 +28,8 @@
+ import com.google.common.collect.Lists;
+ import com.google.common.base.Preconditions;
+ 
++import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
++
+ /**
+  * There are four types of extended attributes <XAttr> defined by the
+  * following namespaces:
+@@ -70,6 +72,15 @@ static void checkPermissionForApi(FSPermissionChecker pc, XAttr xAttr,
+         isRawPath && isSuperUser) {
+       return;
+     }
++    if (XAttrHelper.getPrefixName(xAttr).
++        equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
++      if (xAttr.getValue() != null) {
++        throw new AccessControlException("Attempt to set a value for '" +
++            SECURITY_XATTR_UNREADABLE_BY_SUPERUSER +
++            "'. Values are not allowed for this xattr.");
++      }
++      return;
++    }
+     throw new AccessControlException("User doesn't have permission for xattr: "
+         + XAttrHelper.getPrefixName(xAttr));
+   }
+@@ -104,6 +115,9 @@ static void checkPermissionForApi(FSPermissionChecker pc,
+       } else if (xAttr.getNameSpace() == XAttr.NameSpace.RAW &&
+           isSuperUser && isRawPath) {
+         filteredXAttrs.add(xAttr);
++      } else if (XAttrHelper.getPrefixName(xAttr).
++          equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
++        filteredXAttrs.add(xAttr);
+       }
+     }
+     
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ExtendedAttributes.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ExtendedAttributes.apt.vm
+index 8f0611b..b3d9db6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ExtendedAttributes.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ExtendedAttributes.apt.vm
+@@ -40,7 +40,7 @@ Extended Attributes in HDFS
+ 
+   The <<<system>>> namespace is reserved for internal HDFS use. This namespace is not accessible through userspace methods, and is reserved for implementing internal HDFS features.
+ 
+-  The <<<security>>> namespace is reserved for internal HDFS use. This namespace is not accessible through userspace methods. It is currently unused.
++  The <<<security>>> namespace is reserved for internal HDFS use. This namespace is generally not accessible through userspace methods. One particular use of <<<security>>> is the <<<security.hdfs.unreadable.by.superuser>>> extended attribute. This xattr can only be set on files, and it will prevent the superuser from reading the file's contents. The superuser can still read and modify file metadata, such as the owner, permissions, etc. This xattr can be set and accessed by any user, assuming normal filesystem permissions. This xattr is also write-once, and cannot be removed once set. This xattr does not allow a value to be set.
+ 
+  The <<<raw>>> namespace is reserved for internal system attributes that sometimes need to be exposed. Like <<<system>>> namespace attributes they are not visible to the user except when <<<getXAttr>>>/<<<getXAttrs>>> is called on a file or directory in the <<</.reserved/raw>>> HDFS directory hierarchy. These attributes can only be accessed by the superuser. An example of where <<<raw>>> namespace extended attributes are used is the <<<distcp>>> utility. Encryption zone meta data is stored in <<<raw.*>>> extended attributes, so as long as the administrator uses <<</.reserved/raw>>> pathnames in source and target, the encrypted files in the encryption zones are transparently copied.
+ 
+@@ -84,7 +84,6 @@ Extended Attributes in HDFS
+ 
+ * {Configuration options}
+ 
+-
+   HDFS supports extended attributes out of the box, without additional configuration. Administrators could potentially be interested in the options limiting the number of xattrs per inode and the size of xattrs, since xattrs increase the on-disk and in-memory space consumption of an inode.
+ 
+   * <<<dfs.namenode.xattrs.enabled>>>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java
+index 9c48400..e21e34c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSXAttrBaseTest.java
+@@ -45,7 +45,9 @@
+ import static org.apache.hadoop.fs.permission.FsAction.ALL;
+ import static org.apache.hadoop.fs.permission.FsAction.READ;
+ import static org.apache.hadoop.hdfs.server.namenode.AclTestHelpers.aclEntry;
++import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ import org.junit.After;
+@@ -64,14 +66,14 @@
+  */
+ public class FSXAttrBaseTest {
+ 
+-  private static final int MAX_SIZE = 16;
+-
+   protected static MiniDFSCluster dfsCluster;
+   protected static Configuration conf;
+   private static int pathCount = 0;
+   protected static Path path;
++  protected static Path filePath;
+   protected static Path rawPath;
+-  
++  protected static Path rawFilePath;
++
+   // XAttrs
+   protected static final String name1 = "user.a1";
+   protected static final byte[] value1 = {0x31, 0x32, 0x33};
+@@ -82,6 +84,10 @@
+   protected static final String name4 = "user.a4";
+   protected static final String raw1 = "raw.a1";
+   protected static final String raw2 = "raw.a2";
++  protected static final String security1 =
++      SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
++
++  private static final int MAX_SIZE = security1.length();
+ 
+   protected FileSystem fs;
+ 
+@@ -111,7 +117,9 @@ public static void shutdown() {
+   public void setUp() throws Exception {
+     pathCount += 1;
+     path = new Path("/p" + pathCount);
++    filePath = new Path(path, "file");
+     rawPath = new Path("/.reserved/raw/p" + pathCount);
++    rawFilePath = new Path(rawPath, "file");
+     initFileSystem();
+   }
+ 
+@@ -133,16 +141,17 @@ public void testCreateXAttr() throws Exception {
+     Map<String, byte[]> expectedXAttrs = Maps.newHashMap();
+     expectedXAttrs.put(name1, value1);
+     expectedXAttrs.put(name2, null);
+-    doTestCreateXAttr(path, expectedXAttrs);
++    expectedXAttrs.put(security1, null);
++    doTestCreateXAttr(filePath, expectedXAttrs);
+     expectedXAttrs.put(raw1, value1);
+-    doTestCreateXAttr(rawPath, expectedXAttrs);
++    doTestCreateXAttr(rawFilePath, expectedXAttrs);
+   }
+ 
+   private void doTestCreateXAttr(Path usePath, Map<String,
+       byte[]> expectedXAttrs) throws Exception {
+-    FileSystem.mkdirs(fs, usePath, FsPermission.createImmutable((short)0750));
++    DFSTestUtil.createFile(fs, usePath, 8192, (short) 1, 0xFEED);
+     fs.setXAttr(usePath, name1, value1, EnumSet.of(XAttrSetFlag.CREATE));
+-    
++
+     Map<String, byte[]> xattrs = fs.getXAttrs(usePath);
+     Assert.assertEquals(xattrs.size(), 1);
+     Assert.assertArrayEquals(value1, xattrs.get(name1));
+@@ -194,9 +203,7 @@ private void doTestCreateXAttr(Path usePath, Map<String,
+       Assert.assertArrayEquals(val, xattrs.get(ent.getKey()));
+     }
+ 
+-    for (Map.Entry<String, byte[]> ent : expectedXAttrs.entrySet()) {
+-      fs.removeXAttr(usePath, ent.getKey());
+-    }
++    fs.delete(usePath, false);
+   }
+   
+   /**
+@@ -344,13 +351,13 @@ public void testSetXAttr() throws Exception {
+     fs.removeXAttr(path, name3);
+     
+     // Name length exceeds max limit
+-    String longName = "user.0123456789abcdefX";
++    String longName = "user.0123456789abcdefX0123456789abcdefX0123456789abcdef";
+     try {
+       fs.setXAttr(path, longName, null);
+       Assert.fail("Setting xattr should fail if name is too long.");
+     } catch (IOException e) {
+       GenericTestUtils.assertExceptionContains("XAttr is too big", e);
+-      GenericTestUtils.assertExceptionContains("total size is 17", e);
++      GenericTestUtils.assertExceptionContains("total size is 50", e);
+     }
+ 
+     // Value length exceeds max limit
+@@ -360,7 +367,7 @@ public void testSetXAttr() throws Exception {
+       Assert.fail("Setting xattr should fail if value is too long.");
+     } catch (IOException e) {
+       GenericTestUtils.assertExceptionContains("XAttr is too big", e);
+-      GenericTestUtils.assertExceptionContains("total size is 17", e);
++      GenericTestUtils.assertExceptionContains("total size is 38", e);
+     }
+ 
+     // Name + value exactly equal the limit
+@@ -1117,6 +1124,121 @@ public Object run() throws Exception {
+   }
+ 
+   /**
++   * This tests the "unreadable by superuser" xattr which denies access to a
++   * file for the superuser. See HDFS-6705 for details.
++   */
++  @Test(timeout = 120000)
++  public void testUnreadableBySuperuserXAttr() throws Exception {
++    // Run tests as superuser...
++    doTestUnreadableBySuperuserXAttr(fs, true);
++
++    // ...and again as non-superuser
++    final UserGroupInformation user = UserGroupInformation.
++        createUserForTesting("user", new String[] { "mygroup" });
++    user.doAs(new PrivilegedExceptionAction<Object>() {
++      @Override
++      public Object run() throws Exception {
++        final FileSystem userFs = dfsCluster.getFileSystem();
++        doTestUnreadableBySuperuserXAttr(userFs, false);
++        return null;
++      }
++    });
++  }
++
++  private void doTestUnreadableBySuperuserXAttr(FileSystem userFs,
++      boolean expectOpenFailure) throws Exception {
++
++    FileSystem.mkdirs(fs, path, FsPermission.createImmutable((short) 0777));
++    DFSTestUtil.createFile(userFs, filePath, 8192, (short) 1, 0xFEED);
++    try {
++      doTUBSXAInt(userFs, expectOpenFailure);
++      // Deleting the file is allowed.
++      userFs.delete(filePath, false);
++    } finally {
++      fs.delete(path, true);
++    }
++  }
++
++  private void doTUBSXAInt(FileSystem userFs, boolean expectOpenFailure)
++      throws Exception {
++
++    // Test that xattr can't be set on a dir
++    try {
++      userFs.setXAttr(path, security1, null, EnumSet.of(XAttrSetFlag.CREATE));
++    } catch (IOException e) {
++      // WebHDFS throws IOException instead of RemoteException
++      GenericTestUtils.assertExceptionContains("Can only set '" +
++          SECURITY_XATTR_UNREADABLE_BY_SUPERUSER + "' on a file", e);
++    }
++
++    // Test that xattr can actually be set. Repeatedly.
++    userFs.setXAttr(filePath, security1, null,
++      EnumSet.of(XAttrSetFlag.CREATE));
++    verifySecurityXAttrExists(userFs);
++    userFs.setXAttr(filePath, security1, null, EnumSet.of(XAttrSetFlag.CREATE,
++        XAttrSetFlag.REPLACE));
++    verifySecurityXAttrExists(userFs);
++
++    // Test that the xattr can't be deleted by anyone.
++    try {
++      userFs.removeXAttr(filePath, security1);
++      Assert.fail("Removing security xattr should fail.");
++    } catch (AccessControlException e) {
++      GenericTestUtils.assertExceptionContains("The xattr '" +
++          SECURITY_XATTR_UNREADABLE_BY_SUPERUSER + "' can not be deleted.", e);
++    }
++
++    // Test that xattr can be read.
++    verifySecurityXAttrExists(userFs);
++
++    // Test that a value can't be set for the xattr.
++    try {
++      userFs.setXAttr(filePath, security1,
++          value1,EnumSet.of(XAttrSetFlag.REPLACE));
++      fail("Should have thrown on attempt to set value");
++    } catch (AccessControlException e) {
++      GenericTestUtils.assertExceptionContains("Values are not allowed", e);
++    }
++
++    // Test that unreadable by superuser xattr appears in listXAttrs results
++    // (for superuser and non-superuser)
++    final List<String> xattrNames = userFs.listXAttrs(filePath);
++    assertTrue(xattrNames.contains(security1));
++    assertTrue(xattrNames.size() == 1);
++
++    verifyFileAccess(userFs, expectOpenFailure);
++
++    // Rename of the file is allowed by anyone.
++    Path toPath = new Path(filePath.toString() + "x");
++    userFs.rename(filePath, toPath);
++    userFs.rename(toPath, filePath);
++  }
++
++  private void verifySecurityXAttrExists(FileSystem userFs) throws Exception {
++    try {
++      final Map<String, byte[]> xattrs = userFs.getXAttrs(filePath);
++      Assert.assertEquals(1, xattrs.size());
++      Assert.assertNotNull(xattrs.get(security1));
++      Assert.assertArrayEquals("expected empty byte[] from getXAttr",
++          new byte[0], userFs.getXAttr(filePath, security1));
++
++    } catch (AccessControlException e) {
++      fail("getXAttrs failed but expected it to succeed");
++    }
++  }
++
++  private void verifyFileAccess(FileSystem userFs, boolean expectOpenFailure)
++      throws Exception {
++    // Test that a file with the xattr can or can't be opened.
++    try {
++      userFs.open(filePath);
++      assertFalse("open succeeded but expected it to fail", expectOpenFailure);
++    } catch (AccessControlException e) {
++      assertTrue("open failed but expected it to succeed", expectOpenFailure);
++    }
++  }
++
++  /**
+    * Creates a FileSystem for the super-user.
+    *
+    * @return FileSystem for super-user
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testXAttrConf.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testXAttrConf.xml
+index 3414f57..9c66cba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testXAttrConf.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testXAttrConf.xml
+@@ -124,6 +124,79 @@
+         </comparator>
+       </comparators>
+     </test>
++
++    <test>
++        <description>setfattr : Add the unreadable by superuser xattr to security namespace</description>
++        <test-commands>
++            <command>-fs NAMENODE -touchz /file1</command>
++            <command>-fs NAMENODE -setfattr -n security.hdfs.unreadable.by.superuser /file1</command>
++            <command>-fs NAMENODE -getfattr -d /file1</command>
++        </test-commands>
++        <cleanup-commands>
++            <command>-fs NAMENODE -rm /file1</command>
++        </cleanup-commands>
++        <comparators>
++            <comparator>
++                <type>SubstringComparator</type>
++                <expected-output>security.hdfs.unreadable.by.superuser</expected-output>
++            </comparator>
++        </comparators>
++    </test>
++
++    <test>
++        <description>setfattr : Try to delete the unreadable by superuser xattr from security namespace</description>
++        <test-commands>
++            <command>-fs NAMENODE -touchz /file1</command>
++            <command>-fs NAMENODE -setfattr -n security.hdfs.unreadable.by.superuser /file1</command>
++            <command>-fs NAMENODE -setfattr -x security.hdfs.unreadable.by.superuser /file1</command>
++        </test-commands>
++        <cleanup-commands>
++            <command>-fs NAMENODE -rm /file1</command>
++        </cleanup-commands>
++        <comparators>
++            <comparator>
++                <type>SubstringComparator</type>
++                <expected-output>can not be deleted</expected-output>
++            </comparator>
++        </comparators>
++    </test>
++
++    <test>
++        <description>setfattr : Try to read a file protected by the unreadable by superuser xattr</description>
++        <test-commands>
++            <command>-fs NAMENODE -touchz /file1</command>
++            <command>-fs NAMENODE -setfattr -n security.hdfs.unreadable.by.superuser /file1</command>
++            <command>-fs NAMENODE -get /file1 /tmp/file1</command>
++        </test-commands>
++        <cleanup-commands>
++            <command>-fs NAMENODE -rm /file1</command>
++            <command>rm /tmp/file1</command>
++        </cleanup-commands>
++        <comparators>
++            <comparator>
++                <type>SubstringComparator</type>
++                <expected-output>Access is denied</expected-output>
++            </comparator>
++        </comparators>
++    </test>
++
++    <test>
++        <description>setfattr : Try to add a value to the unreadable by superuser xattr</description>
++        <test-commands>
++            <command>-fs NAMENODE -touchz /file1</command>
++            <command>-fs NAMENODE -setfattr -n security.hdfs.unreadable.by.superuser /file1</command>
++            <command>-fs NAMENODE -setfattr -n security.hdfs.unreadable.by.superuser -v 1234 /file1</command>
++        </test-commands>
++        <cleanup-commands>
++            <command>-fs NAMENODE -rm /file1</command>
++        </cleanup-commands>
++        <comparators>
++            <comparator>
++                <type>SubstringComparator</type>
++                <expected-output>Values are not allowed</expected-output>
++            </comparator>
++        </comparators>
++    </test>
+     
+     <test>
+       <description>setfattr : Add an xattr of raw namespace</description>
+-- 
+1.7.9.5
+

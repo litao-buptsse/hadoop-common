@@ -1,0 +1,783 @@
+From 532c0263ed977899f457f4ef19e88f52c9b8d799 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:29 +0000
+Subject: [PATCH 219/813] HADOOP-10750. KMSKeyProviderCache should be in
+ hadoop-common. (asuresh via tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619536 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b6ec141aa7273f8cc12b17e41dd0ef9890a7a67b)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/CachingKeyProvider.java      |  174 +++++++++++++++++++
+ .../hadoop/crypto/key/TestCachingKeyProvider.java  |  152 +++++++++++++++++
+ .../crypto/key/kms/server/KMSCacheKeyProvider.java |  177 --------------------
+ .../crypto/key/kms/server/KMSConfiguration.java    |   14 +-
+ .../hadoop/crypto/key/kms/server/KMSWebApp.java    |   16 +-
+ .../hadoop-kms/src/site/apt/index.apt.vm           |   27 ++-
+ .../key/kms/server/TestKMSCacheKeyProvider.java    |  120 -------------
+ 7 files changed, 371 insertions(+), 309 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/CachingKeyProvider.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java
+ delete mode 100644 hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSCacheKeyProvider.java
+ delete mode 100644 hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/CachingKeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/CachingKeyProvider.java
+new file mode 100644
+index 0000000..057df33
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/CachingKeyProvider.java
+@@ -0,0 +1,174 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.crypto.key;
++
++import java.io.IOException;
++import java.security.NoSuchAlgorithmException;
++import java.util.concurrent.ExecutionException;
++import java.util.concurrent.TimeUnit;
++
++import com.google.common.cache.CacheBuilder;
++import com.google.common.cache.CacheLoader;
++import com.google.common.cache.LoadingCache;
++
++/**
++ * A <code>KeyProviderExtension</code> implementation providing a short lived
++ * cache for <code>KeyVersions</code> and <code>Metadata</code>to avoid burst
++ * of requests to hit the underlying <code>KeyProvider</code>.
++ */
++public class CachingKeyProvider extends
++    KeyProviderExtension<CachingKeyProvider.CacheExtension> {
++
++  static class CacheExtension implements KeyProviderExtension.Extension {
++    private final KeyProvider provider;
++    private LoadingCache<String, KeyVersion> keyVersionCache;
++    private LoadingCache<String, KeyVersion> currentKeyCache;
++    private LoadingCache<String, Metadata> keyMetadataCache;
++
++    CacheExtension(KeyProvider prov, long keyTimeoutMillis,
++        long currKeyTimeoutMillis) {
++      this.provider = prov;
++      keyVersionCache =
++          CacheBuilder.newBuilder().expireAfterAccess(keyTimeoutMillis,
++              TimeUnit.MILLISECONDS)
++              .build(new CacheLoader<String, KeyVersion>() {
++                @Override
++                public KeyVersion load(String key) throws Exception {
++                  KeyVersion kv = provider.getKeyVersion(key);
++                  if (kv == null) {
++                    throw new KeyNotFoundException();
++                  }
++                  return kv;
++                }
++              });
++      keyMetadataCache =
++          CacheBuilder.newBuilder().expireAfterAccess(keyTimeoutMillis,
++              TimeUnit.MILLISECONDS)
++              .build(new CacheLoader<String, Metadata>() {
++                @Override
++                public Metadata load(String key) throws Exception {
++                  Metadata meta = provider.getMetadata(key);
++                  if (meta == null) {
++                    throw new KeyNotFoundException();
++                  }
++                  return meta;
++                }
++              });
++      currentKeyCache =
++          CacheBuilder.newBuilder().expireAfterWrite(currKeyTimeoutMillis,
++          TimeUnit.MILLISECONDS)
++          .build(new CacheLoader<String, KeyVersion>() {
++            @Override
++            public KeyVersion load(String key) throws Exception {
++              KeyVersion kv = provider.getCurrentKey(key);
++              if (kv == null) {
++                throw new KeyNotFoundException();
++              }
++              return kv;
++            }
++          });
++    }
++  }
++
++  @SuppressWarnings("serial")
++  private static class KeyNotFoundException extends Exception { }
++
++  public CachingKeyProvider(KeyProvider keyProvider, long keyTimeoutMillis,
++      long currKeyTimeoutMillis) {
++    super(keyProvider, new CacheExtension(keyProvider, keyTimeoutMillis,
++        currKeyTimeoutMillis));
++  }
++
++  @Override
++  public KeyVersion getCurrentKey(String name) throws IOException {
++    try {
++      return getExtension().currentKeyCache.get(name);
++    } catch (ExecutionException ex) {
++      Throwable cause = ex.getCause();
++      if (cause instanceof KeyNotFoundException) {
++        return null;
++      } else if (cause instanceof IOException) {
++        throw (IOException) cause;
++      } else {
++        throw new IOException(cause);
++      }
++    }
++  }
++
++  @Override
++  public KeyVersion getKeyVersion(String versionName)
++      throws IOException {
++    try {
++      return getExtension().keyVersionCache.get(versionName);
++    } catch (ExecutionException ex) {
++      Throwable cause = ex.getCause();
++      if (cause instanceof KeyNotFoundException) {
++        return null;
++      } else if (cause instanceof IOException) {
++        throw (IOException) cause;
++      } else {
++        throw new IOException(cause);
++      }
++    }
++  }
++
++  @Override
++  public void deleteKey(String name) throws IOException {
++    getKeyProvider().deleteKey(name);
++    getExtension().currentKeyCache.invalidate(name);
++    getExtension().keyMetadataCache.invalidate(name);
++    // invalidating all key versions as we don't know
++    // which ones belonged to the deleted key
++    getExtension().keyVersionCache.invalidateAll();
++  }
++
++  @Override
++  public KeyVersion rollNewVersion(String name, byte[] material)
++      throws IOException {
++    KeyVersion key = getKeyProvider().rollNewVersion(name, material);
++    getExtension().currentKeyCache.invalidate(name);
++    getExtension().keyMetadataCache.invalidate(name);
++    return key;
++  }
++
++  @Override
++  public KeyVersion rollNewVersion(String name)
++      throws NoSuchAlgorithmException, IOException {
++    KeyVersion key = getKeyProvider().rollNewVersion(name);
++    getExtension().currentKeyCache.invalidate(name);
++    getExtension().keyMetadataCache.invalidate(name);
++    return key;
++  }
++
++  @Override
++  public Metadata getMetadata(String name) throws IOException {
++    try {
++      return getExtension().keyMetadataCache.get(name);
++    } catch (ExecutionException ex) {
++      Throwable cause = ex.getCause();
++      if (cause instanceof KeyNotFoundException) {
++        return null;
++      } else if (cause instanceof IOException) {
++        throw (IOException) cause;
++      } else {
++        throw new IOException(cause);
++      }
++    }
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java
+new file mode 100644
+index 0000000..2eff699
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestCachingKeyProvider.java
+@@ -0,0 +1,152 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.crypto.key;
++
++import java.util.Date;
++
++import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
++import org.junit.Assert;
++import org.junit.Test;
++import org.mockito.Mockito;
++
++public class TestCachingKeyProvider {
++
++  @Test
++  public void testCurrentKey() throws Exception {
++    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
++    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
++    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
++    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k2"))).thenReturn(null);
++    KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
++
++    // asserting caching
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
++    Thread.sleep(1200);
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k1"));
++
++    // asserting no caching when key is not known
++    cache = new CachingKeyProvider(mockProv, 100, 100);
++    Assert.assertEquals(null, cache.getCurrentKey("k2"));
++    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k2"));
++    Assert.assertEquals(null, cache.getCurrentKey("k2"));
++    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k2"));
++  }
++
++  @Test
++  public void testKeyVersion() throws Exception {
++    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
++    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
++    Mockito.when(mockProv.getKeyVersion(Mockito.eq("k1@0")))
++        .thenReturn(mockKey);
++    Mockito.when(mockProv.getKeyVersion(Mockito.eq("k2@0"))).thenReturn(null);
++    KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
++
++    // asserting caching
++    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
++    Mockito.verify(mockProv, Mockito.times(1))
++        .getKeyVersion(Mockito.eq("k1@0"));
++    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
++    Mockito.verify(mockProv, Mockito.times(1))
++        .getKeyVersion(Mockito.eq("k1@0"));
++    Thread.sleep(200);
++    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
++    Mockito.verify(mockProv, Mockito.times(2))
++        .getKeyVersion(Mockito.eq("k1@0"));
++
++    // asserting no caching when key is not known
++    cache = new CachingKeyProvider(mockProv, 100, 100);
++    Assert.assertEquals(null, cache.getKeyVersion("k2@0"));
++    Mockito.verify(mockProv, Mockito.times(1))
++        .getKeyVersion(Mockito.eq("k2@0"));
++    Assert.assertEquals(null, cache.getKeyVersion("k2@0"));
++    Mockito.verify(mockProv, Mockito.times(2))
++        .getKeyVersion(Mockito.eq("k2@0"));
++  }
++
++  @Test
++  public void testMetadata() throws Exception {
++    KeyProvider.Metadata mockMeta = Mockito.mock(KeyProvider.Metadata.class);
++    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
++    Mockito.when(mockProv.getMetadata(Mockito.eq("k1"))).thenReturn(mockMeta);
++    Mockito.when(mockProv.getMetadata(Mockito.eq("k2"))).thenReturn(null);
++    KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
++
++    // asserting caching
++    Assert.assertEquals(mockMeta, cache.getMetadata("k1"));
++    Mockito.verify(mockProv, Mockito.times(1)).getMetadata(Mockito.eq("k1"));
++    Assert.assertEquals(mockMeta, cache.getMetadata("k1"));
++    Mockito.verify(mockProv, Mockito.times(1)).getMetadata(Mockito.eq("k1"));
++    Thread.sleep(200);
++    Assert.assertEquals(mockMeta, cache.getMetadata("k1"));
++    Mockito.verify(mockProv, Mockito.times(2)).getMetadata(Mockito.eq("k1"));
++
++    // asserting no caching when key is not known
++    cache = new CachingKeyProvider(mockProv, 100, 100);
++    Assert.assertEquals(null, cache.getMetadata("k2"));
++    Mockito.verify(mockProv, Mockito.times(1)).getMetadata(Mockito.eq("k2"));
++    Assert.assertEquals(null, cache.getMetadata("k2"));
++    Mockito.verify(mockProv, Mockito.times(2)).getMetadata(Mockito.eq("k2"));
++  }
++
++  @Test
++  public void testRollNewVersion() throws Exception {
++    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
++    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
++    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
++    KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
++    cache.rollNewVersion("k1");
++
++    // asserting the cache is purged
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k1"));
++    cache.rollNewVersion("k1", new byte[0]);
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(3)).getCurrentKey(Mockito.eq("k1"));
++  }
++
++  @Test
++  public void testDeleteKey() throws Exception {
++    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
++    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
++    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
++    Mockito.when(mockProv.getKeyVersion(Mockito.eq("k1@0")))
++        .thenReturn(mockKey);
++    Mockito.when(mockProv.getMetadata(Mockito.eq("k1"))).thenReturn(
++        new KMSClientProvider.KMSMetadata("c", 0, "l", null, new Date(), 1));
++    KeyProvider cache = new CachingKeyProvider(mockProv, 100, 100);
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
++    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
++    Mockito.verify(mockProv, Mockito.times(1))
++        .getKeyVersion(Mockito.eq("k1@0"));
++    cache.deleteKey("k1");
++
++    // asserting the cache is purged
++    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
++    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k1"));
++    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
++    Mockito.verify(mockProv, Mockito.times(2))
++        .getKeyVersion(Mockito.eq("k1@0"));
++  }
++}
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSCacheKeyProvider.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSCacheKeyProvider.java
+deleted file mode 100644
+index e453c16..0000000
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSCacheKeyProvider.java
++++ /dev/null
+@@ -1,177 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.crypto.key.kms.server;
+-
+-import com.google.common.cache.CacheBuilder;
+-import com.google.common.cache.CacheLoader;
+-import com.google.common.cache.LoadingCache;
+-import org.apache.hadoop.crypto.key.KeyProvider;
+-
+-import java.io.IOException;
+-import java.security.NoSuchAlgorithmException;
+-import java.util.ArrayList;
+-import java.util.List;
+-import java.util.Map;
+-import java.util.concurrent.ExecutionException;
+-import java.util.concurrent.TimeUnit;
+-
+-/**
+- * A <code>KeyProvider</code> proxy implementation providing a short lived
+- * cache for <code>KeyVersions</code> to avoid burst of requests to hit the
+- * underlying <code>KeyProvider</code>.
+- */
+-public class KMSCacheKeyProvider extends KeyProvider {
+-  private final KeyProvider provider;
+-  private LoadingCache<String, KeyVersion> keyVersionCache;
+-  private LoadingCache<String, KeyVersion> currentKeyCache;
+-
+-  private static class KeyNotFoundException extends Exception {
+-    private static final long serialVersionUID = 1L;
+-  }
+-
+-  public KMSCacheKeyProvider(KeyProvider prov, long timeoutMillis) {
+-    this.provider =  prov;
+-    keyVersionCache = CacheBuilder.newBuilder().expireAfterAccess(timeoutMillis,
+-        TimeUnit.MILLISECONDS).build(new CacheLoader<String, KeyVersion>() {
+-      @Override
+-      public KeyVersion load(String key) throws Exception {
+-        KeyVersion kv = provider.getKeyVersion(key);
+-        if (kv == null) {
+-          throw new KeyNotFoundException();
+-        }
+-        return kv;
+-      }
+-    });
+-    // for current key we don't want to go stale for more than 1 sec
+-    currentKeyCache = CacheBuilder.newBuilder().expireAfterWrite(1000,
+-        TimeUnit.MILLISECONDS).build(new CacheLoader<String, KeyVersion>() {
+-      @Override
+-      public KeyVersion load(String key) throws Exception {
+-        KeyVersion kv =  provider.getCurrentKey(key);
+-        if (kv == null) {
+-          throw new KeyNotFoundException();
+-        }
+-        return kv;
+-      }
+-    });
+-  }
+-
+-  @Override
+-  public KeyVersion getCurrentKey(String name) throws IOException {
+-    try {
+-      return currentKeyCache.get(name);
+-    } catch (ExecutionException ex) {
+-      Throwable cause = ex.getCause();
+-      if (cause instanceof KeyNotFoundException) {
+-        return null;
+-      } else if (cause instanceof IOException) {
+-        throw (IOException) cause;
+-      } else {
+-        throw new IOException(cause);
+-      }
+-    }
+-  }
+-
+-  @Override
+-  public KeyVersion getKeyVersion(String versionName)
+-      throws IOException {
+-    try {
+-      return keyVersionCache.get(versionName);
+-    } catch (ExecutionException ex) {
+-      Throwable cause = ex.getCause();
+-      if (cause instanceof KeyNotFoundException) {
+-        return null;
+-      } else if (cause instanceof IOException) {
+-        throw (IOException) cause;
+-      } else {
+-        throw new IOException(cause);
+-      }
+-    }
+-  }
+-
+-  @Override
+-  public List<String> getKeys() throws IOException {
+-    return provider.getKeys();
+-  }
+-
+-  @Override
+-  public List<KeyVersion> getKeyVersions(String name)
+-      throws IOException {
+-    return provider.getKeyVersions(name);
+-  }
+-
+-  @Override
+-  public Metadata getMetadata(String name) throws IOException {
+-    return provider.getMetadata(name);
+-  }
+-
+-  @Override
+-  public KeyVersion createKey(String name, byte[] material,
+-      Options options) throws IOException {
+-    return provider.createKey(name, material, options);
+-  }
+-
+-  @Override
+-  public KeyVersion createKey(String name,
+-      Options options)
+-      throws NoSuchAlgorithmException, IOException {
+-    return provider.createKey(name, options);
+-  }
+-
+-  @Override
+-  public void deleteKey(String name) throws IOException {
+-    provider.deleteKey(name);
+-    currentKeyCache.invalidate(name);
+-    // invalidating all key versions as we don't know which ones belonged to the
+-    // deleted key
+-    keyVersionCache.invalidateAll();
+-  }
+-
+-  @Override
+-  public KeyVersion rollNewVersion(String name, byte[] material)
+-      throws IOException {
+-    KeyVersion key = provider.rollNewVersion(name, material);
+-    currentKeyCache.invalidate(name);
+-    return key;
+-  }
+-
+-  @Override
+-  public KeyVersion rollNewVersion(String name)
+-      throws NoSuchAlgorithmException, IOException {
+-    KeyVersion key = provider.rollNewVersion(name);
+-    currentKeyCache.invalidate(name);
+-    return key;
+-  }
+-
+-  @Override
+-  public void flush() throws IOException {
+-    provider.flush();
+-  }
+-
+-  @Override
+-  public Metadata[] getKeysMetadata(String ... keyNames)
+-      throws IOException {
+-    return provider.getKeysMetadata(keyNames);
+-  }
+-
+-  @Override
+-  public boolean isTransient() {
+-    return provider.isTransient();
+-  }
+-
+-}
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
+index b2209d4..e2b8fc4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
+@@ -34,9 +34,21 @@
+ 
+   public static final String CONFIG_PREFIX = "hadoop.kms.";
+ 
++  // Property to Enable/Disable Caching
++  public static final String KEY_CACHE_ENABLE = CONFIG_PREFIX +
++      "cache.enable";
++  // Timeout for the Key and Metadata Cache
+   public static final String KEY_CACHE_TIMEOUT_KEY = CONFIG_PREFIX +
+       "cache.timeout.ms";
+-  public static final long KEY_CACHE_TIMEOUT_DEFAULT = 10 * 1000; // 10 secs
++  // TImeout for the Current Key cache
++  public static final String CURR_KEY_CACHE_TIMEOUT_KEY = CONFIG_PREFIX +
++      "current.key.cache.timeout.ms";
++
++  public static final boolean KEY_CACHE_ENABLE_DEFAULT = true;
++  // 10 mins
++  public static final long KEY_CACHE_TIMEOUT_DEFAULT = 10 * 60 * 1000;
++  // 30 secs
++  public static final long CURR_KEY_CACHE_TIMEOUT_DEFAULT = 30 * 1000;
+ 
+   static Configuration getConfiguration(boolean loadHadoopDefaults,
+       String ... resources) {
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
+index 046753e..88ea8c4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
+@@ -22,6 +22,7 @@
+ import com.codahale.metrics.MetricRegistry;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.key.CachingKeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.http.HttpServer2;
+@@ -150,10 +151,17 @@ public void contextInitialized(ServletContextEvent sce) {
+             kmsConf.get(KeyProviderFactory.KEY_PROVIDER_PATH));
+       }
+       keyProvider = providers.get(0);
+-      long timeOutMillis =
+-          kmsConf.getLong(KMSConfiguration.KEY_CACHE_TIMEOUT_KEY,
+-              KMSConfiguration.KEY_CACHE_TIMEOUT_DEFAULT);
+-      keyProvider = new KMSCacheKeyProvider(keyProvider, timeOutMillis);
++      if (kmsConf.getBoolean(KMSConfiguration.KEY_CACHE_ENABLE,
++          KMSConfiguration.KEY_CACHE_ENABLE_DEFAULT)) {
++        long keyTimeOutMillis =
++            kmsConf.getLong(KMSConfiguration.KEY_CACHE_TIMEOUT_KEY,
++                KMSConfiguration.KEY_CACHE_TIMEOUT_DEFAULT);
++        long currKeyTimeOutMillis =
++            kmsConf.getLong(KMSConfiguration.CURR_KEY_CACHE_TIMEOUT_KEY,
++                KMSConfiguration.CURR_KEY_CACHE_TIMEOUT_DEFAULT);
++        keyProvider = new CachingKeyProvider(keyProvider, keyTimeOutMillis,
++            currKeyTimeOutMillis);
++      }
+ 
+       LOG.info("KMS Started");
+     } catch (Throwable ex) {
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index f08e93b..ee3fa4a 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -72,22 +72,35 @@ Hadoop Key Management Server (KMS) - Documentation Sets ${project.version}
+   KMS caches keys for short period of time to avoid excessive hits to the
+   underlying key provider.
+ 
+-  The cache is used with the following 2 methods only, <<<getCurrentKey()>>>
+-  and <<<getKeyVersion()>>>.
++  The Cache is enabled by default (can be dissabled by setting the
++  <<<hadoop.kms.cache.enable>>> boolean property to false)
++
++  The cache is used with the following 3 methods only, <<<getCurrentKey()>>>
++  and <<<getKeyVersion()>>> and <<<getMetadata()>>>.
+ 
+   For the <<<getCurrentKey()>>> method, cached entries are kept for a maximum
+-  of 1000 millisecond regardless the number of times the key is being access
++  of 30000 millisecond regardless the number of times the key is being access
+   (to avoid stale keys to be considered current).
+ 
+   For the <<<getKeyVersion()>>> method, cached entries are kept with a default
+-  inactivity timeout of 10000 milliseconds. This time out is configurable via
+-  the following property in the <<<etc/hadoop/kms-site.xml>>> configuration
+-  file:
++  inactivity timeout of 600000 milliseconds (10 mins). This time out is
++  configurable via the following property in the <<<etc/hadoop/kms-site.xml>>>
++  configuration file:
+ 
+ +---+
+   <property>
++    <name>hadoop.kms.cache.enable</name>
++    <value>true</value>
++  </property>
++
++  <property>
+     <name>hadoop.kms.cache.timeout.ms</name>
+-    <value>10000</value>
++    <value>600000</value>
++  </property>
++
++  <property>
++    <name>hadoop.kms.current.key.cache.timeout.ms</name>
++    <value>30000</value>
+   </property>
+ +---+
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java
+deleted file mode 100644
+index 72b2191..0000000
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMSCacheKeyProvider.java
++++ /dev/null
+@@ -1,120 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.crypto.key.kms.server;
+-
+-import org.apache.hadoop.crypto.key.KeyProvider;
+-import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
+-import org.junit.Assert;
+-import org.junit.Test;
+-import org.mockito.Mockito;
+-
+-import java.util.Date;
+-
+-public class TestKMSCacheKeyProvider {
+-
+-  @Test
+-  public void testCurrentKey() throws Exception {
+-    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
+-    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+-    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
+-    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k2"))).thenReturn(null);
+-    KeyProvider cache = new KMSCacheKeyProvider(mockProv, 100);
+-
+-    // asserting caching
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+-    Thread.sleep(1200);
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k1"));
+-
+-    // asserting no caching when key is not known
+-    cache = new KMSCacheKeyProvider(mockProv, 100);
+-    Assert.assertEquals(null, cache.getCurrentKey("k2"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k2"));
+-    Assert.assertEquals(null, cache.getCurrentKey("k2"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k2"));
+-  }
+-
+-  @Test
+-  public void testKeyVersion() throws Exception {
+-    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
+-    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+-    Mockito.when(mockProv.getKeyVersion(Mockito.eq("k1@0"))).thenReturn(mockKey);
+-    Mockito.when(mockProv.getKeyVersion(Mockito.eq("k2@0"))).thenReturn(null);
+-    KeyProvider cache = new KMSCacheKeyProvider(mockProv, 100);
+-
+-    // asserting caching
+-    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getKeyVersion(Mockito.eq("k1@0"));
+-    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getKeyVersion(Mockito.eq("k1@0"));
+-    Thread.sleep(200);
+-    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getKeyVersion(Mockito.eq("k1@0"));
+-
+-    // asserting no caching when key is not known
+-    cache = new KMSCacheKeyProvider(mockProv, 100);
+-    Assert.assertEquals(null, cache.getKeyVersion("k2@0"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getKeyVersion(Mockito.eq("k2@0"));
+-    Assert.assertEquals(null, cache.getKeyVersion("k2@0"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getKeyVersion(Mockito.eq("k2@0"));
+-  }
+-
+-  @Test
+-  public void testRollNewVersion() throws Exception {
+-    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
+-    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+-    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
+-    KeyProvider cache = new KMSCacheKeyProvider(mockProv, 100);
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+-    cache.rollNewVersion("k1");
+-
+-    // asserting the cache is purged
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k1"));
+-    cache.rollNewVersion("k1", new byte[0]);
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(3)).getCurrentKey(Mockito.eq("k1"));
+-  }
+-
+-  @Test
+-  public void testDeleteKey() throws Exception {
+-    KeyProvider.KeyVersion mockKey = Mockito.mock(KeyProvider.KeyVersion.class);
+-    KeyProvider mockProv = Mockito.mock(KeyProvider.class);
+-    Mockito.when(mockProv.getCurrentKey(Mockito.eq("k1"))).thenReturn(mockKey);
+-    Mockito.when(mockProv.getKeyVersion(Mockito.eq("k1@0"))).thenReturn(mockKey);
+-    Mockito.when(mockProv.getMetadata(Mockito.eq("k1"))).thenReturn(
+-        new KMSClientProvider.KMSMetadata("c", 0, "l", null, new Date(), 1));
+-    KeyProvider cache = new KMSCacheKeyProvider(mockProv, 100);
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getCurrentKey(Mockito.eq("k1"));
+-    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
+-    Mockito.verify(mockProv, Mockito.times(1)).getKeyVersion(Mockito.eq("k1@0"));
+-    cache.deleteKey("k1");
+-
+-    // asserting the cache is purged
+-    Assert.assertEquals(mockKey, cache.getCurrentKey("k1"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getCurrentKey(Mockito.eq("k1"));
+-    Assert.assertEquals(mockKey, cache.getKeyVersion("k1@0"));
+-    Mockito.verify(mockProv, Mockito.times(2)).getKeyVersion(Mockito.eq("k1@0"));
+-  }
+-
+-}
+-- 
+1.7.9.5
+

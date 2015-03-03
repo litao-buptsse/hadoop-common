@@ -1,0 +1,31 @@
+From 32ee71bd7831a026d1876fca4f54c631c663523a Mon Sep 17 00:00:00 2001
+From: arp <arp@apache.org>
+Date: Fri, 5 Sep 2014 11:14:10 -0700
+Subject: [PATCH 776/813] HDFS-6998. warning message
+ 'ssl.client.truststore.location has not been set'
+ gets printed for hftp command. (Contributed by
+ Xiaoyu Yao) (cherry picked from commit
+ 624e793ad6bfe4f94b9d4f1877de1420e8cea779) (cherry
+ picked from commit
+ bc1c927d159ec7fb3d19663b53ed5a9a0c331ffa)
+
+---
+ .../security/ssl/FileBasedKeyStoresFactory.java    |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/FileBasedKeyStoresFactory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/FileBasedKeyStoresFactory.java
+index ea22a88..7c356ff 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/FileBasedKeyStoresFactory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/FileBasedKeyStoresFactory.java
+@@ -211,7 +211,7 @@ public void init(SSLFactory.Mode mode)
+       LOG.debug(mode.toString() + " Loaded TrustStore: " + truststoreLocation);
+       trustManagers = new TrustManager[]{trustManager};
+     } else {
+-      LOG.warn("The property '" + locationProperty + "' has not been set, " +
++      LOG.debug("The property '" + locationProperty + "' has not been set, " +
+           "no TrustStore will be loaded");
+       trustManagers = null;
+     }
+-- 
+1.7.9.5
+

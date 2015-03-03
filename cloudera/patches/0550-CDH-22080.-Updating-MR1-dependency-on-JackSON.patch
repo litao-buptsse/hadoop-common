@@ -1,0 +1,31 @@
+From 317a080849374e5bb6990457701293b3ecdb6122 Mon Sep 17 00:00:00 2001
+From: Sean Mackrory <sean@cloudera.com>
+Date: Thu, 2 Oct 2014 10:06:07 -0600
+Subject: [PATCH 550/813] CDH-22080. Updating MR1 dependency on JackSON
+
+---
+ .../cloudera/maven-packaging/hadoop-core/pom.xml   |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-mapreduce1-project/cloudera/maven-packaging/hadoop-core/pom.xml b/hadoop-mapreduce1-project/cloudera/maven-packaging/hadoop-core/pom.xml
+index edd0ff1..27217e1 100644
+--- a/hadoop-mapreduce1-project/cloudera/maven-packaging/hadoop-core/pom.xml
++++ b/hadoop-mapreduce1-project/cloudera/maven-packaging/hadoop-core/pom.xml
+@@ -129,12 +129,12 @@
+     <dependency>
+       <groupId>org.codehaus.jackson</groupId>
+       <artifactId>jackson-mapper-asl</artifactId>
+-      <version>1.9.13</version>
++      <version>1.8.8</version>
+     </dependency>
+     <dependency>
+       <groupId>org.codehaus.jackson</groupId>
+       <artifactId>jackson-core-asl</artifactId>
+-      <version>1.9.13</version>
++      <version>1.8.8</version>
+     </dependency>
+     <dependency>
+       <groupId>org.apache.zookeeper</groupId>
+-- 
+1.7.9.5
+

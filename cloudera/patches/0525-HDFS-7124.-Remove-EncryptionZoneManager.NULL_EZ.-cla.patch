@@ -1,0 +1,114 @@
+From cf008b4753a3b5a132598ed5989d1788ece103de Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 29 Sep 2014 14:14:22 -0700
+Subject: [PATCH 525/813] HDFS-7124. Remove EncryptionZoneManager.NULL_EZ.
+ (clamb via wang) (cherry picked from
+ 7f0efe96f85704e39349f20ab6a11bfaa81c6a75)
+
+---
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    3 +--
+ ...ientNamenodeProtocolServerSideTranslatorPB.java |    4 +++-
+ .../ClientNamenodeProtocolTranslatorPB.java        |    6 +++++-
+ .../server/namenode/EncryptionZoneManager.java     |    6 +-----
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    3 +--
+ .../hadoop-hdfs/src/main/proto/encryption.proto    |    2 +-
+ 6 files changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index eb6c1ea..9690135 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -2904,8 +2904,7 @@ public EncryptionZone getEZForPath(String src)
+           throws IOException {
+     checkOpen();
+     try {
+-      final EncryptionZone ez = namenode.getEZForPath(src);
+-      return (ez.getId() < 0) ? null : ez;
++      return namenode.getEZForPath(src);
+     } catch (RemoteException re) {
+       throw re.unwrapRemoteException(AccessControlException.class,
+                                      UnresolvedPathException.class);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
+index f940cb2..6eec758 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
+@@ -1334,7 +1334,9 @@ public GetEZForPathResponseProto getEZForPath(
+       GetEZForPathResponseProto.Builder builder =
+           GetEZForPathResponseProto.newBuilder();
+       final EncryptionZone ret = server.getEZForPath(req.getSrc());
+-      builder.setZone(PBHelper.convert(ret));
++      if (ret != null) {
++        builder.setZone(PBHelper.convert(ret));
++      }
+       return builder.build();
+     } catch (IOException e) {
+       throw new ServiceException(e);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
+index cfff06c..e370879 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
+@@ -1339,7 +1339,11 @@ public EncryptionZone getEZForPath(String src)
+     try {
+       final EncryptionZonesProtos.GetEZForPathResponseProto response =
+           rpcProxy.getEZForPath(null, req);
+-      return PBHelper.convert(response.getZone());
++      if (response.hasZone()) {
++        return PBHelper.convert(response.getZone());
++      } else {
++        return null;
++      }
+     } catch (ServiceException e) {
+       throw ProtobufHelper.getRemoteException(e);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+index 0e83583..0d7ced9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+@@ -57,10 +57,6 @@
+   public static Logger LOG = LoggerFactory.getLogger(EncryptionZoneManager
+       .class);
+ 
+-  public static final EncryptionZone NULL_EZ =
+-      new EncryptionZone(-1, "", CipherSuite.UNKNOWN,
+-          CryptoProtocolVersion.UNKNOWN, "");
+-
+   /**
+    * EncryptionZoneInt is the internal representation of an encryption zone. The
+    * external representation of an EZ is embodied in an EncryptionZone and
+@@ -226,7 +222,7 @@ private EncryptionZoneInt getEncryptionZoneForPath(INodesInPath iip) {
+   EncryptionZone getEZINodeForPath(INodesInPath iip) {
+     final EncryptionZoneInt ezi = getEncryptionZoneForPath(iip);
+     if (ezi == null) {
+-      return NULL_EZ;
++      return null;
+     } else {
+       return new EncryptionZone(ezi.getINodeId(), getFullPathName(ezi),
+           ezi.getSuite(), ezi.getVersion(), ezi.getKeyName());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index a1efc2f..337933a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -2785,8 +2785,7 @@ FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId,
+         iip = getINodesInPath(inode.getFullPathName(), true);
+       }
+       EncryptionZone encryptionZone = getEZForPath(iip);
+-      if (encryptionZone == null ||
+-          encryptionZone.equals(EncryptionZoneManager.NULL_EZ)) {
++      if (encryptionZone == null) {
+         // not an encrypted file
+         return null;
+       } else if(encryptionZone.getPath() == null
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+index bb291ea..68b2f3a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+@@ -63,5 +63,5 @@ message GetEZForPathRequestProto {
+ }
+ 
+ message GetEZForPathResponseProto {
+-    required EncryptionZoneProto zone = 1;
++    optional EncryptionZoneProto zone = 1;
+ }
+-- 
+1.7.9.5
+

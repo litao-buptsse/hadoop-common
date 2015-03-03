@@ -1,0 +1,1499 @@
+From 7120ded4e8c4e07362d22d7fa4ee0730de6b2e11 Mon Sep 17 00:00:00 2001
+From: brandonli <Brandon@Brandons-MacBook-Pro-2.local>
+Date: Wed, 27 Aug 2014 11:06:01 -0700
+Subject: [PATCH 437/813] HDFS-6892. Add XDR packaging method for each NFS
+ request. Contributed by Brandon Li
+
+(cherry picked from commit cd9182d8b5f60428f6c91b0eb0b2e61d52a07020)
+(cherry picked from commit 99d8434511faf1dec61a0528c8b6600e642ef454)
+---
+ .../hadoop/nfs/nfs3/request/ACCESS3Request.java    |   15 +-
+ .../hadoop/nfs/nfs3/request/COMMIT3Request.java    |   23 ++-
+ .../hadoop/nfs/nfs3/request/CREATE3Request.java    |   18 +-
+ .../hadoop/nfs/nfs3/request/FSINFO3Request.java    |   15 +-
+ .../hadoop/nfs/nfs3/request/FSSTAT3Request.java    |   15 +-
+ .../hadoop/nfs/nfs3/request/GETATTR3Request.java   |   15 +-
+ .../hadoop/nfs/nfs3/request/LOOKUP3Request.java    |    9 +-
+ .../hadoop/nfs/nfs3/request/MKDIR3Request.java     |   26 ++-
+ .../hadoop/nfs/nfs3/request/NFS3Request.java       |   45 +++++
+ .../hadoop/nfs/nfs3/request/PATHCONF3Request.java  |   15 +-
+ .../hadoop/nfs/nfs3/request/READ3Request.java      |    9 +-
+ .../hadoop/nfs/nfs3/request/READDIR3Request.java   |   30 +++-
+ .../nfs/nfs3/request/READDIRPLUS3Request.java      |   33 +++-
+ .../hadoop/nfs/nfs3/request/READLINK3Request.java  |   15 +-
+ .../hadoop/nfs/nfs3/request/REMOVE3Request.java    |   20 ++-
+ .../hadoop/nfs/nfs3/request/RENAME3Request.java    |   37 ++--
+ .../hadoop/nfs/nfs3/request/RMDIR3Request.java     |   20 ++-
+ .../hadoop/nfs/nfs3/request/RequestWithHandle.java |   16 +-
+ .../hadoop/nfs/nfs3/request/SETATTR3Request.java   |   29 ++-
+ .../hadoop/nfs/nfs3/request/SYMLINK3Request.java   |   30 +++-
+ .../apache/hadoop/nfs/nfs3/request/SetAttr3.java   |    9 +
+ .../hadoop/nfs/nfs3/request/WRITE3Request.java     |   13 +-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |   38 ++--
+ .../hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java   |  187 +++++++++++---------
+ 24 files changed, 478 insertions(+), 204 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/NFS3Request.java
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/ACCESS3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/ACCESS3Request.java
+index 2470108..ea1ba86 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/ACCESS3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/ACCESS3Request.java
+@@ -19,13 +19,24 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+  * ACCESS3 Request
+  */
+ public class ACCESS3Request extends RequestWithHandle {
+-  public ACCESS3Request(XDR xdr) throws IOException {
+-    super(xdr);
++  public static ACCESS3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    return new ACCESS3Request(handle);
++  }
++
++  public ACCESS3Request(FileHandle handle) {
++    super(handle);
++  }
++  
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);    
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/COMMIT3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/COMMIT3Request.java
+index 810c41b..ba84d42 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/COMMIT3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/COMMIT3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -28,10 +29,17 @@
+   private final long offset;
+   private final int count;
+ 
+-  public COMMIT3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    offset = xdr.readHyper();
+-    count = xdr.readInt();
++  public static COMMIT3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    long offset = xdr.readHyper();
++    int count = xdr.readInt();
++    return new COMMIT3Request(handle, offset, count);
++  }
++  
++  public COMMIT3Request(FileHandle handle, long offset, int count) {
++    super(handle);
++    this.offset = offset;
++    this.count = count;
+   }
+ 
+   public long getOffset() {
+@@ -41,4 +49,11 @@ public long getOffset() {
+   public int getCount() {
+     return this.count;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr); 
++    xdr.writeLongAsHyper(offset);
++    xdr.writeInt(count);
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/CREATE3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/CREATE3Request.java
+index b444c99..473d527 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/CREATE3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/CREATE3Request.java
+@@ -29,8 +29,8 @@
+ public class CREATE3Request extends RequestWithHandle {
+   private final String name;
+   private final int mode;
+-  private SetAttr3 objAttr = null;
+-  private long verf;
++  private final SetAttr3 objAttr;
++  private long verf = 0;
+ 
+   public CREATE3Request(FileHandle handle, String name, int mode,
+       SetAttr3 objAttr, long verf) {
+@@ -41,12 +41,12 @@ public CREATE3Request(FileHandle handle, String name, int mode,
+     this.verf = verf;
+   }
+   
+-  public CREATE3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    name = xdr.readString();
+-    mode = xdr.readInt();
+-
+-    objAttr = new SetAttr3();
++  public static CREATE3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    int mode = xdr.readInt();
++    SetAttr3 objAttr = new SetAttr3();
++    long verf = 0;
+     if ((mode == Nfs3Constant.CREATE_UNCHECKED)
+         || (mode == Nfs3Constant.CREATE_GUARDED)) {
+       objAttr.deserialize(xdr);
+@@ -55,6 +55,7 @@ public CREATE3Request(XDR xdr) throws IOException {
+     } else {
+       throw new IOException("Wrong create mode:" + mode);
+     }
++    return new CREATE3Request(handle, name, mode, objAttr, verf);
+   }
+ 
+   public String getName() {
+@@ -81,4 +82,5 @@ public void serialize(XDR xdr) {
+     xdr.writeInt(mode);
+     objAttr.serialize(xdr);
+   }
++
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSINFO3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSINFO3Request.java
+index 26b65be..92c8ed8 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSINFO3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSINFO3Request.java
+@@ -19,13 +19,24 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+  * FSINFO3 Request
+  */
+ public class FSINFO3Request extends RequestWithHandle {
+-  public FSINFO3Request(XDR xdr) throws IOException {
+-    super(xdr);
++  public static FSINFO3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    return new FSINFO3Request(handle);
++  }
++
++  public FSINFO3Request(FileHandle handle) {
++    super(handle);
++  }
++  
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);    
+   }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSSTAT3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSSTAT3Request.java
+index 90bec15..c6c620d 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSSTAT3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/FSSTAT3Request.java
+@@ -19,13 +19,24 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+  * FSSTAT3 Request
+  */
+ public class FSSTAT3Request extends RequestWithHandle {
+-  public FSSTAT3Request(XDR xdr) throws IOException {
+-    super(xdr);
++  public static FSSTAT3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    return new FSSTAT3Request(handle);
++  }
++
++  public FSSTAT3Request(FileHandle handle) {
++    super(handle);
++  }
++  
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);    
+   }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/GETATTR3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/GETATTR3Request.java
+index e1d69d1..b06b4b1 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/GETATTR3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/GETATTR3Request.java
+@@ -19,13 +19,24 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+  * GETATTR3 Request
+  */
+ public class GETATTR3Request extends RequestWithHandle {
+-  public GETATTR3Request(XDR xdr) throws IOException {
+-    super(xdr);
++  public static GETATTR3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    return new GETATTR3Request(handle);
++  }
++
++  public GETATTR3Request(FileHandle handle) {
++    super(handle);
++  }
++  
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);    
+   }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LOOKUP3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LOOKUP3Request.java
+index e461ec3..4661821 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LOOKUP3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LOOKUP3Request.java
+@@ -35,9 +35,10 @@ public LOOKUP3Request(FileHandle handle, String name) {
+     this.name = name;
+   }
+   
+-  public LOOKUP3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    name = xdr.readString();
++  public static LOOKUP3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    return new LOOKUP3Request(handle, name);
+   }
+ 
+   public String getName() {
+@@ -51,7 +52,7 @@ public void setName(String name) {
+   @Override
+   @VisibleForTesting
+   public void serialize(XDR xdr) {
+-    super.serialize(xdr);
++    handle.serialize(xdr);
+     xdr.writeInt(name.getBytes().length);
+     xdr.writeFixedOpaque(name.getBytes());
+   }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKDIR3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKDIR3Request.java
+index 170de8c..b3ef828 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKDIR3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKDIR3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -28,13 +29,20 @@
+   private final String name;
+   private final SetAttr3 objAttr;
+ 
+-  public MKDIR3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    name = xdr.readString();
+-    objAttr = new SetAttr3();
++  public static MKDIR3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    SetAttr3 objAttr = new SetAttr3();
+     objAttr.deserialize(xdr);
++    return new MKDIR3Request(handle, name, objAttr);
+   }
+-  
++
++  public MKDIR3Request(FileHandle handle, String name, SetAttr3 objAttr) {
++    super(handle);
++    this.name = name;
++    this.objAttr = objAttr;
++  }
++
+   public String getName() {
+     return name;
+   }
+@@ -42,4 +50,12 @@ public String getName() {
+   public SetAttr3 getObjAttr() {
+     return objAttr;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeInt(name.getBytes().length);
++    xdr.writeFixedOpaque(name.getBytes());
++    objAttr.serialize(xdr);
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/NFS3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/NFS3Request.java
+new file mode 100644
+index 0000000..cffa215
+--- /dev/null
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/NFS3Request.java
+@@ -0,0 +1,45 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.nfs.nfs3.request;
++
++import java.io.IOException;
++
++import org.apache.hadoop.nfs.nfs3.FileHandle;
++import org.apache.hadoop.oncrpc.XDR;
++
++/**
++ * An NFS request that uses {@link FileHandle} to identify a file.
++ */
++public abstract class NFS3Request {
++  
++  /**
++   * Deserialize a handle from an XDR object
++   */
++  static FileHandle readHandle(XDR xdr) throws IOException {
++    FileHandle handle = new FileHandle();
++    if (!handle.deserialize(xdr)) {
++      throw new IOException("can't deserialize file handle");
++    }
++    return handle;
++  }
++  
++  /**
++   * Subclass should implement. Usually handle is the first to be serialized
++   */
++  public abstract void serialize(XDR xdr);
++}
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/PATHCONF3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/PATHCONF3Request.java
+index d514264..bff8038 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/PATHCONF3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/PATHCONF3Request.java
+@@ -19,13 +19,24 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+  * PATHCONF3 Request
+  */
+ public class PATHCONF3Request extends RequestWithHandle {
+-  public PATHCONF3Request(XDR xdr) throws IOException {
+-    super(xdr);
++  public static PATHCONF3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    return new PATHCONF3Request(handle);
++  }
++  
++  public PATHCONF3Request(FileHandle handle) {
++    super(handle);
++  }
++  
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READ3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READ3Request.java
+index 6d95f5e..5898ec5 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READ3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READ3Request.java
+@@ -31,10 +31,11 @@
+   private final long offset;
+   private final int count;
+ 
+-  public READ3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    offset = xdr.readHyper();
+-    count = xdr.readInt();
++  public static READ3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    long offset = xdr.readHyper();
++    int count = xdr.readInt();
++    return new READ3Request(handle, offset, count);
+   }
+ 
+   @VisibleForTesting
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIR3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIR3Request.java
+index c9835b9..79245c1 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIR3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIR3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -29,13 +30,22 @@
+   private final long cookieVerf;
+   private final int count;
+ 
+-  public READDIR3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    cookie = xdr.readHyper();
+-    cookieVerf = xdr.readHyper();
+-    count = xdr.readInt();
++  public static READDIR3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    long cookie = xdr.readHyper();
++    long cookieVerf = xdr.readHyper();
++    int count = xdr.readInt();
++    return new READDIR3Request(handle, cookie, cookieVerf, count);
+   }
+-
++  
++  public READDIR3Request(FileHandle handle, long cookie, long cookieVerf,
++      int count) {
++    super(handle);
++    this.cookie = cookie;
++    this.cookieVerf = cookieVerf;
++    this.count = count;
++  }
++  
+   public long getCookie() {
+     return this.cookie;
+   }
+@@ -47,4 +57,12 @@ public long getCookieVerf() {
+   public long getCount() {
+     return this.count;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeLongAsHyper(cookie);
++    xdr.writeLongAsHyper(cookieVerf);
++    xdr.writeInt(count);
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIRPLUS3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIRPLUS3Request.java
+index 2994fe9..c1e4365 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIRPLUS3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READDIRPLUS3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -30,14 +31,25 @@
+   private final int dirCount;
+   private final int maxCount;
+ 
+-  public READDIRPLUS3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    cookie = xdr.readHyper();
+-    cookieVerf = xdr.readHyper();
+-    dirCount = xdr.readInt();
+-    maxCount = xdr.readInt();
++  public static READDIRPLUS3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    long cookie = xdr.readHyper();
++    long cookieVerf = xdr.readHyper();
++    int dirCount = xdr.readInt();
++    int maxCount = xdr.readInt();
++    return new READDIRPLUS3Request(handle, cookie, cookieVerf, dirCount,
++        maxCount);
+   }
+ 
++  public READDIRPLUS3Request(FileHandle handle, long cookie, long cookieVerf,
++      int dirCount, int maxCount) {
++    super(handle);
++    this.cookie = cookie;
++    this.cookieVerf = cookieVerf;
++    this.dirCount = dirCount;
++    this.maxCount = maxCount;
++  }
++  
+   public long getCookie() {
+     return this.cookie;
+   }
+@@ -53,4 +65,13 @@ public int getDirCount() {
+   public int getMaxCount() {
+     return maxCount;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeLongAsHyper(cookie);
++    xdr.writeLongAsHyper(cookieVerf);
++    xdr.writeInt(dirCount);
++    xdr.writeInt(maxCount);
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READLINK3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READLINK3Request.java
+index 3b0e8a4..15fe8f0 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READLINK3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/READLINK3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -26,7 +27,17 @@
+  */
+ public class READLINK3Request extends RequestWithHandle {
+ 
+-  public READLINK3Request(XDR xdr) throws IOException {
+-    super(xdr);
++  public static READLINK3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    return new READLINK3Request(handle);
++  }
++  
++  public READLINK3Request(FileHandle handle) {
++    super(handle);
++  }
++  
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);   
+   }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/REMOVE3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/REMOVE3Request.java
+index 901d803..ffd47b0 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/REMOVE3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/REMOVE3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -27,12 +28,25 @@
+ public class REMOVE3Request extends RequestWithHandle {
+   private final String name;
+ 
+-  public REMOVE3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    name = xdr.readString();
++  public static REMOVE3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    return new REMOVE3Request(handle, name);
+   }
+ 
++  public REMOVE3Request(FileHandle handle, String name) {
++    super(handle);
++    this.name = name;
++  }
++  
+   public String getName() {
+     return this.name;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeInt(name.getBytes().length);
++    xdr.writeFixedOpaque(name.getBytes());
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RENAME3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RENAME3Request.java
+index 6fdccff..5144e8a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RENAME3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RENAME3Request.java
+@@ -25,23 +25,26 @@
+ /**
+  * RENAME3 Request
+  */
+-public class RENAME3Request {
++public class RENAME3Request extends NFS3Request {
+   private final FileHandle fromDirHandle;
+   private final String fromName;
+   private final FileHandle toDirHandle;
+   private final String toName;
+   
+-  public RENAME3Request(XDR xdr) throws IOException {
+-    fromDirHandle = new FileHandle();
+-    if (!fromDirHandle.deserialize(xdr)) {
+-      throw new IOException("can't deserialize file handle");
+-    }
+-    fromName = xdr.readString();
+-    toDirHandle = new FileHandle();
+-    if (!toDirHandle.deserialize(xdr)) {
+-      throw new IOException("can't deserialize file handle");
+-    }
+-    toName = xdr.readString();
++  public static RENAME3Request deserialize(XDR xdr) throws IOException {
++    FileHandle fromDirHandle = readHandle(xdr);
++    String fromName = xdr.readString();
++    FileHandle toDirHandle = readHandle(xdr);
++    String toName = xdr.readString();
++    return new RENAME3Request(fromDirHandle, fromName, toDirHandle, toName);
++  }
++  
++  public RENAME3Request(FileHandle fromDirHandle, String fromName,
++      FileHandle toDirHandle, String toName) {
++    this.fromDirHandle = fromDirHandle;
++    this.fromName = fromName;
++    this.toDirHandle = toDirHandle;
++    this.toName = toName;
+   }
+   
+   public FileHandle getFromDirHandle() {
+@@ -59,4 +62,14 @@ public FileHandle getToDirHandle() {
+   public String getToName() {
+     return toName;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    fromDirHandle.serialize(xdr);
++    xdr.writeInt(fromName.getBytes().length);
++    xdr.writeFixedOpaque(fromName.getBytes());
++    toDirHandle.serialize(xdr);
++    xdr.writeInt(toName.getBytes().length);
++    xdr.writeFixedOpaque(toName.getBytes());
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RMDIR3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RMDIR3Request.java
+index 8fd5b70..e9977fa 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RMDIR3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RMDIR3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -27,12 +28,25 @@
+ public class RMDIR3Request extends RequestWithHandle {
+   private final String name;
+ 
+-  public RMDIR3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    name = xdr.readString();
++  public static RMDIR3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    return new RMDIR3Request(handle, name);
+   }
+ 
++  public RMDIR3Request(FileHandle handle, String name) {
++    super(handle);
++    this.name = name;
++  }
++  
+   public String getName() {
+     return this.name;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeInt(name.getBytes().length);
++    xdr.writeFixedOpaque(name.getBytes());
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RequestWithHandle.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RequestWithHandle.java
+index a3b19a1..9f9539c 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RequestWithHandle.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/RequestWithHandle.java
+@@ -17,33 +17,19 @@
+  */
+ package org.apache.hadoop.nfs.nfs3.request;
+ 
+-import java.io.IOException;
+-
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+  * An NFS request that uses {@link FileHandle} to identify a file.
+  */
+-public class RequestWithHandle {
++public abstract class RequestWithHandle extends NFS3Request {
+   protected final FileHandle handle;
+   
+   RequestWithHandle(FileHandle handle) {
+     this.handle = handle;
+   }
+-  
+-  RequestWithHandle(XDR xdr) throws IOException {
+-    handle = new FileHandle();
+-    if (!handle.deserialize(xdr)) {
+-      throw new IOException("can't deserialize file handle");
+-    }
+-  }
+ 
+   public FileHandle getHandle() {
+     return this.handle;
+   }
+-  
+-  public void serialize(XDR xdr) {
+-    handle.serialize(xdr);
+-  }
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SETATTR3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SETATTR3Request.java
+index 05e8c03..c5f668c 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SETATTR3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SETATTR3Request.java
+@@ -20,6 +20,7 @@
+ import java.io.IOException;
+ 
+ import org.apache.hadoop.nfs.NfsTime;
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -38,16 +39,26 @@
+   private final boolean check;
+   private final NfsTime ctime;
+   
+-  public SETATTR3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    attr = new SetAttr3();
++  public static SETATTR3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    SetAttr3 attr = new SetAttr3();
+     attr.deserialize(xdr);
+-    check = xdr.readBoolean();
++    boolean check = xdr.readBoolean();
++    NfsTime ctime;
+     if (check) {
+       ctime = NfsTime.deserialize(xdr);
+     } else {
+       ctime = null;
+     }
++    return new SETATTR3Request(handle, attr, check, ctime);
++  }
++  
++  public SETATTR3Request(FileHandle handle, SetAttr3 attr, boolean check,
++      NfsTime ctime) {
++    super(handle);
++    this.attr = attr;
++    this.check = check;
++    this.ctime = ctime;
+   }
+   
+   public SetAttr3 getAttr() {
+@@ -61,4 +72,14 @@ public boolean isCheck() {
+   public NfsTime getCtime() {
+     return ctime;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    attr.serialize(xdr);
++    xdr.writeBoolean(check);
++    if (check) {
++      ctime.serialize(xdr);
++    }
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SYMLINK3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SYMLINK3Request.java
+index 6e74d1a..2880794 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SYMLINK3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SYMLINK3Request.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.IOException;
+ 
++import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+ 
+ /**
+@@ -29,14 +30,23 @@
+   private final SetAttr3 symAttr;
+   private final String symData;  // It contains the target
+   
+-  public SYMLINK3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    name = xdr.readString();
+-    symAttr = new SetAttr3();
++  public static SYMLINK3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    SetAttr3 symAttr = new SetAttr3();
+     symAttr.deserialize(xdr);
+-    symData = xdr.readString();
++    String symData = xdr.readString();
++    return new SYMLINK3Request(handle, name, symAttr, symData);
+   }
+ 
++  public SYMLINK3Request(FileHandle handle, String name, SetAttr3 symAttr,
++      String symData) {
++    super(handle);
++    this.name = name;
++    this.symAttr = symAttr;
++    this.symData = symData;
++  }
++  
+   public String getName() {
+     return name;
+   }
+@@ -48,4 +58,14 @@ public SetAttr3 getSymAttr() {
+   public String getSymData() {
+     return symData;
+   }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeInt(name.getBytes().length);
++    xdr.writeFixedOpaque(name.getBytes());
++    symAttr.serialize(xdr);
++    xdr.writeInt(symData.getBytes().length);
++    xdr.writeFixedOpaque(symData.getBytes());
++  }
+ }
+\ No newline at end of file
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SetAttr3.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SetAttr3.java
+index 373425f..e8e637c 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SetAttr3.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/SetAttr3.java
+@@ -52,6 +52,15 @@ public SetAttr3() {
+     size = 0;
+     updateFields = EnumSet.noneOf(SetAttrField.class);
+   }
++  
++  public SetAttr3(int mode, int uid, int gid, long size, NfsTime atime,
++      NfsTime mtime, EnumSet<SetAttrField> updateFields) {
++    this.mode = mode;
++    this.uid = uid;
++    this.gid = gid;
++    this.size = size;
++    this.updateFields = updateFields;
++  }
+ 
+   public int getMode() {
+     return mode;
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/WRITE3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/WRITE3Request.java
+index 8a1ff8a..d85dcbb 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/WRITE3Request.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/WRITE3Request.java
+@@ -33,12 +33,13 @@
+   private final WriteStableHow stableHow;
+   private final ByteBuffer data;
+ 
+-  public WRITE3Request(XDR xdr) throws IOException {
+-    super(xdr);
+-    offset = xdr.readHyper();
+-    count = xdr.readInt();
+-    stableHow = WriteStableHow.fromValue(xdr.readInt());
+-    data = ByteBuffer.wrap(xdr.readFixedOpaque(xdr.readInt()));
++  public static WRITE3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    long offset = xdr.readHyper();
++    int count = xdr.readInt();
++    WriteStableHow stableHow = WriteStableHow.fromValue(xdr.readInt());
++    ByteBuffer data = ByteBuffer.wrap(xdr.readFixedOpaque(xdr.readInt()));
++    return new WRITE3Request(handle, offset, count, stableHow, data);
+   }
+ 
+   public WRITE3Request(FileHandle handle, final long offset, final int count,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 0c7aebe..33dc3a3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -268,7 +268,7 @@ GETATTR3Response getattr(XDR xdr, SecurityHandler securityHandler,
+ 
+     GETATTR3Request request = null;
+     try {
+-      request = new GETATTR3Request(xdr);
++      request = GETATTR3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid GETATTR request");
+       response.setStatus(Nfs3Status.NFS3ERR_INVAL);
+@@ -360,7 +360,7 @@ SETATTR3Response setattr(XDR xdr, SecurityHandler securityHandler,
+ 
+     SETATTR3Request request = null;
+     try {
+-      request = new SETATTR3Request(xdr);
++      request = SETATTR3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid SETATTR request");
+       response.setStatus(Nfs3Status.NFS3ERR_INVAL);
+@@ -445,7 +445,7 @@ LOOKUP3Response lookup(XDR xdr, SecurityHandler securityHandler,
+ 
+     LOOKUP3Request request = null;
+     try {
+-      request = new LOOKUP3Request(xdr);
++      request = LOOKUP3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid LOOKUP request");
+       return new LOOKUP3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -513,7 +513,7 @@ ACCESS3Response access(XDR xdr, SecurityHandler securityHandler,
+ 
+     ACCESS3Request request = null;
+     try {
+-      request = new ACCESS3Request(xdr);
++      request = ACCESS3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid ACCESS request");
+       return new ACCESS3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -581,7 +581,7 @@ READLINK3Response readlink(XDR xdr, SecurityHandler securityHandler,
+     READLINK3Request request = null;
+ 
+     try {
+-      request = new READLINK3Request(xdr);
++      request = READLINK3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid READLINK request");
+       return new READLINK3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -655,7 +655,7 @@ READ3Response read(XDR xdr, SecurityHandler securityHandler,
+     READ3Request request = null;
+ 
+     try {
+-      request = new READ3Request(xdr);
++      request = READ3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid READ request");
+       return new READ3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -788,7 +788,7 @@ WRITE3Response write(XDR xdr, Channel channel, int xid,
+     WRITE3Request request = null;
+ 
+     try {
+-      request = new WRITE3Request(xdr);
++      request = WRITE3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid WRITE request");
+       return new WRITE3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -870,7 +870,7 @@ CREATE3Response create(XDR xdr, SecurityHandler securityHandler,
+     CREATE3Request request = null;
+ 
+     try {
+-      request = new CREATE3Request(xdr);
++      request = CREATE3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid CREATE request");
+       return new CREATE3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1003,7 +1003,7 @@ MKDIR3Response mkdir(XDR xdr, SecurityHandler securityHandler,
+     MKDIR3Request request = null;
+ 
+     try {
+-      request = new MKDIR3Request(xdr);
++      request = MKDIR3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid MKDIR request");
+       return new MKDIR3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1099,7 +1099,7 @@ REMOVE3Response remove(XDR xdr, SecurityHandler securityHandler,
+ 
+     REMOVE3Request request = null;
+     try {
+-      request = new REMOVE3Request(xdr);
++      request = REMOVE3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid REMOVE request");
+       return new REMOVE3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1179,7 +1179,7 @@ RMDIR3Response rmdir(XDR xdr, SecurityHandler securityHandler,
+ 
+     RMDIR3Request request = null;
+     try {
+-      request = new RMDIR3Request(xdr);
++      request = RMDIR3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid RMDIR request");
+       return new RMDIR3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1264,7 +1264,7 @@ RENAME3Response rename(XDR xdr, SecurityHandler securityHandler,
+ 
+     RENAME3Request request = null;
+     try {
+-      request = new RENAME3Request(xdr);
++      request = RENAME3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid RENAME request");
+       return new RENAME3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1360,7 +1360,7 @@ SYMLINK3Response symlink(XDR xdr, SecurityHandler securityHandler,
+ 
+     SYMLINK3Request request = null;
+     try {
+-      request = new SYMLINK3Request(xdr);
++      request = SYMLINK3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid SYMLINK request");
+       response.setStatus(Nfs3Status.NFS3ERR_INVAL);
+@@ -1453,7 +1453,7 @@ public READDIR3Response readdir(XDR xdr, SecurityHandler securityHandler,
+ 
+     READDIR3Request request = null;
+     try {
+-      request = new READDIR3Request(xdr);
++      request = READDIR3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid READDIR request");
+       return new READDIR3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1611,7 +1611,7 @@ READDIRPLUS3Response readdirplus(XDR xdr, SecurityHandler securityHandler,
+ 
+     READDIRPLUS3Request request = null;
+     try {
+-      request = new READDIRPLUS3Request(xdr);
++      request = READDIRPLUS3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid READDIRPLUS request");
+       return new READDIRPLUS3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1788,7 +1788,7 @@ FSSTAT3Response fsstat(XDR xdr, SecurityHandler securityHandler,
+ 
+     FSSTAT3Request request = null;
+     try {
+-      request = new FSSTAT3Request(xdr);
++      request = FSSTAT3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid FSSTAT request");
+       return new FSSTAT3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1862,7 +1862,7 @@ FSINFO3Response fsinfo(XDR xdr, SecurityHandler securityHandler,
+ 
+     FSINFO3Request request = null;
+     try {
+-      request = new FSINFO3Request(xdr);
++      request = FSINFO3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid FSINFO request");
+       return new FSINFO3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1926,7 +1926,7 @@ PATHCONF3Response pathconf(XDR xdr, SecurityHandler securityHandler,
+ 
+     PATHCONF3Request request = null;
+     try {
+-      request = new PATHCONF3Request(xdr);
++      request = PATHCONF3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid PATHCONF request");
+       return new PATHCONF3Response(Nfs3Status.NFS3ERR_INVAL);
+@@ -1977,7 +1977,7 @@ COMMIT3Response commit(XDR xdr, Channel channel, int xid,
+ 
+     COMMIT3Request request = null;
+     try {
+-      request = new COMMIT3Request(xdr);
++      request = COMMIT3Request.deserialize(xdr);
+     } catch (IOException e) {
+       LOG.error("Invalid COMMIT request");
+       response.setStatus(Nfs3Status.NFS3ERR_INVAL);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+index 3fc0d99..05b976d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+@@ -17,59 +17,78 @@
+  */
+ package org.apache.hadoop.hdfs.nfs.nfs3;
+ 
+-import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
+ 
+ import java.io.IOException;
+ import java.net.InetSocketAddress;
+ import java.nio.ByteBuffer;
+-import org.jboss.netty.channel.Channel;
+-import org.junit.AfterClass;
+-import org.junit.Assert;
+-import org.junit.Before;
+-import org.junit.BeforeClass;
+-import org.junit.Test;
+-import org.mockito.Mockito;
++import java.util.EnumSet;
+ 
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.hdfs.DFSTestUtil;
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+-import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
+ import org.apache.hadoop.hdfs.nfs.conf.NfsConfigKeys;
++import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
+ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Constant.WriteStableHow;
+ import org.apache.hadoop.nfs.nfs3.Nfs3Status;
++import org.apache.hadoop.nfs.nfs3.request.ACCESS3Request;
++import org.apache.hadoop.nfs.nfs3.request.COMMIT3Request;
++import org.apache.hadoop.nfs.nfs3.request.CREATE3Request;
++import org.apache.hadoop.nfs.nfs3.request.FSINFO3Request;
++import org.apache.hadoop.nfs.nfs3.request.FSSTAT3Request;
++import org.apache.hadoop.nfs.nfs3.request.GETATTR3Request;
+ import org.apache.hadoop.nfs.nfs3.request.LOOKUP3Request;
++import org.apache.hadoop.nfs.nfs3.request.MKDIR3Request;
++import org.apache.hadoop.nfs.nfs3.request.PATHCONF3Request;
+ import org.apache.hadoop.nfs.nfs3.request.READ3Request;
++import org.apache.hadoop.nfs.nfs3.request.READDIR3Request;
++import org.apache.hadoop.nfs.nfs3.request.READDIRPLUS3Request;
++import org.apache.hadoop.nfs.nfs3.request.READLINK3Request;
++import org.apache.hadoop.nfs.nfs3.request.REMOVE3Request;
++import org.apache.hadoop.nfs.nfs3.request.RENAME3Request;
++import org.apache.hadoop.nfs.nfs3.request.RMDIR3Request;
++import org.apache.hadoop.nfs.nfs3.request.SETATTR3Request;
++import org.apache.hadoop.nfs.nfs3.request.SYMLINK3Request;
++import org.apache.hadoop.nfs.nfs3.request.SetAttr3;
++import org.apache.hadoop.nfs.nfs3.request.SetAttr3.SetAttrField;
+ import org.apache.hadoop.nfs.nfs3.request.WRITE3Request;
+ import org.apache.hadoop.nfs.nfs3.response.ACCESS3Response;
+ import org.apache.hadoop.nfs.nfs3.response.COMMIT3Response;
+ import org.apache.hadoop.nfs.nfs3.response.CREATE3Response;
+-import org.apache.hadoop.nfs.nfs3.response.FSSTAT3Response;
+ import org.apache.hadoop.nfs.nfs3.response.FSINFO3Response;
++import org.apache.hadoop.nfs.nfs3.response.FSSTAT3Response;
+ import org.apache.hadoop.nfs.nfs3.response.GETATTR3Response;
+ import org.apache.hadoop.nfs.nfs3.response.LOOKUP3Response;
++import org.apache.hadoop.nfs.nfs3.response.MKDIR3Response;
+ import org.apache.hadoop.nfs.nfs3.response.PATHCONF3Response;
+ import org.apache.hadoop.nfs.nfs3.response.READ3Response;
+-import org.apache.hadoop.nfs.nfs3.response.REMOVE3Response;
+-import org.apache.hadoop.nfs.nfs3.response.RMDIR3Response;
+-import org.apache.hadoop.nfs.nfs3.response.RENAME3Response;
+ import org.apache.hadoop.nfs.nfs3.response.READDIR3Response;
+ import org.apache.hadoop.nfs.nfs3.response.READDIRPLUS3Response;
+ import org.apache.hadoop.nfs.nfs3.response.READLINK3Response;
++import org.apache.hadoop.nfs.nfs3.response.REMOVE3Response;
++import org.apache.hadoop.nfs.nfs3.response.RENAME3Response;
++import org.apache.hadoop.nfs.nfs3.response.RMDIR3Response;
+ import org.apache.hadoop.nfs.nfs3.response.SETATTR3Response;
+ import org.apache.hadoop.nfs.nfs3.response.SYMLINK3Response;
+ import org.apache.hadoop.nfs.nfs3.response.WRITE3Response;
+-import org.apache.hadoop.nfs.nfs3.request.SetAttr3;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.SecurityHandler;
+ import org.apache.hadoop.security.authorize.DefaultImpersonationProvider;
+ import org.apache.hadoop.security.authorize.ProxyUsers;
++import org.jboss.netty.channel.Channel;
++import org.junit.AfterClass;
++import org.junit.Assert;
++import org.junit.Before;
++import org.junit.BeforeClass;
++import org.junit.Test;
++import org.mockito.Mockito;
+ 
+ 
+ /**
+@@ -143,8 +162,9 @@ public void testGetattr() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-
++    GETATTR3Request req = new GETATTR3Request(handle);
++    req.serialize(xdr_req);
++    
+     // Attempt by an unpriviledged user should fail.
+     GETATTR3Response response1 = nfsd.getattr(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+@@ -165,13 +185,12 @@ public void testSetattr() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("bar");
+-    SetAttr3 symAttr = new SetAttr3();
+-    symAttr.serialize(xdr_req);
+-    xdr_req.writeBoolean(false);
++    SetAttr3 symAttr = new SetAttr3(0, 1, 0, 0, null, null,
++        EnumSet.of(SetAttrField.UID));
++    SETATTR3Request req = new SETATTR3Request(handle, symAttr, false, null);
++    req.serialize(xdr_req);
+ 
+-    // Attempt by an unpriviledged user should fail.
++    // Attempt by an unprivileged user should fail.
+     SETATTR3Response response1 = nfsd.setattr(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+@@ -214,7 +233,8 @@ public void testAccess() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
++    ACCESS3Request req = new ACCESS3Request(handle);
++    req.serialize(xdr_req);
+ 
+     // Attempt by an unpriviledged user should fail.
+     ACCESS3Response response1 = nfsd.access(xdr_req.asReadOnlyWrap(),
+@@ -237,12 +257,10 @@ public void testReadlink() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("fubar");
+-    SetAttr3 symAttr = new SetAttr3();
+-    symAttr.serialize(xdr_req);
+-    xdr_req.writeString("bar");
+-
++    SYMLINK3Request req = new SYMLINK3Request(handle, "fubar", new SetAttr3(),
++        "bar");
++    req.serialize(xdr_req);
++    
+     SYMLINK3Response response = nfsd.symlink(xdr_req.asReadOnlyWrap(),
+         securityHandler, new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
+@@ -251,7 +269,8 @@ public void testReadlink() throws Exception {
+     // Now perform readlink operations.
+     FileHandle handle2 = response.getObjFileHandle();
+     XDR xdr_req2 = new XDR();
+-    handle2.serialize(xdr_req2);
++    READLINK3Request req2 = new READLINK3Request(handle2);
++    req2.serialize(xdr_req2);
+ 
+     // Attempt by an unpriviledged user should fail.
+     READLINK3Response response1 = nfsd.readlink(xdr_req2.asReadOnlyWrap(),
+@@ -327,12 +346,10 @@ public void testCreate() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("fubar");
+-    xdr_req.writeInt(Nfs3Constant.CREATE_UNCHECKED);
+-    SetAttr3 symAttr = new SetAttr3();
+-    symAttr.serialize(xdr_req);
+-
++    CREATE3Request req = new CREATE3Request(handle, "fubar",
++        Nfs3Constant.CREATE_UNCHECKED, new SetAttr3(), 0);
++    req.serialize(xdr_req);
++    
+     // Attempt by an unpriviledged user should fail.
+     CREATE3Response response1 = nfsd.create(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+@@ -348,26 +365,27 @@ public void testCreate() throws Exception {
+   }
+ 
+   @Test(timeout = 60000)
+-  public void testMkdir() throws Exception {
++  public void testMkdir() throws Exception {//FixME
+     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("fubar");
+-    SetAttr3 symAttr = new SetAttr3();
+-    symAttr.serialize(xdr_req);
+-    xdr_req.writeString("bar");
+-
+-    // Attempt to remove by an unpriviledged user should fail.
+-    SYMLINK3Response response1 = nfsd.symlink(xdr_req.asReadOnlyWrap(),
++    MKDIR3Request req = new MKDIR3Request(handle, "fubar1", new SetAttr3());
++    req.serialize(xdr_req);
++    
++    // Attempt to mkdir by an unprivileged user should fail.
++    MKDIR3Response response1 = nfsd.mkdir(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus());
+ 
+-    // Attempt to remove by a priviledged user should pass.
+-    SYMLINK3Response response2 = nfsd.symlink(xdr_req.asReadOnlyWrap(),
++    XDR xdr_req2 = new XDR();
++    MKDIR3Request req2 = new MKDIR3Request(handle, "fubar2", new SetAttr3());
++    req2.serialize(xdr_req2);
++    
++    // Attempt to mkdir by a privileged user should pass.
++    MKDIR3Response response2 = nfsd.mkdir(xdr_req2.asReadOnlyWrap(),
+         securityHandler, new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
+         response2.getStatus());
+@@ -379,20 +397,18 @@ public void testSymlink() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("fubar");
+-    SetAttr3 symAttr = new SetAttr3();
+-    symAttr.serialize(xdr_req);
+-    xdr_req.writeString("bar");
++    SYMLINK3Request req = new SYMLINK3Request(handle, "fubar", new SetAttr3(),
++        "bar");
++    req.serialize(xdr_req);
+ 
+-    // Attempt by an unpriviledged user should fail.
++    // Attempt by an unprivileged user should fail.
+     SYMLINK3Response response1 = nfsd.symlink(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus());
+ 
+-    // Attempt by a priviledged user should pass.
++    // Attempt by a privileged user should pass.
+     SYMLINK3Response response2 = nfsd.symlink(xdr_req.asReadOnlyWrap(),
+         securityHandler, new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
+@@ -405,8 +421,8 @@ public void testRemove() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("bar");
++    REMOVE3Request req = new REMOVE3Request(handle, "bar");
++    req.serialize(xdr_req);
+ 
+     // Attempt by an unpriviledged user should fail.
+     REMOVE3Response response1 = nfsd.remove(xdr_req.asReadOnlyWrap(),
+@@ -428,17 +444,17 @@ public void testRmdir() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("foo");
++    RMDIR3Request req = new RMDIR3Request(handle, "foo");
++    req.serialize(xdr_req);
+ 
+-    // Attempt by an unpriviledged user should fail.
++    // Attempt by an unprivileged user should fail.
+     RMDIR3Response response1 = nfsd.rmdir(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus());
+ 
+-    // Attempt by a priviledged user should pass.
++    // Attempt by a privileged user should pass.
+     RMDIR3Response response2 = nfsd.rmdir(xdr_req.asReadOnlyWrap(),
+         securityHandler, new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
+@@ -451,19 +467,17 @@ public void testRename() throws Exception {
+     long dirId = status.getFileId();
+     XDR xdr_req = new XDR();
+     FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("bar");
+-    handle.serialize(xdr_req);
+-    xdr_req.writeString("fubar");
+-
+-    // Attempt by an unpriviledged user should fail.
++    RENAME3Request req = new RENAME3Request(handle, "bar", handle, "fubar");
++    req.serialize(xdr_req);
++    
++    // Attempt by an unprivileged user should fail.
+     RENAME3Response response1 = nfsd.rename(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus());
+ 
+-    // Attempt by a priviledged user should pass.
++    // Attempt by a privileged user should pass.
+     RENAME3Response response2 = nfsd.rename(xdr_req.asReadOnlyWrap(),
+         securityHandler, new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
+@@ -476,10 +490,8 @@ public void testReaddir() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(0);
+-    xdr_req.writeLongAsHyper(0);
+-    xdr_req.writeInt(100);
++    READDIR3Request req = new READDIR3Request(handle, 0, 0, 100);
++    req.serialize(xdr_req);
+ 
+     // Attempt by an unpriviledged user should fail.
+     READDIR3Response response1 = nfsd.readdir(xdr_req.asReadOnlyWrap(),
+@@ -501,20 +513,17 @@ public void testReaddirplus() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(0);
+-    xdr_req.writeLongAsHyper(0);
+-    xdr_req.writeInt(3);
+-    xdr_req.writeInt(2);
+-
+-    // Attempt by an unpriviledged user should fail.
++    READDIRPLUS3Request req = new READDIRPLUS3Request(handle, 0, 0, 3, 2);
++    req.serialize(xdr_req);
++    
++    // Attempt by an unprivileged user should fail.
+     READDIRPLUS3Response response1 = nfsd.readdirplus(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus());
+ 
+-    // Attempt by a priviledged user should pass.
++    // Attempt by a privileged user should pass.
+     READDIRPLUS3Response response2 = nfsd.readdirplus(xdr_req.asReadOnlyWrap(),
+         securityHandler, new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
+@@ -527,8 +536,9 @@ public void testFsstat() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-
++    FSSTAT3Request req = new FSSTAT3Request(handle);
++    req.serialize(xdr_req);
++    
+     // Attempt by an unpriviledged user should fail.
+     FSSTAT3Response response1 = nfsd.fsstat(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+@@ -549,8 +559,9 @@ public void testFsinfo() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-
++    FSINFO3Request req = new FSINFO3Request(handle);
++    req.serialize(xdr_req);
++    
+     // Attempt by an unpriviledged user should fail.
+     FSINFO3Response response1 = nfsd.fsinfo(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+@@ -571,8 +582,9 @@ public void testPathconf() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-
++    PATHCONF3Request req = new PATHCONF3Request(handle);
++    req.serialize(xdr_req);
++    
+     // Attempt by an unpriviledged user should fail.
+     PATHCONF3Response response1 = nfsd.pathconf(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+@@ -593,9 +605,8 @@ public void testCommit() throws Exception {
+     long dirId = status.getFileId();
+     FileHandle handle = new FileHandle(dirId);
+     XDR xdr_req = new XDR();
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(0);
+-    xdr_req.writeInt(5);
++    COMMIT3Request req = new COMMIT3Request(handle, 0, 5);
++    req.serialize(xdr_req);
+ 
+     Channel ch = Mockito.mock(Channel.class);
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,473 @@
+From a61cc5ea384ca19b4e950ea303e6461e070c360e Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 4 Nov 2014 17:44:59 -0800
+Subject: [PATCH 792/813] YARN-2010. Handle app-recovery failures gracefully.
+ (Jian He and Karthik Kambatla via kasha)
+
+(cherry picked from commit b2cd2698028118b6384904732dbf94942f644732)
+(cherry picked from commit 3e4b280de793030539ea8f01a8bbe80795a3ae6b)
+(cherry picked from commit 8e90dff1c00541f6cb31c011dbdd89db5c12de9d)
+---
+ .../yarn/server/resourcemanager/RMAppManager.java  |   55 +++--------------
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |   46 ++++++++++++++
+ .../resourcemanager/rmapp/RMAppRecoverEvent.java   |   36 +++++++++++
+ .../rmapp/attempt/RMAppAttemptImpl.java            |    6 +-
+ .../scheduler/QueueNotFoundException.java          |   32 ++++++++++
+ .../scheduler/capacity/CapacityScheduler.java      |   12 ++++
+ .../rmapp/TestRMAppTransitions.java                |   64 +++++++++++++++++---
+ 7 files changed, 196 insertions(+), 55 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppRecoverEvent.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueNotFoundException.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
+index 656effe..dc76998 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
+@@ -46,6 +46,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppRecoverEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppRejectedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+@@ -273,12 +274,11 @@ protected void submitApplication(
+     ApplicationId appId = submissionContext.getApplicationId();
+ 
+     if (UserGroupInformation.isSecurityEnabled()) {
+-      Credentials credentials = null;
+       try {
+-        credentials = parseCredentials(submissionContext);
+         this.rmContext.getDelegationTokenRenewer().addApplicationAsync(appId,
+-          credentials, submissionContext.getCancelTokensWhenComplete(),
+-          application.getUser());
++            parseCredentials(submissionContext),
++            submissionContext.getCancelTokensWhenComplete(),
++            application.getUser());
+       } catch (Exception e) {
+         LOG.warn("Unable to parse credentials.", e);
+         // Sending APP_REJECTED is fine, since we assume that the
+@@ -298,10 +298,8 @@ protected void submitApplication(
+     }
+   }
+ 
+-  @SuppressWarnings("unchecked")
+-  protected void
+-      recoverApplication(ApplicationState appState, RMState rmState)
+-          throws Exception {
++  protected void recoverApplication(ApplicationState appState, RMState rmState)
++      throws Exception {
+     ApplicationSubmissionContext appContext =
+         appState.getApplicationSubmissionContext();
+     ApplicationId appId = appState.getAppId();
+@@ -310,33 +308,7 @@ protected void submitApplication(
+     RMAppImpl application =
+         createAndPopulateNewRMApp(appContext, appState.getSubmitTime(),
+           appState.getUser());
+-    application.recover(rmState);
+-    if (isApplicationInFinalState(appState.getState())) {
+-      // We are synchronously moving the application into final state so that
+-      // momentarily client will not see this application in NEW state. Also
+-      // for finished applications we will avoid renewing tokens.
+-      application.handle(new RMAppEvent(appId, RMAppEventType.RECOVER));
+-      return;
+-    }
+-
+-    if (UserGroupInformation.isSecurityEnabled()) {
+-      Credentials credentials = null;
+-      try {
+-        credentials = parseCredentials(appContext);
+-        // synchronously renew delegation token on recovery.
+-        rmContext.getDelegationTokenRenewer().addApplicationSync(appId,
+-          credentials, appContext.getCancelTokensWhenComplete(),
+-          application.getUser());
+-        application.handle(new RMAppEvent(appId, RMAppEventType.RECOVER));
+-      } catch (Exception e) {
+-        LOG.warn("Unable to parse and renew delegation tokens.", e);
+-        this.rmContext.getDispatcher().getEventHandler()
+-          .handle(new RMAppRejectedEvent(appId, e.getMessage()));
+-        throw e;
+-      }
+-    } else {
+-      application.handle(new RMAppEvent(appId, RMAppEventType.RECOVER));
+-    }
++    application.handle(new RMAppRecoverEvent(appId, rmState));
+   }
+ 
+   private RMAppImpl createAndPopulateNewRMApp(
+@@ -393,18 +365,9 @@ private void validateResourceRequest(
+       }
+     }
+   }
+-
+-  private boolean isApplicationInFinalState(RMAppState rmAppState) {
+-    if (rmAppState == RMAppState.FINISHED || rmAppState == RMAppState.FAILED
+-        || rmAppState == RMAppState.KILLED) {
+-      return true;
+-    } else {
+-      return false;
+-    }
+-  }
+   
+-  protected Credentials parseCredentials(ApplicationSubmissionContext application)
+-      throws IOException {
++  protected Credentials parseCredentials(
++      ApplicationSubmissionContext application) throws IOException {
+     Credentials credentials = new Credentials();
+     DataInputByteBuffer dibb = new DataInputByteBuffer();
+     ByteBuffer tokens = application.getAMContainerSpec().getTokens();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 26080c6..9942d8f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -21,6 +21,7 @@
+ import java.io.IOException;
+ import java.net.URI;
+ import java.net.URISyntaxException;
++import java.nio.ByteBuffer;
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.EnumSet;
+@@ -39,6 +40,8 @@
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsPermission;
++import org.apache.hadoop.io.DataInputByteBuffer;
++import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.util.ExitUtil;
+@@ -834,6 +837,15 @@ private void recoverAppAttempts() {
+     @Override
+     public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+ 
++      RMAppRecoverEvent recoverEvent = (RMAppRecoverEvent) event;
++      try {
++        app.recover(recoverEvent.getRMState());
++      } catch (Exception e) {
++        String msg = app.applicationId + " failed to recover. " + e.getMessage();
++        failToRecoverApp(app, event, msg, e);
++        return RMAppState.FINAL_SAVING;
++      }
++
+       // The app has completed.
+       if (app.recoveredFinalState != null) {
+         app.recoverAppAttempts();
+@@ -841,6 +853,20 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+         return app.recoveredFinalState;
+       }
+ 
++      if (UserGroupInformation.isSecurityEnabled()) {
++        // synchronously renew delegation token on recovery.
++        try {
++          app.rmContext.getDelegationTokenRenewer().addApplicationSync(
++            app.getApplicationId(), app.parseCredentials(),
++            app.submissionContext.getCancelTokensWhenComplete(), app.getUser());
++        } catch (Exception e) {
++          String msg = "Failed to renew delegation token on recovery for "
++              + app.applicationId + e.getMessage();
++          failToRecoverApp(app, event, msg, e);
++          return RMAppState.FINAL_SAVING;
++        }
++      }
++
+       // No existent attempts means the attempt associated with this app was not
+       // started or started but not yet saved.
+       if (app.attempts.isEmpty()) {
+@@ -872,6 +898,14 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+       // Thus we return ACCECPTED state on recovery.
+       return RMAppState.ACCEPTED;
+     }
++
++    private void failToRecoverApp(RMAppImpl app, RMAppEvent event, String msg,
++        Exception e) {
++      app.diagnostics.append(msg);
++      LOG.error(msg, e);
++      app.rememberTargetTransitionsAndStoreState(event, new FinalTransition(
++        RMAppState.FAILED), RMAppState.FAILED, RMAppState.FAILED);
++    }
+   }
+ 
+   private static final class AddApplicationToSchedulerTransition extends
+@@ -1339,4 +1373,16 @@ public RMAppMetrics getRMAppMetrics() {
+   public void setSystemClock(Clock clock) {
+     this.systemClock = clock;
+   }
++
++  protected Credentials parseCredentials() throws IOException {
++    Credentials credentials = new Credentials();
++    DataInputByteBuffer dibb = new DataInputByteBuffer();
++    ByteBuffer tokens = submissionContext.getAMContainerSpec().getTokens();
++    if (tokens != null) {
++      dibb.reset(tokens);
++      credentials.readTokenStorageStream(dibb);
++      tokens.rewind();
++    }
++    return credentials;
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppRecoverEvent.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppRecoverEvent.java
+new file mode 100644
+index 0000000..b8c91a9
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppRecoverEvent.java
+@@ -0,0 +1,36 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
++
++import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
++
++public class RMAppRecoverEvent extends RMAppEvent {
++
++  private final RMState state;
++
++  public RMAppRecoverEvent(ApplicationId appId, RMState state) {
++    super(appId, RMAppEventType.RECOVER);
++    this.state = state;
++  }
++
++  public RMState getRMState() {
++    return state;
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index 15c9e5e..29355cc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -836,8 +836,10 @@ private void recoverAppAttemptCredentials(Credentials appAttemptTokens,
+     if (UserGroupInformation.isSecurityEnabled()) {
+       byte[] clientTokenMasterKeyBytes = appAttemptTokens.getSecretKey(
+           RMStateStore.AM_CLIENT_TOKEN_MASTER_KEY_NAME);
+-      clientTokenMasterKey = rmContext.getClientToAMTokenSecretManager()
+-          .registerMasterKey(applicationAttemptId, clientTokenMasterKeyBytes);
++      if (clientTokenMasterKeyBytes != null) {
++        clientTokenMasterKey = rmContext.getClientToAMTokenSecretManager()
++            .registerMasterKey(applicationAttemptId, clientTokenMasterKeyBytes);
++      }
+     }
+ 
+     this.amrmToken =
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueNotFoundException.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueNotFoundException.java
+new file mode 100644
+index 0000000..35a1d66
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueNotFoundException.java
+@@ -0,0 +1,32 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
++
++import org.apache.hadoop.classification.InterfaceAudience.Private;
++import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
++
++@Private
++public class QueueNotFoundException extends YarnRuntimeException {
++
++  private static final long serialVersionUID = 187239430L;
++
++  public QueueNotFoundException(String message) {
++    super(message);
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 75c9e32..6a2afbe 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -68,6 +68,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.PreemptableResourceScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueNotFoundException;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplication;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
+@@ -520,6 +521,17 @@ private synchronized void addApplication(ApplicationId applicationId,
+     // santiy checks.
+     CSQueue queue = getQueue(queueName);
+     if (queue == null) {
++      //During a restart, this indicates a queue was removed, which is
++      //not presently supported
++      if (isAppRecovering) {
++        String queueErrorMsg = "Queue named " + queueName
++           + " missing during application recovery."
++           + " Queue removal during recovery is not presently supported by the"
++           + " capacity scheduler, please restart with all queues configured"
++           + " which were present before shutdown/restart.";
++        LOG.fatal(queueErrorMsg);
++        throw new QueueNotFoundException(queueErrorMsg);
++      }
+       String message = "Application " + applicationId + 
+       " submitted by user " + user + " to unknown queue: " + queueName;
+       this.rmContext.getDispatcher().getEventHandler()
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+index 55bd49a..aa5df10 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+@@ -27,6 +27,7 @@
+ import static org.mockito.Mockito.verify;
+ 
+ import java.io.IOException;
++import java.nio.ByteBuffer;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Map;
+@@ -36,6 +37,8 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.io.DataOutputBuffer;
++import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
+@@ -44,6 +47,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ApplicationReport;
+ import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
++import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
+ import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationSubmissionContextPBImpl;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+@@ -72,8 +76,10 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
++import org.apache.hadoop.yarn.server.resourcemanager.security.DelegationTokenRenewer;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
++import org.apache.hadoop.yarn.util.Records;
+ import org.junit.Assert;
+ import org.junit.Before;
+ import org.junit.Rule;
+@@ -202,10 +208,11 @@ public void setUp() throws Exception {
+     AMLivelinessMonitor amFinishingMonitor = mock(AMLivelinessMonitor.class);
+     store = mock(RMStateStore.class);
+     writer = mock(RMApplicationHistoryWriter.class);
++    DelegationTokenRenewer renewer = mock(DelegationTokenRenewer.class);
+     RMContext realRMContext = 
+         new RMContextImpl(rmDispatcher,
+           containerAllocationExpirer, amLivelinessMonitor, amFinishingMonitor,
+-          null, new AMRMTokenSecretManager(conf, this.rmContext),
++          renewer, new AMRMTokenSecretManager(conf, this.rmContext),
+           new RMContainerTokenSecretManager(conf),
+           new NMTokenSecretManagerInRM(conf),
+           new ClientToAMTokenSecretManagerInRM(),
+@@ -401,8 +408,12 @@ protected RMApp testCreateAppSubmittedRecovery(
+       ApplicationSubmissionContext submissionContext) throws IOException {
+     RMApp application = createNewTestApp(submissionContext);
+     // NEW => SUBMITTED event RMAppEventType.RECOVER
++    RMState state = new RMState();
++    ApplicationState appState = new ApplicationState(123, 123, null, "user");
++    state.getApplicationState().put(application.getApplicationId(), appState);
+     RMAppEvent event =
+-        new RMAppEvent(application.getApplicationId(), RMAppEventType.RECOVER);
++        new RMAppRecoverEvent(application.getApplicationId(), state);
++
+     application.handle(event);
+     assertStartTimeSet(application);
+     assertAppState(RMAppState.SUBMITTED, application);
+@@ -528,7 +539,46 @@ public void testAppSuccessPath() throws IOException {
+   @Test (timeout = 30000)
+   public void testAppRecoverPath() throws IOException {
+     LOG.info("--- START: testAppRecoverPath ---");
+-    testCreateAppSubmittedRecovery(null);
++    ApplicationSubmissionContext sub =
++        Records.newRecord(ApplicationSubmissionContext.class);
++    ContainerLaunchContext clc =
++        Records.newRecord(ContainerLaunchContext.class);
++    Credentials credentials = new Credentials();
++    DataOutputBuffer dob = new DataOutputBuffer();
++    credentials.writeTokenStorageToStream(dob);
++    ByteBuffer securityTokens =
++        ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
++    clc.setTokens(securityTokens);
++    sub.setAMContainerSpec(clc);
++    testCreateAppSubmittedRecovery(sub);
++  }
++
++  @Test (timeout = 30000)
++  public void testAppRecoverToFailed() throws IOException {
++    LOG.info("--- START: testAppRecoverToFailed ---");
++    ApplicationSubmissionContext sub =
++        Records.newRecord(ApplicationSubmissionContext.class);
++    ContainerLaunchContext clc =
++        Records.newRecord(ContainerLaunchContext.class);
++    Credentials credentials = new Credentials();
++    DataOutputBuffer dob = new DataOutputBuffer();
++    credentials.writeTokenStorageToStream(dob);
++    ByteBuffer securityTokens =
++        ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
++    clc.setTokens(securityTokens);
++    sub.setAMContainerSpec(clc);
++
++    RMApp application = createNewTestApp(sub);
++    // NEW => FINAL_SAVING, event RMAppEventType.RECOVER
++    RMState state = new RMState();
++    RMAppEvent event =
++        new RMAppRecoverEvent(application.getApplicationId(), state);
++    // NPE will throw on recovery.
++    application.handle(event);
++    assertAppState(RMAppState.FINAL_SAVING, application);
++    sendAppUpdateSavedEvent(application);
++    rmDispatcher.await();
++    assertAppState(RMAppState.FAILED, application);
+   }
+ 
+   @Test (timeout = 30000)
+@@ -962,15 +1012,15 @@ public void testRecoverApplication(ApplicationState appState, RMState rmState)
+             appState.getSubmitTime(), submissionContext.getApplicationType(),
+             submissionContext.getApplicationTags());
+     Assert.assertEquals(RMAppState.NEW, application.getState());
+-    application.recover(rmState);
+ 
++    RMAppEvent recoverEvent =
++        new RMAppRecoverEvent(application.getApplicationId(), rmState);
++    // Trigger RECOVER event.
++    application.handle(recoverEvent);
+     // Application final status looked from recoveredFinalStatus
+     Assert.assertTrue("Application is not in recoveredFinalStatus.",
+         RMAppImpl.isAppInFinalState(application));
+ 
+-    // Trigger RECOVER event.
+-    application.handle(new RMAppEvent(appState.getAppId(),
+-        RMAppEventType.RECOVER));
+     rmDispatcher.await();
+     RMAppState finalState = appState.getState();
+     Assert.assertEquals("Application is not in finalState.", finalState,
+-- 
+1.7.9.5
+

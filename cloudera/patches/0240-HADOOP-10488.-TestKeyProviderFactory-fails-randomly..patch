@@ -1,0 +1,58 @@
+From 2ebbbaa75373f5301cc9ba763b95a9b4120b78bd Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 19:00:08 +0000
+Subject: [PATCH 240/813] HADOOP-10488. TestKeyProviderFactory fails randomly.
+ (tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619554 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/TestKeyProviderFactory.java  |   13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+index 11f18e5..d72ac51 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+@@ -21,6 +21,8 @@
+ import java.io.IOException;
+ import java.net.URI;
+ import java.util.List;
++import java.util.UUID;
++
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.key.KeyProvider.KeyVersion;
+ import org.apache.hadoop.fs.FileStatus;
+@@ -32,6 +34,7 @@
+ import org.apache.hadoop.security.ProviderUtils;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.junit.Assert;
++import org.junit.Before;
+ import org.junit.Test;
+ 
+ import static org.junit.Assert.assertArrayEquals;
+@@ -40,8 +43,14 @@
+ 
+ public class TestKeyProviderFactory {
+ 
+-  private static final File tmpDir =
+-      new File(System.getProperty("test.build.data", "/tmp"), "key");
++  private static File tmpDir;
++
++  @Before
++  public void setup() {
++    tmpDir = new File(System.getProperty("test.build.data", "target"),
++        UUID.randomUUID().toString());
++    tmpDir.mkdirs();
++  }
+ 
+   @Test
+   public void testFactory() throws Exception {
+-- 
+1.7.9.5
+

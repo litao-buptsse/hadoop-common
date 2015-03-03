@@ -1,0 +1,98 @@
+From 1ac13c8580b9253d34f1ac904972f52685df3e99 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 30 Sep 2014 16:12:27 -0700
+Subject: [PATCH 534/813] YARN-2594. Potential deadlock in RM when querying
+ ApplicationResourceUsageReport. (Wangda Tan via
+ kasha)
+
+(cherry picked from commit 14d60dadc25b044a2887bf912ba5872367f2dffb)
+(cherry picked from commit 5a43b795b77cf49e27c3c662a9b195ffb1a3e74d)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+---
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |   45 +++++++++-----------
+ 1 file changed, 19 insertions(+), 26 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 9d5b9d4..fe11b0c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -137,7 +137,8 @@
+   private long startTime;
+   private long finishTime = 0;
+   private long storedFinishTime = 0;
+-  private RMAppAttempt currentAttempt;
++  // This field isn't protected by readlock now.
++  private volatile RMAppAttempt currentAttempt;
+   private String queue;
+   private EventHandler handler;
+   private static final AppFinishedTransition FINISHED_TRANSITION =
+@@ -444,16 +445,11 @@ public String getUser() {
+ 
+   @Override
+   public float getProgress() {
+-    this.readLock.lock();
+-
+-    try {
+-      if (this.currentAttempt != null) {
+-        return this.currentAttempt.getProgress();
+-      }
+-      return 0;
+-    } finally {
+-      this.readLock.unlock();
++    RMAppAttempt attempt = this.currentAttempt;
++    if (attempt != null) {
++      return attempt.getProgress();
+     }
++    return 0;
+   }
+ 
+   @Override
+@@ -484,13 +480,7 @@ public String getName() {
+ 
+   @Override
+   public RMAppAttempt getCurrentAppAttempt() {
+-    this.readLock.lock();
+-
+-    try {
+-      return this.currentAttempt;
+-    } finally {
+-      this.readLock.unlock();
+-    }
++    return this.currentAttempt;
+   }
+ 
+   @Override
+@@ -661,16 +651,19 @@ public long getSubmitTime() {
+ 
+   @Override
+   public String getTrackingUrl() {
+-    this.readLock.lock();
+-    
+-    try {
+-      if (this.currentAttempt != null) {
+-        return this.currentAttempt.getTrackingUrl();
+-      }
+-      return null;
+-    } finally {
+-      this.readLock.unlock();
++    RMAppAttempt attempt = this.currentAttempt;
++    if (attempt != null) {
++      return attempt.getTrackingUrl();
++    }
++    return null;
++  }
++
++  public String getOriginalTrackingUrl() {
++    RMAppAttempt attempt = this.currentAttempt;
++    if (attempt != null) {
++      return attempt.getOriginalTrackingUrl();
+     }
++    return null;
+   }
+ 
+   @Override
+-- 
+1.7.9.5
+

@@ -1,0 +1,82 @@
+From 556ec2996d12b2392157cdda3bbb0f3f7dd5dd81 Mon Sep 17 00:00:00 2001
+From: arp <arp@apache.org>
+Date: Fri, 29 Aug 2014 00:26:13 -0700
+Subject: [PATCH 344/813] HDFS-6800. Support Datanode layout changes with
+ rolling upgrade. (Contributed by James Thomas)
+
+    (Cherry picked from commit 4ae8178c5626d188b137e3f806e56fd8661c4970)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../server/datanode/BlockPoolSliceStorage.java     |    9 ++++++++-
+ .../hadoop/hdfs/server/datanode/DataNode.java      |    5 ++---
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |    1 +
+ .../src/site/xdoc/HdfsRollingUpgrade.xml           |    2 +-
+ 4 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java
+index 26fdce0..8929bd1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java
+@@ -244,7 +244,14 @@ protected void setFieldsFromProperties(Properties props, StorageDirectory sd)
+    */
+   private void doTransition(DataNode datanode, StorageDirectory sd,
+       NamespaceInfo nsInfo, StartupOption startOpt) throws IOException {
+-    if (startOpt == StartupOption.ROLLBACK) {
++    if (startOpt == StartupOption.ROLLBACK && sd.getPreviousDir().exists()) {
++      // we will already restore everything in the trash by rolling back to
++      // the previous directory, so we must delete the trash to ensure
++      // that it's not restored by BPOfferService.signalRollingUpgrade()
++      if (!FileUtil.fullyDelete(getTrashRootDir(sd))) {
++        throw new IOException("Unable to delete trash directory prior to " +
++            "restoration of previous directory: " + getTrashRootDir(sd));
++      }
+       doRollback(sd, nsInfo); // rollback if applicable
+     } else {
+       // Restore all the files in the trash. The restored files are retained
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index 7f541c6..e9b3d72 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -246,10 +246,9 @@
+     LogFactory.getLog(DataNode.class.getName() + ".clienttrace");
+   
+   private static final String USAGE =
+-      "Usage: java DataNode [-regular | -rollback | -rollingupgrade rollback]\n" +
++      "Usage: java DataNode [-regular | -rollback]\n" +
+       "    -regular                 : Normal DataNode startup (default).\n" +
+-      "    -rollback                : Rollback a standard upgrade.\n" +
+-      "    -rollingupgrade rollback : Rollback a rolling upgrade operation.\n" +
++      "    -rollback                : Rollback a standard or rolling upgrade.\n" +
+       "  Refer to HDFS documentation for the difference between standard\n" +
+       "  and rolling upgrades.";
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index f451d1d..e70fd45 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -1071,6 +1071,7 @@ public DatanodeCommand blockReport(DatanodeRegistration nodeReg,
+     }
+ 
+     if (nn.getFSImage().isUpgradeFinalized() &&
++        !namesystem.isRollingUpgrade() &&
+         !nn.isStandbyState() &&
+         noStaleStorages) {
+       return new FinalizeCommand(poolId);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml b/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
+index c369f3b..61d7d06 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
+@@ -206,7 +206,7 @@
+       <li>Restore the pre-upgrade release in all machines.</li>
+       <li>Start <em>NNs</em> with the
+         "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade rollback</code></a>" option.</li>
+-      <li>Start <em>DNs</em> normally.</li>
++      <li>Start <em>DNs</em> with the "<code>-rollback</code>" option.</li>
+     </ol></li>
+   </ul>
+ 
+-- 
+1.7.9.5
+

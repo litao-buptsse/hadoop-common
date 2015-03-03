@@ -1,0 +1,29 @@
+From 1795885f4d0f264cd79df31b0d636bd8d9cb1df2 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 25 Sep 2014 21:56:26 -0700
+Subject: [PATCH 501/813] HADOOP-11140. hadoop-aws only need test-scoped
+ dependency on hadoop-common's tests jar.
+ Contributed by Juan Yu.
+
+(cherry picked from commit 4ea77efa3ab4160498fec54d4824321921c15124)
+(cherry picked from commit 0eaa4ba02679d1a67e21b82c6c26963c1fac4d45)
+---
+ hadoop-tools/hadoop-aws/pom.xml |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-tools/hadoop-aws/pom.xml b/hadoop-tools/hadoop-aws/pom.xml
+index 947a80f..e6a6581 100644
+--- a/hadoop-tools/hadoop-aws/pom.xml
++++ b/hadoop-tools/hadoop-aws/pom.xml
+@@ -96,7 +96,7 @@
+     <dependency>
+       <groupId>org.apache.hadoop</groupId>
+       <artifactId>hadoop-common</artifactId>
+-      <scope>compile</scope>
++      <scope>test</scope>
+       <type>test-jar</type>
+     </dependency>
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,34 @@
+From aad35e544f34b818a4c6e315ae7e6df69818eabd Mon Sep 17 00:00:00 2001
+From: Vinayakumar B <vinayakumarb@apache.org>
+Date: Fri, 17 Oct 2014 17:48:20 +0530
+Subject: [PATCH 578/813] HDFS-7242. Code improvement for
+ FSN#checkUnreadableBySuperuser. (Contributed by Yi
+ Liu) (cherry picked from
+ 1c3ff0b7c892b9d70737c375fb6f4a6fc6dd6d81)
+
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index a8fb58a..8eaf47c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -6163,10 +6163,10 @@ private void checkPathAccess(FSPermissionChecker pc,
+   private void checkUnreadableBySuperuser(FSPermissionChecker pc,
+       INode inode, int snapshotId)
+       throws IOException {
+-    for (XAttr xattr : dir.getXAttrs(inode, snapshotId)) {
+-      if (XAttrHelper.getPrefixName(xattr).
+-          equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
+-        if (pc.isSuperUser()) {
++    if (pc.isSuperUser()) {
++      for (XAttr xattr : dir.getXAttrs(inode, snapshotId)) {
++        if (XAttrHelper.getPrefixName(xattr).
++            equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
+           throw new AccessControlException("Access is denied for " +
+               pc.getUser() + " since the superuser is not allowed to " +
+               "perform this operation.");
+-- 
+1.7.9.5
+

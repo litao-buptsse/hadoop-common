@@ -1,0 +1,174 @@
+From 9d292cc542107f0585c8517444b3505ea77fb270 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Thu, 25 Sep 2014 17:42:47 -0700
+Subject: [PATCH 498/813] YARN-2608. FairScheduler: Potential deadlocks in
+ loading alloc files and clock access. (Wei Yan via
+ kasha)
+
+(cherry picked from commit f4357240a6f81065d91d5f443ed8fc8cd2a14a8f)
+---
+ .../scheduler/fair/FairScheduler.java              |  122 ++++++++++----------
+ 1 file changed, 62 insertions(+), 60 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 5c0fd21..d24442d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -122,7 +122,7 @@
+ 
+   private Resource incrAllocation;
+   private QueueManager queueMgr;
+-  private Clock clock;
++  private volatile Clock clock;
+   private boolean usePortForNodeName;
+ 
+   private static final Log LOG = LogFactory.getLog(FairScheduler.class);
+@@ -560,11 +560,12 @@ public synchronized int getContinuousSchedulingSleepMs() {
+     return continuousSchedulingSleepMs;
+   }
+ 
+-  public synchronized Clock getClock() {
++  public Clock getClock() {
+     return clock;
+   }
+ 
+-  protected synchronized void setClock(Clock clock) {
++  @VisibleForTesting
++  void setClock(Clock clock) {
+     this.clock = clock;
+   }
+ 
+@@ -1201,64 +1202,65 @@ public synchronized void setRMContext(RMContext rmContext) {
+     this.rmContext = rmContext;
+   }
+ 
+-  private synchronized void initScheduler(Configuration conf)
+-      throws IOException {
+-    this.conf = new FairSchedulerConfiguration(conf);
+-    validateConf(this.conf);
+-    minimumAllocation = this.conf.getMinimumAllocation();
+-    maximumAllocation = this.conf.getMaximumAllocation();
+-    incrAllocation = this.conf.getIncrementAllocation();
+-    continuousSchedulingEnabled = this.conf.isContinuousSchedulingEnabled();
+-    continuousSchedulingSleepMs =
+-        this.conf.getContinuousSchedulingSleepMs();
+-    nodeLocalityThreshold = this.conf.getLocalityThresholdNode();
+-    rackLocalityThreshold = this.conf.getLocalityThresholdRack();
+-    nodeLocalityDelayMs = this.conf.getLocalityDelayNodeMs();
+-    rackLocalityDelayMs = this.conf.getLocalityDelayRackMs();
+-    preemptionEnabled = this.conf.getPreemptionEnabled();
+-    preemptionUtilizationThreshold =
+-        this.conf.getPreemptionUtilizationThreshold();
+-    assignMultiple = this.conf.getAssignMultiple();
+-    maxAssign = this.conf.getMaxAssign();
+-    sizeBasedWeight = this.conf.getSizeBasedWeight();
+-    preemptionInterval = this.conf.getPreemptionInterval();
+-    waitTimeBeforeKill = this.conf.getWaitTimeBeforeKill();
+-    usePortForNodeName = this.conf.getUsePortForNodeName();
+-
+-    updateInterval = this.conf.getUpdateInterval();
+-    if (updateInterval < 0) {
+-      updateInterval = FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS;
+-      LOG.warn(FairSchedulerConfiguration.UPDATE_INTERVAL_MS
+-              + " is invalid, so using default value " +
+-              + FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS
+-              + " ms instead");
+-    }
+-
+-    rootMetrics = FSQueueMetrics.forQueue("root", null, true, conf);
+-    fsOpDurations = FSOpDurations.getInstance(true);
+-
+-    // This stores per-application scheduling information
+-    this.applications = new ConcurrentHashMap<
+-        ApplicationId, SchedulerApplication<FSAppAttempt>>();
+-    this.eventLog = new FairSchedulerEventLog();
+-    eventLog.init(this.conf);
+-
+-    allocConf = new AllocationConfiguration(conf);
+-    try {
+-      queueMgr.initialize(conf);
+-    } catch (Exception e) {
+-      throw new IOException("Failed to start FairScheduler", e);
+-    }
++  private void initScheduler(Configuration conf) throws IOException {
++    synchronized (this) {
++      this.conf = new FairSchedulerConfiguration(conf);
++      validateConf(this.conf);
++      minimumAllocation = this.conf.getMinimumAllocation();
++      maximumAllocation = this.conf.getMaximumAllocation();
++      incrAllocation = this.conf.getIncrementAllocation();
++      continuousSchedulingEnabled = this.conf.isContinuousSchedulingEnabled();
++      continuousSchedulingSleepMs =
++          this.conf.getContinuousSchedulingSleepMs();
++      nodeLocalityThreshold = this.conf.getLocalityThresholdNode();
++      rackLocalityThreshold = this.conf.getLocalityThresholdRack();
++      nodeLocalityDelayMs = this.conf.getLocalityDelayNodeMs();
++      rackLocalityDelayMs = this.conf.getLocalityDelayRackMs();
++      preemptionEnabled = this.conf.getPreemptionEnabled();
++      preemptionUtilizationThreshold =
++          this.conf.getPreemptionUtilizationThreshold();
++      assignMultiple = this.conf.getAssignMultiple();
++      maxAssign = this.conf.getMaxAssign();
++      sizeBasedWeight = this.conf.getSizeBasedWeight();
++      preemptionInterval = this.conf.getPreemptionInterval();
++      waitTimeBeforeKill = this.conf.getWaitTimeBeforeKill();
++      usePortForNodeName = this.conf.getUsePortForNodeName();
++
++      updateInterval = this.conf.getUpdateInterval();
++      if (updateInterval < 0) {
++        updateInterval = FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS;
++        LOG.warn(FairSchedulerConfiguration.UPDATE_INTERVAL_MS
++            + " is invalid, so using default value " +
++            +FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS
++            + " ms instead");
++      }
+ 
+-    updateThread = new UpdateThread();
+-    updateThread.setName("FairSchedulerUpdateThread");
+-    updateThread.setDaemon(true);
++      rootMetrics = FSQueueMetrics.forQueue("root", null, true, conf);
++      fsOpDurations = FSOpDurations.getInstance(true);
+ 
+-    if (continuousSchedulingEnabled) {
+-      // start continuous scheduling thread
+-      schedulingThread = new ContinuousSchedulingThread();
+-      schedulingThread.setName("FairSchedulerContinuousScheduling");
+-      schedulingThread.setDaemon(true);
++      // This stores per-application scheduling information
++      this.applications = new ConcurrentHashMap<
++          ApplicationId, SchedulerApplication<FSAppAttempt>>();
++      this.eventLog = new FairSchedulerEventLog();
++      eventLog.init(this.conf);
++
++      allocConf = new AllocationConfiguration(conf);
++      try {
++        queueMgr.initialize(conf);
++      } catch (Exception e) {
++        throw new IOException("Failed to start FairScheduler", e);
++      }
++
++      updateThread = new UpdateThread();
++      updateThread.setName("FairSchedulerUpdateThread");
++      updateThread.setDaemon(true);
++
++      if (continuousSchedulingEnabled) {
++        // start continuous scheduling thread
++        schedulingThread = new ContinuousSchedulingThread();
++        schedulingThread.setName("FairSchedulerContinuousScheduling");
++        schedulingThread.setDaemon(true);
++      }
+     }
+ 
+     allocsLoader.init(conf);
+@@ -1318,7 +1320,7 @@ public void serviceStop() throws Exception {
+   }
+ 
+   @Override
+-  public synchronized void reinitialize(Configuration conf, RMContext rmContext)
++  public void reinitialize(Configuration conf, RMContext rmContext)
+       throws IOException {
+     try {
+       allocsLoader.reloadAllocations();
+-- 
+1.7.9.5
+

@@ -1,0 +1,32 @@
+From 0cba4b1178440158c5e685d357017c82009ab816 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 5 Nov 2014 20:29:17 -0800
+Subject: [PATCH 732/813] HDFS-7367. HDFS short-circuit read cannot negotiate
+ shared memory slot and file descriptors when SASL
+ is enabled on DataTransferProtocol. Contributed by
+ Chris Nauroth. (cherry picked from commit
+ 8e33d4bdb35eed8b60cf197247fad465b1912ef7)
+
+---
+ .../datatransfer/sasl/SaslDataTransferServer.java  |    5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+index 7857057..2c47bc9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+@@ -256,6 +256,11 @@ public void handle(Callback[] callbacks) throws IOException,
+    */
+   private IOStreamPair getSaslStreams(Peer peer, OutputStream underlyingOut,
+       InputStream underlyingIn, final DatanodeID datanodeId) throws IOException {
++    if (peer.hasSecureChannel() ||
++        dnConf.getTrustedChannelResolver().isTrusted(getPeerAddress(peer))) {
++      return new IOStreamPair(underlyingIn, underlyingOut);
++    }
++
+     SaslPropertiesResolver saslPropsResolver = dnConf.getSaslPropsResolver();
+     if (saslPropsResolver == null) {
+       throw new IOException(String.format("Cannot create a secured " +
+-- 
+1.7.9.5
+

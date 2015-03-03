@@ -1,0 +1,50 @@
+From e6638ca48ff34afe4faa4f654ab232dbbab333f0 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:34 +0000
+Subject: [PATCH 221/813] HADOOP-10826. Iteration on
+ KeyProviderFactory.serviceLoader is thread-unsafe.
+ (benoyantony viat tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619538 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a74ca2601b1ac52b8967c1a658f08d9943589ef0)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/KeyProviderFactory.java      |   10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
+index 05890dc..799147e 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
+@@ -22,6 +22,7 @@
+ import java.net.URI;
+ import java.net.URISyntaxException;
+ import java.util.ArrayList;
++import java.util.Iterator;
+ import java.util.List;
+ import java.util.ServiceLoader;
+ 
+@@ -47,6 +48,15 @@ public abstract KeyProvider createProvider(URI providerName,
+   private static final ServiceLoader<KeyProviderFactory> serviceLoader =
+       ServiceLoader.load(KeyProviderFactory.class);
+ 
++  // Iterate through the serviceLoader to avoid lazy loading.
++  // Lazy loading would require synchronization in concurrent use cases.
++  static {
++    Iterator<KeyProviderFactory> iterServices = serviceLoader.iterator();
++    while (iterServices.hasNext()) {
++      iterServices.next();
++    }
++  }
++
+   public static List<KeyProvider> getProviders(Configuration conf
+                                                ) throws IOException {
+     List<KeyProvider> result = new ArrayList<KeyProvider>();
+-- 
+1.7.9.5
+

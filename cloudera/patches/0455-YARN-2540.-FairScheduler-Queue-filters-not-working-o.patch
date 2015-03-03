@@ -1,0 +1,32 @@
+From fd8d4ff4c6ddf5e9997e382717886d33a597cceb Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Mon, 22 Sep 2014 15:40:47 -0700
+Subject: [PATCH 455/813] YARN-2540. FairScheduler: Queue filters not working
+ on scheduler page in RM UI. (Ashwin Shankar via
+ kasha)
+
+(cherry picked from commit 23e17ce0ffba11a08c033b753573a756532cd1c2)
+---
+ .../resourcemanager/webapp/FairSchedulerPage.java  |    6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java
+index bcf7781..8c54f4e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java
+@@ -220,9 +220,9 @@ public void render(Block html) {
+           "    }",
+           "  });",
+           "  $('#cs').bind('select_node.jstree', function(e, data) {",
+-          "    var q = $('.q', data.rslt.obj).first().text();",
+-          "    if (q == 'root') q = '';",
+-          "    else q = '^' + q.substr(q.lastIndexOf('.') + 1) + '$';",
++          "    var queues = $('.q', data.rslt.obj);",
++          "    var q = '^' + queues.first().text();",
++          "    q += queues.length == 1 ? '$' : '\\\\.';",
+           "    $('#apps').dataTable().fnFilter(q, 4, true);",
+           "  });",
+           "  $('#cs').show();",
+-- 
+1.7.9.5
+

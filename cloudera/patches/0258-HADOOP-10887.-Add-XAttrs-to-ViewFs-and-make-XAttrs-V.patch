@@ -1,0 +1,368 @@
+From b6c80709b36d63f88c5f5b53a8d67d92856344ea Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 23 Jul 2014 21:43:16 +0000
+Subject: [PATCH 258/813] HADOOP-10887. Add XAttrs to ViewFs and make XAttrs +
+ ViewFileSystem internal dir behavior consistent.
+ Contributed by Stephen Chu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1612953 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f364269fa097d2f12fae083bd1a22f1ac0933336)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../java/org/apache/hadoop/fs/FileContext.java     |   29 +++++++
+ .../main/java/org/apache/hadoop/fs/FileSystem.java |    2 +-
+ .../org/apache/hadoop/fs/viewfs/ChRootedFs.java    |   34 +++++++++
+ .../apache/hadoop/fs/viewfs/ViewFileSystem.java    |   34 +++++++++
+ .../java/org/apache/hadoop/fs/viewfs/ViewFs.java   |   80 ++++++++++++++++++++
+ .../hadoop/fs/viewfs/ViewFileSystemBaseTest.java   |   30 ++++++++
+ .../apache/hadoop/fs/viewfs/ViewFsBaseTest.java    |   30 ++++++++
+ 7 files changed, 238 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
+index f9577dd..e71b412 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
+@@ -2498,4 +2498,33 @@ public Void next(final AbstractFileSystem fs, final Path p)
+       }
+     }.resolve(this, absF);
+   }
++
++  /**
++   * Get all of the xattr names for a file or directory.
++   * Only those xattr names which the logged-in user has permissions to view
++   * are returned.
++   * <p/>
++   * A regular user can only get xattr names for the "user" namespace.
++   * The super user can only get xattr names for "user" and "trusted"
++   * namespaces.
++   * The xattrs of the "security" and "system" namespaces are only
++   * used/exposed internally by/to the FS impl.
++   * <p/>
++   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
++   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   *
++   * @param path Path to get extended attributes
++   * @return List<String> of the XAttr names of the file or directory
++   * @throws IOException
++   */
++  public List<String> listXAttrs(Path path) throws IOException {
++    final Path absF = fixRelativePart(path);
++    return new FSLinkResolver<List<String>>() {
++      @Override
++      public List<String> next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        return fs.listXAttrs(p);
++      }
++    }.resolve(this, absF);
++  }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java
+index 25cb147..d040ddf 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java
+@@ -2510,7 +2510,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
+    *
+    * @param path Path to get extended attributes
+-   * @return Map<String, byte[]> describing the XAttrs of the file or directory
++   * @return List<String> of the XAttr names of the file or directory
+    * @throws IOException
+    */
+   public List<String> listXAttrs(Path path) throws IOException {
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ChRootedFs.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ChRootedFs.java
+index f1975ea..5d53eb7 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ChRootedFs.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ChRootedFs.java
+@@ -22,6 +22,7 @@
+ import java.net.URISyntaxException;
+ import java.util.EnumSet;
+ import java.util.List;
++import java.util.Map;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+@@ -37,6 +38,7 @@
+ import org.apache.hadoop.fs.Options.ChecksumOpt;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.UnresolvedLinkException;
++import org.apache.hadoop.fs.XAttrSetFlag;
+ import org.apache.hadoop.fs.permission.AclEntry;
+ import org.apache.hadoop.fs.permission.AclStatus;
+ import org.apache.hadoop.fs.permission.FsPermission;
+@@ -314,6 +316,38 @@ public AclStatus getAclStatus(Path path) throws IOException {
+   }
+ 
+   @Override
++  public void setXAttr(Path path, String name, byte[] value,
++                       EnumSet<XAttrSetFlag> flag) throws IOException {
++    myFs.setXAttr(fullPath(path), name, value, flag);
++  }
++
++  @Override
++  public byte[] getXAttr(Path path, String name) throws IOException {
++    return myFs.getXAttr(fullPath(path), name);
++  }
++
++  @Override
++  public Map<String, byte[]> getXAttrs(Path path) throws IOException {
++    return myFs.getXAttrs(fullPath(path));
++  }
++
++  @Override
++  public Map<String, byte[]> getXAttrs(Path path, List<String> names)
++      throws IOException {
++    return myFs.getXAttrs(fullPath(path), names);
++  }
++
++  @Override
++  public List<String> listXAttrs(Path path) throws IOException {
++    return myFs.listXAttrs(fullPath(path));
++  }
++
++  @Override
++  public void removeXAttr(Path path, String name) throws IOException {
++    myFs.removeXAttr(fullPath(path), name);
++  }
++
++  @Override
+   public void setVerifyChecksum(final boolean verifyChecksum) 
+       throws IOException, UnresolvedLinkException {
+     myFs.setVerifyChecksum(verifyChecksum);
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFileSystem.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFileSystem.java
+index 34a9afc..b4ac18e 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFileSystem.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFileSystem.java
+@@ -913,5 +913,39 @@ public AclStatus getAclStatus(Path path) throws IOException {
+           .addEntries(AclUtil.getMinimalAcl(PERMISSION_555))
+           .stickyBit(false).build();
+     }
++
++    @Override
++    public void setXAttr(Path path, String name, byte[] value,
++                         EnumSet<XAttrSetFlag> flag) throws IOException {
++      checkPathIsSlash(path);
++      throw readOnlyMountTable("setXAttr", path);
++    }
++
++    @Override
++    public byte[] getXAttr(Path path, String name) throws IOException {
++      throw new NotInMountpointException(path, "getXAttr");
++    }
++
++    @Override
++    public Map<String, byte[]> getXAttrs(Path path) throws IOException {
++      throw new NotInMountpointException(path, "getXAttrs");
++    }
++
++    @Override
++    public Map<String, byte[]> getXAttrs(Path path, List<String> names)
++        throws IOException {
++      throw new NotInMountpointException(path, "getXAttrs");
++    }
++
++    @Override
++    public List<String> listXAttrs(Path path) throws IOException {
++      throw new NotInMountpointException(path, "listXAttrs");
++    }
++
++    @Override
++    public void removeXAttr(Path path, String name) throws IOException {
++      checkPathIsSlash(path);
++      throw readOnlyMountTable("removeXAttr", path);
++    }
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFs.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFs.java
+index 232fcbb..5cdccd2 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFs.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/viewfs/ViewFs.java
+@@ -26,6 +26,7 @@
+ import java.util.ArrayList;
+ import java.util.EnumSet;
+ import java.util.List;
++import java.util.Map;
+ import java.util.Map.Entry;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -48,6 +49,7 @@
+ import org.apache.hadoop.fs.RemoteIterator;
+ import org.apache.hadoop.fs.UnresolvedLinkException;
+ import org.apache.hadoop.fs.UnsupportedFileSystemException;
++import org.apache.hadoop.fs.XAttrSetFlag;
+ import org.apache.hadoop.fs.local.LocalConfigKeys;
+ import org.apache.hadoop.fs.permission.AclEntry;
+ import org.apache.hadoop.fs.permission.AclUtil;
+@@ -651,6 +653,50 @@ public AclStatus getAclStatus(Path path) throws IOException {
+         fsState.resolve(getUriPath(path), true);
+     return res.targetFileSystem.getAclStatus(res.remainingPath);
+   }
++
++  @Override
++  public void setXAttr(Path path, String name, byte[] value,
++                       EnumSet<XAttrSetFlag> flag) throws IOException {
++    InodeTree.ResolveResult<AbstractFileSystem> res =
++        fsState.resolve(getUriPath(path), true);
++    res.targetFileSystem.setXAttr(res.remainingPath, name, value, flag);
++  }
++
++  @Override
++  public byte[] getXAttr(Path path, String name) throws IOException {
++    InodeTree.ResolveResult<AbstractFileSystem> res =
++        fsState.resolve(getUriPath(path), true);
++    return res.targetFileSystem.getXAttr(res.remainingPath, name);
++  }
++
++  @Override
++  public Map<String, byte[]> getXAttrs(Path path) throws IOException {
++    InodeTree.ResolveResult<AbstractFileSystem> res =
++        fsState.resolve(getUriPath(path), true);
++    return res.targetFileSystem.getXAttrs(res.remainingPath);
++  }
++
++  @Override
++  public Map<String, byte[]> getXAttrs(Path path, List<String> names)
++      throws IOException {
++    InodeTree.ResolveResult<AbstractFileSystem> res =
++        fsState.resolve(getUriPath(path), true);
++    return res.targetFileSystem.getXAttrs(res.remainingPath, names);
++  }
++
++  @Override
++  public List<String> listXAttrs(Path path) throws IOException {
++    InodeTree.ResolveResult<AbstractFileSystem> res =
++        fsState.resolve(getUriPath(path), true);
++    return res.targetFileSystem.listXAttrs(res.remainingPath);
++  }
++
++  @Override
++  public void removeXAttr(Path path, String name) throws IOException {
++    InodeTree.ResolveResult<AbstractFileSystem> res =
++        fsState.resolve(getUriPath(path), true);
++    res.targetFileSystem.removeXAttr(res.remainingPath, name);
++  }
+   
+   
+   /*
+@@ -921,5 +967,39 @@ public AclStatus getAclStatus(Path path) throws IOException {
+           .addEntries(AclUtil.getMinimalAcl(PERMISSION_555))
+           .stickyBit(false).build();
+     }
++
++    @Override
++    public void setXAttr(Path path, String name, byte[] value,
++                         EnumSet<XAttrSetFlag> flag) throws IOException {
++      checkPathIsSlash(path);
++      throw readOnlyMountTable("setXAttr", path);
++    }
++
++    @Override
++    public byte[] getXAttr(Path path, String name) throws IOException {
++      throw new NotInMountpointException(path, "getXAttr");
++    }
++
++    @Override
++    public Map<String, byte[]> getXAttrs(Path path) throws IOException {
++      throw new NotInMountpointException(path, "getXAttrs");
++    }
++
++    @Override
++    public Map<String, byte[]> getXAttrs(Path path, List<String> names)
++        throws IOException {
++      throw new NotInMountpointException(path, "getXAttrs");
++    }
++
++    @Override
++    public List<String> listXAttrs(Path path) throws IOException {
++      throw new NotInMountpointException(path, "listXAttrs");
++    }
++
++    @Override
++    public void removeXAttr(Path path, String name) throws IOException {
++      checkPathIsSlash(path);
++      throw readOnlyMountTable("removeXAttr", path);
++    }
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFileSystemBaseTest.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFileSystemBaseTest.java
+index e1a440d..a324556 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFileSystemBaseTest.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFileSystemBaseTest.java
+@@ -773,4 +773,34 @@ public void testInternalGetAclStatus() throws IOException {
+     assertFalse(aclStatus.isStickyBit());
+   }
+ 
++  @Test(expected=AccessControlException.class)
++  public void testInternalSetXAttr() throws IOException {
++    fsView.setXAttr(new Path("/internalDir"), "xattrName", null);
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalGetXAttr() throws IOException {
++    fsView.getXAttr(new Path("/internalDir"), "xattrName");
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalGetXAttrs() throws IOException {
++    fsView.getXAttrs(new Path("/internalDir"));
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalGetXAttrsWithNames() throws IOException {
++    fsView.getXAttrs(new Path("/internalDir"), new ArrayList<String>());
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalListXAttr() throws IOException {
++    fsView.listXAttrs(new Path("/internalDir"));
++  }
++
++  @Test(expected=AccessControlException.class)
++  public void testInternalRemoveXAttr() throws IOException {
++    fsView.removeXAttr(new Path("/internalDir"), "xattrName");
++  }
++
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFsBaseTest.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFsBaseTest.java
+index 2813c34..035b280 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFsBaseTest.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/viewfs/ViewFsBaseTest.java
+@@ -747,4 +747,34 @@ public void testInternalGetAclStatus() throws IOException {
+         AclUtil.getMinimalAcl(PERMISSION_555));
+     assertFalse(aclStatus.isStickyBit());
+   }
++
++  @Test(expected=AccessControlException.class)
++  public void testInternalSetXAttr() throws IOException {
++    fcView.setXAttr(new Path("/internalDir"), "xattrName", null);
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalGetXAttr() throws IOException {
++    fcView.getXAttr(new Path("/internalDir"), "xattrName");
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalGetXAttrs() throws IOException {
++    fcView.getXAttrs(new Path("/internalDir"));
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalGetXAttrsWithNames() throws IOException {
++    fcView.getXAttrs(new Path("/internalDir"), new ArrayList<String>());
++  }
++
++  @Test(expected=NotInMountpointException.class)
++  public void testInternalListXAttr() throws IOException {
++    fcView.listXAttrs(new Path("/internalDir"));
++  }
++
++  @Test(expected=AccessControlException.class)
++  public void testInternalRemoveXAttr() throws IOException {
++    fcView.removeXAttr(new Path("/internalDir"), "xattrName");
++  }
+ }
+-- 
+1.7.9.5
+

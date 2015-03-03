@@ -1,0 +1,86 @@
+From 58ad0100b9ae7512fe026c579d8e44b17c367c74 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:19 +0000
+Subject: [PATCH 215/813] HADOOP-10824. Refactor KMSACLs to avoid locking.
+ (Benoy Antony via umamahesh)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619531 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bdc5ad570eaf18c00b19e1c393daa44f1df1bc40)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/kms/server/KMSACLs.java      |   31 +++++---------------
+ 1 file changed, 8 insertions(+), 23 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
+index d04a714..e3e6ce0 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSACLs.java
+@@ -28,8 +28,6 @@
+ import java.util.concurrent.Executors;
+ import java.util.concurrent.ScheduledExecutorService;
+ import java.util.concurrent.TimeUnit;
+-import java.util.concurrent.locks.ReadWriteLock;
+-import java.util.concurrent.locks.ReentrantReadWriteLock;
+ 
+ /**
+  * Provides access to the <code>AccessControlList</code>s used by KMS,
+@@ -52,13 +50,11 @@ public String getConfigKey() {
+ 
+   public static final int RELOADER_SLEEP_MILLIS = 1000;
+ 
+-  Map<Type, AccessControlList> acls;
+-  private ReadWriteLock lock;
++  private volatile Map<Type, AccessControlList> acls;
+   private ScheduledExecutorService executorService;
+   private long lastReload;
+ 
+   KMSACLs(Configuration conf) {
+-    lock = new ReentrantReadWriteLock();
+     if (conf == null) {
+       conf = loadACLs();
+     }
+@@ -70,17 +66,13 @@ public KMSACLs() {
+   }
+ 
+   private void setACLs(Configuration conf) {
+-    lock.writeLock().lock();
+-    try {
+-      acls = new HashMap<Type, AccessControlList>();
+-      for (Type aclType : Type.values()) {
+-        String aclStr = conf.get(aclType.getConfigKey(), ACL_DEFAULT);
+-        acls.put(aclType, new AccessControlList(aclStr));
+-        LOG.info("'{}' ACL '{}'", aclType, aclStr);
+-      }
+-    } finally {
+-      lock.writeLock().unlock();
++    Map<Type, AccessControlList> tempAcls = new HashMap<Type, AccessControlList>();
++    for (Type aclType : Type.values()) {
++      String aclStr = conf.get(aclType.getConfigKey(), ACL_DEFAULT);
++      tempAcls.put(aclType, new AccessControlList(aclStr));
++      LOG.info("'{}' ACL '{}'", aclType, aclStr);
+     }
++    acls = tempAcls;
+   }
+ 
+   @Override
+@@ -120,14 +112,7 @@ private Configuration loadACLs() {
+ 
+   public boolean hasAccess(Type type, String user) {
+     UserGroupInformation ugi = UserGroupInformation.createRemoteUser(user);
+-    AccessControlList acl = null;
+-    lock.readLock().lock();
+-    try {
+-      acl = acls.get(type);
+-    } finally {
+-      lock.readLock().unlock();
+-    }
+-    return acl.isUserAllowed(ugi);
++    return acls.get(type).isUserAllowed(ugi);
+   }
+ 
+ }
+-- 
+1.7.9.5
+

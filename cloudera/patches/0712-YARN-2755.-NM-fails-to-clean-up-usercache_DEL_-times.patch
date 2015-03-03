@@ -1,0 +1,146 @@
+From aabb7b516e0467fde68ac6055fcb30f4df0d4344 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 30 Oct 2014 15:10:27 +0000
+Subject: [PATCH 712/813] YARN-2755. NM fails to clean up
+ usercache_DEL_<timestamp> dirs after YARN-661.
+ Contributed by Siqi Li (cherry picked from commit
+ 73e626ad91cd5c06a005068d8432fd16e06fe6a0)
+
+(cherry picked from commit 3e8544c5f2d6c6bece2fb89830a75f03560d7dc2)
+---
+ .../localizer/ResourceLocalizationService.java     |    2 +-
+ .../server/nodemanager/TestNodeManagerReboot.java  |   66 +++++++++++++++-----
+ 2 files changed, 51 insertions(+), 17 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/localizer/ResourceLocalizationService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/localizer/ResourceLocalizationService.java
+index f03b5c3..bced026 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/localizer/ResourceLocalizationService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/localizer/ResourceLocalizationService.java
+@@ -1323,7 +1323,7 @@ private void cleanUpFilesPerUserDir(FileContext lfs, DeletionService del,
+     RemoteIterator<FileStatus> userDirStatus = lfs.listStatus(userDirPath);
+     FileDeletionTask dependentDeletionTask =
+         del.createFileDeletionTask(null, userDirPath, new Path[] {});
+-    if (userDirStatus != null) {
++    if (userDirStatus != null && userDirStatus.hasNext()) {
+       List<FileDeletionTask> deletionTasks = new ArrayList<FileDeletionTask>();
+       while (userDirStatus.hasNext()) {
+         FileStatus status = userDirStatus.next();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeManagerReboot.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeManagerReboot.java
+index e69170e..e9aea0e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeManagerReboot.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestNodeManagerReboot.java
+@@ -35,7 +35,9 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.fs.FileContext;
++import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.fs.RemoteIterator;
+ import org.apache.hadoop.fs.UnsupportedFileSystemException;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
+@@ -190,17 +192,41 @@ public Void run() throws YarnException, IOException {
+         ResourceLocalizationService.NM_PRIVATE_DIR) > 0);
+ 
+     // restart the NodeManager
++    restartNM(MAX_TRIES);
++    checkNumOfLocalDirs();
++    
++    verify(delService, times(1)).delete(
++      (String) isNull(),
++      argThat(new PathInclude(ResourceLocalizationService.NM_PRIVATE_DIR
++          + "_DEL_")));
++    verify(delService, times(1)).delete((String) isNull(),
++      argThat(new PathInclude(ContainerLocalizer.FILECACHE + "_DEL_")));
++    verify(delService, times(1)).scheduleFileDeletionTask(
++      argThat(new FileDeletionInclude(user, null,
++        new String[] { destinationFile })));
++    verify(delService, times(1)).scheduleFileDeletionTask(
++      argThat(new FileDeletionInclude(null, ContainerLocalizer.USERCACHE
++          + "_DEL_", new String[] {})));
++    
++    // restart the NodeManager again
++    // this time usercache directory should be empty
++    restartNM(MAX_TRIES);
++    checkNumOfLocalDirs();
++    
++  }
++
++  private void restartNM(int maxTries) {
+     nm.stop();
+     nm = new MyNodeManager();
+     nm.start();
+ 
+-    numTries = 0;
++    int numTries = 0;
+     while ((numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+       ContainerLocalizer.USERCACHE) > 0
+         || numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+           ContainerLocalizer.FILECACHE) > 0 || numOfLocalDirs(
+       nmLocalDir.getAbsolutePath(), ResourceLocalizationService.NM_PRIVATE_DIR) > 0)
+-        && numTries < MAX_TRIES) {
++        && numTries < maxTries) {
+       try {
+         Thread.sleep(500);
+       } catch (InterruptedException ex) {
+@@ -208,7 +234,9 @@ public Void run() throws YarnException, IOException {
+       }
+       numTries++;
+     }
+-
++  }
++  
++  private void checkNumOfLocalDirs() throws IOException {
+     Assert
+       .assertTrue(
+         "After NM reboots, all local files should be deleted",
+@@ -218,20 +246,13 @@ public Void run() throws YarnException, IOException {
+               ContainerLocalizer.FILECACHE) == 0
+             && numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+               ResourceLocalizationService.NM_PRIVATE_DIR) == 0);
+-    verify(delService, times(1)).delete(
+-      (String) isNull(),
+-      argThat(new PathInclude(ResourceLocalizationService.NM_PRIVATE_DIR
+-          + "_DEL_")));
+-    verify(delService, times(1)).delete((String) isNull(),
+-      argThat(new PathInclude(ContainerLocalizer.FILECACHE + "_DEL_")));
+-    verify(delService, times(1)).scheduleFileDeletionTask(
+-      argThat(new FileDeletionInclude(user, null,
+-        new String[] { destinationFile })));
+-    verify(delService, times(1)).scheduleFileDeletionTask(
+-      argThat(new FileDeletionInclude(null, ContainerLocalizer.USERCACHE
+-          + "_DEL_", new String[] {})));
++    
++    Assert
++    .assertTrue(
++      "After NM reboots, usercache_DEL_* directory should be deleted",
++      numOfUsercacheDELDirs(nmLocalDir.getAbsolutePath()) == 0);
+   }
+-
++  
+   private int numOfLocalDirs(String localDir, String localSubDir) {
+     File[] listOfFiles = new File(localDir, localSubDir).listFiles();
+     if (listOfFiles == null) {
+@@ -240,6 +261,19 @@ private int numOfLocalDirs(String localDir, String localSubDir) {
+       return listOfFiles.length;
+     }
+   }
++  
++  private int numOfUsercacheDELDirs(String localDir) throws IOException {
++    int count = 0;
++    RemoteIterator<FileStatus> fileStatus = localFS.listStatus(new Path(localDir));
++    while (fileStatus.hasNext()) {
++      FileStatus status = fileStatus.next();
++      if (status.getPath().getName().matches(".*" +
++          ContainerLocalizer.USERCACHE + "_DEL_.*")) {
++        count++;
++      }
++    }
++    return count;
++  }
+ 
+   private void createFiles(String dir, String subDir, int numOfFiles) {
+     for (int i = 0; i < numOfFiles; i++) {
+-- 
+1.7.9.5
+

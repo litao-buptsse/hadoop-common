@@ -1,0 +1,92 @@
+From 2da8520ff92c3af8d9d8e5764bf6a34a71322adb Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Tue, 19 Aug 2014 17:50:48 +0000
+Subject: [PATCH 537/813] YARN-2409. RM ActiveToStandBy transition missing
+ stoping previous rmDispatcher. Contributed by
+ Rohith
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1618916 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit aeab638ce2818a264e8469c0f5c495c5e33ad094)
+---
+ .../server/resourcemanager/ResourceManager.java    |    3 +++
+ .../yarn/server/resourcemanager/TestRMHA.java      |   23 ++++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 00b1887..b2b2a2a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -1163,6 +1163,9 @@ private void resetDispatcher() {
+     ((Service)dispatcher).init(this.conf);
+     ((Service)dispatcher).start();
+     removeService((Service)rmDispatcher);
++    // Need to stop previous rmDispatcher before assigning new dispatcher
++    // otherwise causes "AsyncDispatcher event handler" thread leak
++    ((Service) rmDispatcher).stop();
+     rmDispatcher = dispatcher;
+     addIfService(rmDispatcher);
+     rmContext.setDispatcher(rmDispatcher);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index b8290de..1066b3a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -331,6 +331,10 @@ protected Dispatcher createDispatcher() {
+     rm.adminService.transitionToStandby(requestInfo);
+     rm.adminService.transitionToActive(requestInfo);
+     rm.adminService.transitionToStandby(requestInfo);
++    
++    MyCountingDispatcher dispatcher =
++        (MyCountingDispatcher) rm.getRMContext().getDispatcher();
++    assertTrue(!dispatcher.isStopped());
+ 
+     rm.adminService.transitionToActive(requestInfo);
+     assertEquals(errorMessageForEventHandler, expectedEventHandlerCount,
+@@ -339,6 +343,11 @@ protected Dispatcher createDispatcher() {
+     assertEquals(errorMessageForService, expectedServiceCount,
+         rm.getServices().size());
+ 
++    
++    // Keep the dispatcher reference before transitioning to standby
++    dispatcher = (MyCountingDispatcher) rm.getRMContext().getDispatcher();
++    
++    
+     rm.adminService.transitionToStandby(requestInfo);
+     assertEquals(errorMessageForEventHandler, expectedEventHandlerCount,
+         ((MyCountingDispatcher) rm.getRMContext().getDispatcher())
+@@ -346,6 +355,8 @@ protected Dispatcher createDispatcher() {
+     assertEquals(errorMessageForService, expectedServiceCount,
+         rm.getServices().size());
+ 
++    assertTrue(dispatcher.isStopped());
++    
+     rm.stop();
+   }
+ 
+@@ -492,6 +503,8 @@ private void assertMetric(String metricName, int expected, int actual) {
+ 
+     private int eventHandlerCount;
+ 
++    private volatile boolean stopped = false;
++
+     public MyCountingDispatcher() {
+       super("MyCountingDispatcher");
+       this.eventHandlerCount = 0;
+@@ -510,5 +523,15 @@ public void register(Class<? extends Enum> eventType, EventHandler handler) {
+     public int getEventHandlerCount() {
+       return this.eventHandlerCount;
+     }
++
++    @Override
++    protected void serviceStop() throws Exception {
++      this.stopped = true;
++      super.serviceStop();
++    }
++
++    public boolean isStopped() {
++      return this.stopped;
++    }
+   }
+ }
+-- 
+1.7.9.5
+

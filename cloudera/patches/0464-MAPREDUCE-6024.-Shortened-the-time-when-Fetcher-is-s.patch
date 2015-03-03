@@ -1,0 +1,220 @@
+From 7c882948629d0c8f08d86112d2c456ffc068f0ef Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Mon, 18 Aug 2014 17:59:32 +0000
+Subject: [PATCH 464/813] MAPREDUCE-6024. Shortened the time when Fetcher is
+ stuck in retrying before concluding the failure by
+ configuration. Contributed by Yunjiong Zhao. svn
+ merge --ignore-ancestry -c 1618677 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1618679 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 570183a4375f48c3e12be381d450c41b2a6c8031)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../hadoop/mapreduce/v2/app/job/impl/JobImpl.java  |   28 ++++++++++++----
+ .../org/apache/hadoop/mapreduce/MRJobConfig.java   |    8 +++++
+ .../hadoop/mapreduce/task/reduce/Fetcher.java      |    2 ++
+ .../task/reduce/ShuffleSchedulerImpl.java          |   34 +++++++++++++-------
+ 4 files changed, 54 insertions(+), 18 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
+index 19dbb05..f611d1d 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
+@@ -148,10 +148,10 @@
+   private static final Log LOG = LogFactory.getLog(JobImpl.class);
+ 
+   //The maximum fraction of fetch failures allowed for a map
+-  private static final double MAX_ALLOWED_FETCH_FAILURES_FRACTION = 0.5;
+-
+-  // Maximum no. of fetch-failure notifications after which map task is failed
+-  private static final int MAX_FETCH_FAILURES_NOTIFICATIONS = 3;
++  private float maxAllowedFetchFailuresFraction;
++  
++  //Maximum no. of fetch-failure notifications after which map task is failed
++  private int maxFetchFailuresNotifications;
+ 
+   public static final String JOB_KILLED_DIAG =
+       "Job received Kill while in RUNNING state.";
+@@ -704,6 +704,13 @@ public JobImpl(JobId jobId, ApplicationAttemptId applicationAttemptId,
+     if(forcedDiagnostic != null) {
+       this.diagnostics.add(forcedDiagnostic);
+     }
++    
++    this.maxAllowedFetchFailuresFraction = conf.getFloat(
++        MRJobConfig.MAX_ALLOWED_FETCH_FAILURES_FRACTION,
++        MRJobConfig.DEFAULT_MAX_ALLOWED_FETCH_FAILURES_FRACTION);
++    this.maxFetchFailuresNotifications = conf.getInt(
++        MRJobConfig.MAX_FETCH_FAILURES_NOTIFICATIONS,
++        MRJobConfig.DEFAULT_MAX_FETCH_FAILURES_NOTIFICATIONS);
+   }
+ 
+   protected StateMachine<JobStateInternal, JobEventType, JobEvent> getStateMachine() {
+@@ -1900,9 +1907,8 @@ public void transition(JobImpl job, JobEvent event) {
+         float failureRate = shufflingReduceTasks == 0 ? 1.0f : 
+           (float) fetchFailures / shufflingReduceTasks;
+         // declare faulty if fetch-failures >= max-allowed-failures
+-        boolean isMapFaulty =
+-            (failureRate >= MAX_ALLOWED_FETCH_FAILURES_FRACTION);
+-        if (fetchFailures >= MAX_FETCH_FAILURES_NOTIFICATIONS && isMapFaulty) {
++        if (fetchFailures >= job.getMaxFetchFailuresNotifications()
++            && failureRate >= job.getMaxAllowedFetchFailuresFraction()) {
+           LOG.info("Too many fetch-failures for output of task attempt: " + 
+               mapId + " ... raising fetch failure to map");
+           job.eventHandler.handle(new TaskAttemptEvent(mapId, 
+@@ -2185,4 +2191,12 @@ public Configuration loadConfFile() throws IOException {
+     jobConf.addResource(fc.open(confPath), confPath.toString());
+     return jobConf;
+   }
++
++  public float getMaxAllowedFetchFailuresFraction() {
++    return maxAllowedFetchFailuresFraction;
++  }
++
++  public int getMaxFetchFailuresNotifications() {
++    return maxFetchFailuresNotifications;
++  }
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java
+index c1fef90..148102b 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java
+@@ -288,11 +288,19 @@
+   public static final String SHUFFLE_READ_TIMEOUT = "mapreduce.reduce.shuffle.read.timeout";
+ 
+   public static final String SHUFFLE_FETCH_FAILURES = "mapreduce.reduce.shuffle.maxfetchfailures";
++  public static final String MAX_ALLOWED_FETCH_FAILURES_FRACTION = "mapreduce.reduce.shuffle.max-fetch-failures-fraction";
++  public static final float DEFAULT_MAX_ALLOWED_FETCH_FAILURES_FRACTION = 0.5f;
++  
++  public static final String MAX_FETCH_FAILURES_NOTIFICATIONS = "mapreduce.reduce.shuffle.max-fetch-failures-notifications";
++  public static final int DEFAULT_MAX_FETCH_FAILURES_NOTIFICATIONS = 3;
+ 
+   public static final String SHUFFLE_NOTIFY_READERROR = "mapreduce.reduce.shuffle.notify.readerror";
+   
+   public static final String MAX_SHUFFLE_FETCH_RETRY_DELAY = "mapreduce.reduce.shuffle.retry-delay.max.ms";
+   public static final long DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY = 60000;
++  
++  public static final String MAX_SHUFFLE_FETCH_HOST_FAILURES = "mapreduce.reduce.shuffle.max-host-failures";
++  public static final int DEFAULT_MAX_SHUFFLE_FETCH_HOST_FAILURES = 5;
+ 
+   public static final String REDUCE_SKIP_INCR_PROC_COUNT = "mapreduce.reduce.skip.proc-count.auto-incr";
+ 
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/Fetcher.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/Fetcher.java
+index 20db9dc..e1e1663 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/Fetcher.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/Fetcher.java
+@@ -323,6 +323,7 @@ protected void copyFromHost(MapHost host) throws IOException {
+ 
+       // If connect did not succeed, just mark all the maps as failed,
+       // indirectly penalizing the host
++      scheduler.hostFailed(host.getHostName());
+       for(TaskAttemptID left: remaining) {
+         scheduler.copyFailed(left, host, false, connectExcpt);
+       }
+@@ -347,6 +348,7 @@ protected void copyFromHost(MapHost host) throws IOException {
+       
+       if(failedTasks != null && failedTasks.length > 0) {
+         LOG.warn("copyMapOutput failed for tasks "+Arrays.toString(failedTasks));
++        scheduler.hostFailed(host.getHostName());
+         for(TaskAttemptID left: failedTasks) {
+           scheduler.copyFailed(left, host, true, false);
+         }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/ShuffleSchedulerImpl.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/ShuffleSchedulerImpl.java
+index 6f9b222..63f3266 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/ShuffleSchedulerImpl.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/task/reduce/ShuffleSchedulerImpl.java
+@@ -18,7 +18,6 @@
+ package org.apache.hadoop.mapreduce.task.reduce;
+ 
+ import java.io.IOException;
+-
+ import java.net.InetAddress;
+ import java.net.URI;
+ import java.net.UnknownHostException;
+@@ -101,6 +100,7 @@ protected Long initialValue() {
+ 
+   private final boolean reportReadErrorImmediately;
+   private long maxDelay = MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY;
++  private int maxHostFailures;
+ 
+   public ShuffleSchedulerImpl(JobConf job, TaskStatus status,
+                           TaskAttemptID reduceId,
+@@ -132,6 +132,9 @@ public ShuffleSchedulerImpl(JobConf job, TaskStatus status,
+ 
+     this.maxDelay = job.getLong(MRJobConfig.MAX_SHUFFLE_FETCH_RETRY_DELAY,
+         MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY);
++    this.maxHostFailures = job.getInt(
++        MRJobConfig.MAX_SHUFFLE_FETCH_HOST_FAILURES,
++        MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_HOST_FAILURES);
+   }
+ 
+   @Override
+@@ -213,9 +216,18 @@ private void updateStatus() {
+     progress.setStatus("copy(" + mapsDone + " of " + totalMaps + " at "
+         + mbpsFormat.format(transferRate) + " MB/s)");
+   }
++  
++  public synchronized void hostFailed(String hostname) {
++    if (hostFailures.containsKey(hostname)) {
++      IntWritable x = hostFailures.get(hostname);
++      x.set(x.get() + 1);
++    } else {
++      hostFailures.put(hostname, new IntWritable(1));
++    }
++  }
+ 
+   public synchronized void copyFailed(TaskAttemptID mapId, MapHost host,
+-                                      boolean readError, boolean connectExcpt) {
++      boolean readError, boolean connectExcpt) {
+     host.penalize();
+     int failures = 1;
+     if (failureCounts.containsKey(mapId)) {
+@@ -226,12 +238,9 @@ public synchronized void copyFailed(TaskAttemptID mapId, MapHost host,
+       failureCounts.put(mapId, new IntWritable(1));
+     }
+     String hostname = host.getHostName();
+-    if (hostFailures.containsKey(hostname)) {
+-      IntWritable x = hostFailures.get(hostname);
+-      x.set(x.get() + 1);
+-    } else {
+-      hostFailures.put(hostname, new IntWritable(1));
+-    }
++    //report failure if already retried maxHostFailures times
++    boolean hostFail = hostFailures.get(hostname).get() > getMaxHostFailures() ? true : false;
++    
+     if (failures >= abortFailureLimit) {
+       try {
+         throw new IOException(failures + " failures downloading " + mapId);
+@@ -240,7 +249,7 @@ public synchronized void copyFailed(TaskAttemptID mapId, MapHost host,
+       }
+     }
+ 
+-    checkAndInformJobTracker(failures, mapId, readError, connectExcpt);
++    checkAndInformJobTracker(failures, mapId, readError, connectExcpt, hostFail);
+ 
+     checkReducerHealth();
+ 
+@@ -270,9 +279,9 @@ public void reportLocalError(IOException ioe) {
+   // after every 'maxFetchFailuresBeforeReporting' failures
+   private void checkAndInformJobTracker(
+       int failures, TaskAttemptID mapId, boolean readError,
+-      boolean connectExcpt) {
++      boolean connectExcpt, boolean hostFailed) {
+     if (connectExcpt || (reportReadErrorImmediately && readError)
+-        || ((failures % maxFetchFailuresBeforeReporting) == 0)) {
++        || ((failures % maxFetchFailuresBeforeReporting) == 0) || hostFailed) {
+       LOG.info("Reporting fetch failure for " + mapId + " to jobtracker.");
+       status.addFetchFailedMap((org.apache.hadoop.mapred.TaskAttemptID) mapId);
+     }
+@@ -507,4 +516,7 @@ public void close() throws InterruptedException {
+     referee.join();
+   }
+ 
++  public int getMaxHostFailures() {
++    return maxHostFailures;
++  }
+ }
+-- 
+1.7.9.5
+

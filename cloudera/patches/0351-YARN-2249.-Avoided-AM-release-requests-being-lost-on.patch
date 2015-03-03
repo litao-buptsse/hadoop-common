@@ -1,0 +1,663 @@
+From f73832c8207c066717f006955f7098f20bd869e7 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Tue, 19 Aug 2014 20:40:37 +0000
+Subject: [PATCH 351/813] YARN-2249. Avoided AM release requests being lost on
+ work preserving RM restart. Contributed by Jian He.
+ svn merge --ignore-ancestry -c 1618972 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1618973 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 400f6131d44e450f60ae7d3e37bc3d7ca43cde29)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+---
+ .../sls/scheduler/ResourceSchedulerWrapper.java    |    9 +-
+ .../scheduler/AbstractYarnScheduler.java           |   90 ++++++++++++++++++++
+ .../scheduler/SchedulerApplicationAttempt.java     |   18 +++-
+ .../scheduler/capacity/CapacityScheduler.java      |   23 +----
+ .../scheduler/fair/FairScheduler.java              |   21 +----
+ .../scheduler/fifo/FifoScheduler.java              |   30 ++-----
+ .../hadoop/yarn/server/resourcemanager/MockAM.java |    8 +-
+ .../TestApplicationMasterService.java              |    1 -
+ .../yarn/server/resourcemanager/TestRMRestart.java |    4 +-
+ .../TestWorkPreservingRMRestart.java               |   79 ++++++++++++++++-
+ 10 files changed, 209 insertions(+), 74 deletions(-)
+
+diff --git a/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/scheduler/ResourceSchedulerWrapper.java b/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/scheduler/ResourceSchedulerWrapper.java
+index 87a9022..3ac3382 100644
+--- a/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/scheduler/ResourceSchedulerWrapper.java
++++ b/hadoop-tools/hadoop-sls/src/main/java/org/apache/hadoop/yarn/sls/scheduler/ResourceSchedulerWrapper.java
+@@ -36,8 +36,8 @@
+ import java.util.concurrent.locks.Lock;
+ import java.util.concurrent.locks.ReentrantLock;
+ 
+-import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
++import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceStability.Unstable;
+ import org.apache.hadoop.conf.Configurable;
+ import org.apache.hadoop.conf.Configuration;
+@@ -61,6 +61,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
++import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.UpdatedContainerInfo;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
+@@ -934,5 +935,11 @@ public Resource getClusterResource() {
+     return new HashMap<ApplicationId,
+         SchedulerApplication<SchedulerApplicationAttempt>>();
+   }
++
++  @Override
++  protected void completedContainer(RMContainer rmContainer,
++      ContainerStatus containerStatus, RMContainerEventType event) {
++    // do nothing
++  }
+ }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+index b3e835a..b0304c9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+@@ -22,10 +22,14 @@
+ import java.util.Collection;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Set;
++import java.util.Timer;
++import java.util.TimerTask;
+ import java.util.concurrent.ConcurrentHashMap;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.service.AbstractService;
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+@@ -33,15 +37,22 @@
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.api.records.ContainerState;
++import org.apache.hadoop.yarn.api.records.ContainerStatus;
+ import org.apache.hadoop.yarn.api.records.NodeId;
+ import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnException;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
++import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
++import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
++import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
++import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
++import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerFinishedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerRecoverEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+@@ -66,6 +77,7 @@
+ 
+   protected RMContext rmContext;
+   protected Map<ApplicationId, SchedulerApplication<T>> applications;
++  protected int nmExpireInterval;
+ 
+   protected final static List<Container> EMPTY_CONTAINER_LIST =
+       new ArrayList<Container>();
+@@ -81,6 +93,15 @@ public AbstractYarnScheduler(String name) {
+     super(name);
+   }
+ 
++  @Override
++  public void serviceInit(Configuration conf) throws Exception {
++    nmExpireInterval =
++        conf.getInt(YarnConfiguration.RM_NM_EXPIRY_INTERVAL_MS,
++          YarnConfiguration.DEFAULT_RM_NM_EXPIRY_INTERVAL_MS);
++    createReleaseCache();
++    super.serviceInit(conf);
++  }
++
+   public synchronized List<Container> getTransferredContainers(
+       ApplicationAttemptId currentAttempt) {
+     ApplicationId appId = currentAttempt.getApplicationId();
+@@ -258,6 +279,19 @@ public synchronized void recoverContainersOnNode(
+           ((RMContainerImpl)rmContainer).setAMContainer(true);
+         }
+       }
++
++      synchronized (schedulerAttempt) {
++        Set<ContainerId> releases = schedulerAttempt.getPendingRelease();
++        if (releases.contains(container.getContainerId())) {
++          // release the container
++          rmContainer.handle(new RMContainerFinishedEvent(container
++            .getContainerId(), SchedulerUtils.createAbnormalContainerStatus(
++            container.getContainerId(), SchedulerUtils.RELEASED_CONTAINER),
++            RMContainerEventType.RELEASED));
++          releases.remove(container.getContainerId());
++          LOG.info(container.getContainerId() + " is released by application.");
++        }
++      }
+     }
+   }
+ 
+@@ -297,6 +331,62 @@ protected void recoverResourceRequestForContainer(RMContainer rmContainer) {
+     }
+   }
+ 
++  protected void createReleaseCache() {
++    // Cleanup the cache after nm expire interval.
++    new Timer().schedule(new TimerTask() {
++      @Override
++      public void run() {
++        for (SchedulerApplication<T> app : applications.values()) {
++
++          T attempt = app.getCurrentAppAttempt();
++          synchronized (attempt) {
++            for (ContainerId containerId : attempt.getPendingRelease()) {
++              RMAuditLogger.logFailure(
++                app.getUser(),
++                AuditConstants.RELEASE_CONTAINER,
++                "Unauthorized access or invalid container",
++                "Scheduler",
++                "Trying to release container not owned by app or with invalid id.",
++                attempt.getApplicationId(), containerId);
++            }
++            attempt.getPendingRelease().clear();
++          }
++        }
++        LOG.info("Release request cache is cleaned up");
++      }
++    }, nmExpireInterval);
++  }
++
++  // clean up a completed container
++  protected abstract void completedContainer(RMContainer rmContainer,
++      ContainerStatus containerStatus, RMContainerEventType event);
++
++  protected void releaseContainers(List<ContainerId> containers,
++      SchedulerApplicationAttempt attempt) {
++    for (ContainerId containerId : containers) {
++      RMContainer rmContainer = getRMContainer(containerId);
++      if (rmContainer == null) {
++        if (System.currentTimeMillis() - ResourceManager.getClusterTimeStamp()
++            < nmExpireInterval) {
++          LOG.info(containerId + " doesn't exist. Add the container"
++              + " to the release request cache as it maybe on recovery.");
++          synchronized (attempt) {
++            attempt.getPendingRelease().add(containerId);
++          }
++        } else {
++          RMAuditLogger.logFailure(attempt.getUser(),
++            AuditConstants.RELEASE_CONTAINER,
++            "Unauthorized access or invalid container", "Scheduler",
++            "Trying to release container not owned by app or with invalid id.",
++            attempt.getApplicationId(), containerId);
++        }
++      }
++      completedContainer(rmContainer,
++        SchedulerUtils.createAbnormalContainerStatus(containerId,
++          SchedulerUtils.RELEASED_CONTAINER), RMContainerEventType.RELEASED);
++    }
++  }
++
+   public SchedulerNode getSchedulerNode(NodeId nodeId) {
+     return nodes.get(nodeId);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+index 32dd23b..933f456 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+@@ -17,13 +17,14 @@
+ */
+ package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
+ 
+-import com.google.common.base.Preconditions;
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.HashMap;
++import java.util.HashSet;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Set;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -41,7 +42,6 @@
+ import org.apache.hadoop.yarn.api.records.Priority;
+ import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+-import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
+@@ -53,6 +53,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeCleanContainerEvent;
+ import org.apache.hadoop.yarn.util.resource.Resources;
+ 
++import com.google.common.base.Preconditions;
+ import com.google.common.collect.HashMultiset;
+ import com.google.common.collect.Multiset;
+ 
+@@ -87,6 +88,13 @@
+   protected List<RMContainer> newlyAllocatedContainers = 
+       new ArrayList<RMContainer>();
+ 
++  // This pendingRelease is used in work-preserving recovery scenario to keep
++  // track of the AM's outstanding release requests. RM on recovery could
++  // receive the release request form AM before it receives the container status
++  // from NM for recovery. In this case, the to-be-recovered containers reported
++  // by NM should not be recovered.
++  private Set<ContainerId> pendingRelease = null;
++
+   /**
+    * Count how many times the application has been given an opportunity
+    * to schedule a task at each priority. Each time the scheduler
+@@ -114,7 +122,7 @@ public SchedulerApplicationAttempt(ApplicationAttemptId applicationAttemptId,
+         new AppSchedulingInfo(applicationAttemptId, user, queue,  
+             activeUsersManager, rmContext.getEpoch());
+     this.queue = queue;
+-    
++    this.pendingRelease = new HashSet<ContainerId>();
+     if (rmContext.getRMApps() != null &&
+         rmContext.getRMApps()
+             .containsKey(applicationAttemptId.getApplicationId())) {
+@@ -163,6 +171,10 @@ public String getUser() {
+     return appSchedulingInfo.getResourceRequests(priority);
+   }
+ 
++  public Set<ContainerId> getPendingRelease() {
++    return this.pendingRelease;
++  }
++
+   public int getNewContainerId() {
+     return appSchedulingInfo.getNewContainerId();
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 649eb92..2e01ac0 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -54,8 +54,6 @@
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
+@@ -198,7 +196,7 @@ public Configuration getConf() {
+       CapacitySchedulerConfiguration.SCHEDULE_ASYNCHRONOUSLY_PREFIX
+           + ".scheduling-interval-ms";
+   private static final long DEFAULT_ASYNC_SCHEDULER_INTERVAL = 5;
+-  
++
+   public CapacityScheduler() {
+     super(CapacityScheduler.class.getName());
+   }
+@@ -683,21 +681,7 @@ public Allocation allocate(ApplicationAttemptId applicationAttemptId,
+         getMinimumResourceCapability(), maximumAllocation);
+ 
+     // Release containers
+-    for (ContainerId releasedContainerId : release) {
+-      RMContainer rmContainer = getRMContainer(releasedContainerId);
+-      if (rmContainer == null) {
+-         RMAuditLogger.logFailure(application.getUser(),
+-             AuditConstants.RELEASE_CONTAINER, 
+-             "Unauthorized access or invalid container", "CapacityScheduler",
+-             "Trying to release container not owned by app or with invalid id",
+-             application.getApplicationId(), releasedContainerId);
+-      }
+-      completedContainer(rmContainer,
+-          SchedulerUtils.createAbnormalContainerStatus(
+-              releasedContainerId, 
+-              SchedulerUtils.RELEASED_CONTAINER),
+-          RMContainerEventType.RELEASED);
+-    }
++    releaseContainers(release, application);
+ 
+     synchronized (application) {
+ 
+@@ -1003,7 +987,8 @@ private synchronized void removeNode(RMNode nodeInfo) {
+   }
+   
+   @Lock(CapacityScheduler.class)
+-  private synchronized void completedContainer(RMContainer rmContainer,
++  @Override
++  protected synchronized void completedContainer(RMContainer rmContainer,
+       ContainerStatus containerStatus, RMContainerEventType event) {
+     if (rmContainer == null) {
+       LOG.info("Null container completed...");
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index e89970e..63b32e7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -49,8 +49,6 @@
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnException;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
+ import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceWeights;
+@@ -774,7 +772,8 @@ private synchronized void removeApplicationAttempt(
+   /**
+    * Clean up a completed container.
+    */
+-  private synchronized void completedContainer(RMContainer rmContainer,
++  @Override
++  protected synchronized void completedContainer(RMContainer rmContainer,
+       ContainerStatus containerStatus, RMContainerEventType event) {
+     if (rmContainer == null) {
+       LOG.info("Null container completed...");
+@@ -881,21 +880,7 @@ public Allocation allocate(ApplicationAttemptId appAttemptId,
+     }
+ 
+     // Release containers
+-    for (ContainerId releasedContainerId : release) {
+-      RMContainer rmContainer = getRMContainer(releasedContainerId);
+-      if (rmContainer == null) {
+-        RMAuditLogger.logFailure(application.getUser(),
+-            AuditConstants.RELEASE_CONTAINER,
+-            "Unauthorized access or invalid container", "FairScheduler",
+-            "Trying to release container not owned by app or with invalid id",
+-            application.getApplicationId(), releasedContainerId);
+-      }
+-      completedContainer(rmContainer,
+-          SchedulerUtils.createAbnormalContainerStatus(
+-              releasedContainerId,
+-              SchedulerUtils.RELEASED_CONTAINER),
+-          RMContainerEventType.RELEASED);
+-    }
++    releaseContainers(release, application);
+ 
+     synchronized (application) {
+       if (!ask.isEmpty()) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index b017db7..a027556 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -52,8 +52,6 @@
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.factories.RecordFactory;
+ import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
+-import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
+@@ -90,7 +88,6 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeRemovedSchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
+-
+ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
+ import org.apache.hadoop.yarn.server.utils.Lock;
+ import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
+@@ -296,21 +293,7 @@ public Allocation allocate(
+         clusterResource, minimumAllocation, maximumAllocation);
+ 
+     // Release containers
+-    for (ContainerId releasedContainer : release) {
+-      RMContainer rmContainer = getRMContainer(releasedContainer);
+-      if (rmContainer == null) {
+-         RMAuditLogger.logFailure(application.getUser(),
+-             AuditConstants.RELEASE_CONTAINER, 
+-             "Unauthorized access or invalid container", "FifoScheduler", 
+-             "Trying to release container not owned by app or with invalid id",
+-             application.getApplicationId(), releasedContainer);
+-      }
+-      containerCompleted(rmContainer,
+-          SchedulerUtils.createAbnormalContainerStatus(
+-              releasedContainer, 
+-              SchedulerUtils.RELEASED_CONTAINER),
+-          RMContainerEventType.RELEASED);
+-    }
++    releaseContainers(release, application);
+ 
+     synchronized (application) {
+ 
+@@ -437,7 +420,7 @@ private synchronized void doneApplicationAttempt(
+         LOG.info("Skip killing " + container.getContainerId());
+         continue;
+       }
+-      containerCompleted(container,
++      completedContainer(container,
+         SchedulerUtils.createAbnormalContainerStatus(
+           container.getContainerId(), SchedulerUtils.COMPLETED_APPLICATION),
+         RMContainerEventType.KILL);
+@@ -711,7 +694,7 @@ private synchronized void nodeUpdate(RMNode rmNode) {
+     for (ContainerStatus completedContainer : completedContainers) {
+       ContainerId containerId = completedContainer.getContainerId();
+       LOG.debug("Container FINISHED: " + containerId);
+-      containerCompleted(getRMContainer(containerId), 
++      completedContainer(getRMContainer(containerId), 
+           completedContainer, RMContainerEventType.FINISHED);
+     }
+ 
+@@ -811,7 +794,7 @@ public void handle(SchedulerEvent event) {
+       ContainerExpiredSchedulerEvent containerExpiredEvent = 
+           (ContainerExpiredSchedulerEvent) event;
+       ContainerId containerid = containerExpiredEvent.getContainerId();
+-      containerCompleted(getRMContainer(containerid), 
++      completedContainer(getRMContainer(containerid), 
+           SchedulerUtils.createAbnormalContainerStatus(
+               containerid, 
+               SchedulerUtils.EXPIRED_CONTAINER),
+@@ -841,7 +824,8 @@ private void containerLaunchedOnNode(ContainerId containerId, FiCaSchedulerNode
+   }
+ 
+   @Lock(FifoScheduler.class)
+-  private synchronized void containerCompleted(RMContainer rmContainer,
++  @Override
++  protected synchronized void completedContainer(RMContainer rmContainer,
+       ContainerStatus containerStatus, RMContainerEventType event) {
+     if (rmContainer == null) {
+       LOG.info("Null container completed...");
+@@ -891,7 +875,7 @@ private synchronized void removeNode(RMNode nodeInfo) {
+     }
+     // Kill running containers
+     for(RMContainer container : node.getRunningContainers()) {
+-      containerCompleted(container, 
++      completedContainer(container, 
+           SchedulerUtils.createAbnormalContainerStatus(
+               container.getContainerId(), 
+               SchedulerUtils.LOST_CONTAINER),
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockAM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockAM.java
+index cfd05f9..2b41dcd 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockAM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockAM.java
+@@ -49,7 +49,7 @@
+ 
+   private volatile int responseId = 0;
+   private final ApplicationAttemptId attemptId;
+-  private final RMContext context;
++  private RMContext context;
+   private ApplicationMasterProtocol amRMProtocol;
+ 
+   private final List<ResourceRequest> requests = new ArrayList<ResourceRequest>();
+@@ -61,8 +61,10 @@ public MockAM(RMContext context, ApplicationMasterProtocol amRMProtocol,
+     this.amRMProtocol = amRMProtocol;
+     this.attemptId = attemptId;
+   }
+-  
+-  void setAMRMProtocol(ApplicationMasterProtocol amRMProtocol) {
++
++  public void setAMRMProtocol(ApplicationMasterProtocol amRMProtocol,
++      RMContext context) {
++    this.context = context;
+     this.amRMProtocol = amRMProtocol;
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationMasterService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationMasterService.java
+index 671851c..b0ffc85 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationMasterService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestApplicationMasterService.java
+@@ -171,7 +171,6 @@ public void testProgressFilter() throws Exception{
+     RMAppAttempt attempt1 = app1.getCurrentAppAttempt();
+     MockAM am1 = rm.sendAMLaunched(attempt1.getAppAttemptId());
+     am1.registerAppAttempt();
+-    am1.setAMRMProtocol(rm.getApplicationMasterService());
+ 
+     AllocateRequestPBImpl allocateRequest = new AllocateRequestPBImpl();
+     List<ContainerId> release = new ArrayList<ContainerId>();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index dc3e9f1..79368d5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -289,7 +289,7 @@ public void testRMRestart() throws Exception {
+     
+     // verify old AM is not accepted
+     // change running AM to talk to new RM
+-    am1.setAMRMProtocol(rm2.getApplicationMasterService());
++    am1.setAMRMProtocol(rm2.getApplicationMasterService(), rm2.getRMContext());
+     AllocateResponse allocResponse = am1.allocate(
+         new ArrayList<ResourceRequest>(),
+         new ArrayList<ContainerId>());
+@@ -1671,7 +1671,7 @@ public void testQueueMetricsOnRMRestart() throws Exception {
+     nm1.setResourceTrackerService(rm2.getResourceTrackerService());
+     // recover app
+     RMApp loadedApp1 = rm2.getRMContext().getRMApps().get(app1.getApplicationId());
+-    am1.setAMRMProtocol(rm2.getApplicationMasterService());
++    am1.setAMRMProtocol(rm2.getApplicationMasterService(), rm2.getRMContext());
+     am1.allocate(new ArrayList<ResourceRequest>(), new ArrayList<ContainerId>());
+     nm1.nodeHeartbeat(true);
+     nm1 = new MockNM("127.0.0.1:1234", 15120, rm2.getResourceTrackerService());
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+index 0d73f3d..7afb715 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+@@ -33,10 +33,13 @@
+ 
+ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.test.GenericTestUtils;
++import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.api.records.ContainerState;
++import org.apache.hadoop.yarn.api.records.ContainerStatus;
+ import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
+@@ -72,6 +75,9 @@
+ import org.junit.runner.RunWith;
+ import org.junit.runners.Parameterized;
+ 
++import com.google.common.base.Supplier;
++
++
+ @SuppressWarnings({"rawtypes", "unchecked"})
+ @RunWith(value = Parameterized.class)
+ public class TestWorkPreservingRMRestart {
+@@ -572,8 +578,8 @@ public void testAppReregisterOnRMWorkPreservingRestart() throws Exception {
+     rm2.waitForState(app0.getApplicationId(), RMAppState.ACCEPTED);
+     rm2.waitForState(am0.getApplicationAttemptId(), RMAppAttemptState.LAUNCHED);
+ 
+-    am0.setAMRMProtocol(rm2.getApplicationMasterService());
+-    am0.registerAppAttempt(false);
++    am0.setAMRMProtocol(rm2.getApplicationMasterService(), rm2.getRMContext());
++    am0.registerAppAttempt(true);
+ 
+     rm2.waitForState(app0.getApplicationId(), RMAppState.RUNNING);
+     rm2.waitForState(am0.getApplicationAttemptId(), RMAppAttemptState.RUNNING);
+@@ -616,6 +622,69 @@ public void testAMContainerStatusWithRMRestart() throws Exception {
+   }
+ 
+ 
++  // Test if RM on recovery receives the container release request from AM
++  // before it receives the container status reported by NM for recovery. this
++  // container should not be recovered.
++  @Test (timeout = 30000)
++  public void testReleasedContainerNotRecovered() throws Exception {
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++    rm1 = new MockRM(conf, memStore);
++    MockNM nm1 = new MockNM("h1:1234", 15120, rm1.getResourceTrackerService());
++    nm1.registerNode();
++    rm1.start();
++
++    RMApp app1 = rm1.submitApp(1024);
++    final MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
++
++    // Re-start RM
++    conf.setInt(YarnConfiguration.RM_NM_EXPIRY_INTERVAL_MS, 8000);
++    rm2 = new MockRM(conf, memStore);
++    rm2.start();
++    nm1.setResourceTrackerService(rm2.getResourceTrackerService());
++    rm2.waitForState(app1.getApplicationId(), RMAppState.ACCEPTED);
++    am1.setAMRMProtocol(rm2.getApplicationMasterService(), rm2.getRMContext());
++    am1.registerAppAttempt(true);
++
++    // try to release a container before the container is actually recovered.
++    final ContainerId runningContainer =
++        ContainerId.newInstance(am1.getApplicationAttemptId(), 2);
++    am1.allocate(null, Arrays.asList(runningContainer));
++
++    // send container statuses to recover the containers
++    List<NMContainerStatus> containerStatuses =
++        createNMContainerStatusForApp(am1);
++    nm1.registerNode(containerStatuses, null);
++
++    // only the am container should be recovered.
++    waitForNumContainersToRecover(1, rm2, am1.getApplicationAttemptId());
++
++    final AbstractYarnScheduler scheduler =
++        (AbstractYarnScheduler) rm2.getResourceScheduler();
++    // cached release request is cleaned.
++    // assertFalse(scheduler.getPendingRelease().contains(runningContainer));
++
++    AllocateResponse response = am1.allocate(null, null);
++    // AM gets notified of the completed container.
++    boolean receivedCompletedContainer = false;
++    for (ContainerStatus status : response.getCompletedContainersStatuses()) {
++      if (status.getContainerId().equals(runningContainer)) {
++        receivedCompletedContainer = true;
++      }
++    }
++    assertTrue(receivedCompletedContainer);
++
++    GenericTestUtils.waitFor(new Supplier<Boolean>() {
++      public Boolean get() {
++        // release cache is cleaned up and previous running container is not
++        // recovered
++        return scheduler.getApplicationAttempt(am1.getApplicationAttemptId())
++          .getPendingRelease().isEmpty()
++            && scheduler.getRMContainer(runningContainer) == null;
++      }
++    }, 1000, 20000);
++  }
++
+   private void asserteMetrics(QueueMetrics qm, int appsSubmitted,
+       int appsPending, int appsRunning, int appsCompleted,
+       int allocatedContainers, int availableMB, int availableVirtualCores,
+@@ -631,7 +700,7 @@ private void asserteMetrics(QueueMetrics qm, int appsSubmitted,
+     assertEquals(allocatedVirtualCores, qm.getAllocatedVirtualCores());
+   }
+ 
+-  private void waitForNumContainersToRecover(int num, MockRM rm,
++  public static void waitForNumContainersToRecover(int num, MockRM rm,
+       ApplicationAttemptId attemptId) throws Exception {
+     AbstractYarnScheduler scheduler =
+         (AbstractYarnScheduler) rm.getResourceScheduler();
+@@ -644,7 +713,9 @@ private void waitForNumContainersToRecover(int num, MockRM rm,
+       attempt = scheduler.getApplicationAttempt(attemptId);
+     }
+     while (attempt.getLiveContainers().size() < num) {
+-      System.out.println("Wait for " + num + " containers to recover.");
++      System.out.println("Wait for " + num
++          + " containers to recover. currently: "
++          + attempt.getLiveContainers().size());
+       Thread.sleep(200);
+     }
+   }
+-- 
+1.7.9.5
+

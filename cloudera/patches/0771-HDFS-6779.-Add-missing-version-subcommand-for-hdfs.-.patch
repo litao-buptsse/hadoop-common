@@ -1,0 +1,64 @@
+From b4b91e180a6e9a0648a7e0f5107499dfe1b3f59c Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Mon, 29 Sep 2014 18:10:47 -0700
+Subject: [PATCH 771/813] HDFS-6779. Add missing version subcommand for hdfs.
+ Contributed by Sasaki Toru.
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+---
+ hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs  |    5 ++++-
+ .../hadoop-hdfs/src/site/apt/HDFSCommands.apt.vm   |    6 ++++++
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+index c820557..246b884 100755
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+@@ -62,6 +62,7 @@ function print_usage(){
+   echo "  nfs3                 run an NFS version 3 gateway"
+   echo "  cacheadmin           configure the HDFS cache"
+   echo "  crypto               configure HDFS encryption zones"
++  echo "  version              print the version"
+   echo ""
+   echo "Most commands print help when invoked w/o parameters."
+ }
+@@ -109,7 +110,7 @@ if [ "$COMMAND" == "nfs3" ] && [ "$EUID" -eq 0 ] && [ -n "$HADOOP_PRIVILEGED_NFS
+     if [ -n "$HADOOP_PRIVILEGED_NFS_PID_DIR" ]; then
+       HADOOP_PID_DIR=$HADOOP_PRIVILEGED_NFS_PID_DIR
+     fi
+-  
++
+     if [ -n "$HADOOP_PRIVILEGED_NFS_LOG_DIR" ]; then
+       HADOOP_LOG_DIR=$HADOOP_PRIVILEGED_NFS_LOG_DIR
+       HADOOP_OPTS="$HADOOP_OPTS -Dhadoop.log.dir=$HADOOP_LOG_DIR"
+@@ -217,6 +218,8 @@ elif [ "$COMMAND" = "cacheadmin" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.CacheAdmin
+ elif [ "$COMMAND" = "crypto" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.CryptoAdmin
++elif [ "$COMMAND" = "version" ] ; then
++  CLASS=org.apache.hadoop.util.VersionInfo
+ else
+   CLASS="$COMMAND"
+ fi
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HDFSCommands.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HDFSCommands.apt.vm
+index fd161c7..44f64b7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HDFSCommands.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HDFSCommands.apt.vm
+@@ -109,6 +109,12 @@ HDFS Commands Guide
+ |                  | (no progress).
+ *------------------+---------------------------------------------+
+ 
++** <<<version>>>
++
++   Prints the version.
++
++   Usage: <<<hdfs version>>>
++
+ * Administration Commands
+ 
+    Commands useful for administrators of a hadoop cluster.
+-- 
+1.7.9.5
+

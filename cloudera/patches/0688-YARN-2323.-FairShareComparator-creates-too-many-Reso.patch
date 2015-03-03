@@ -1,0 +1,44 @@
+From 1eddeab72ad21d47ea92993c31f457de96dea2e7 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Mon, 21 Jul 2014 05:00:56 +0000
+Subject: [PATCH 688/813] YARN-2323. FairShareComparator creates too many
+ Resource objects (Hong Zhiguo via Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1612188 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 28aae5c8c024be7708ae4ac4a0808e1b9aedbdba)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../scheduler/fair/policies/FairSharePolicy.java   |    6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/policies/FairSharePolicy.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/policies/FairSharePolicy.java
+index 5fb0fc1..97669cb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/policies/FairSharePolicy.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/policies/FairSharePolicy.java
+@@ -66,6 +66,7 @@ public String getName() {
+   private static class FairShareComparator implements Comparator<Schedulable>,
+       Serializable {
+     private static final long serialVersionUID = 5564969375856699313L;
++    private static final Resource ONE = Resources.createResource(1);
+ 
+     @Override
+     public int compare(Schedulable s1, Schedulable s2) {
+@@ -79,11 +80,10 @@ public int compare(Schedulable s1, Schedulable s2) {
+           s1.getResourceUsage(), minShare1);
+       boolean s2Needy = Resources.lessThan(RESOURCE_CALCULATOR, null,
+           s2.getResourceUsage(), minShare2);
+-      Resource one = Resources.createResource(1);
+       minShareRatio1 = (double) s1.getResourceUsage().getMemory()
+-          / Resources.max(RESOURCE_CALCULATOR, null, minShare1, one).getMemory();
++          / Resources.max(RESOURCE_CALCULATOR, null, minShare1, ONE).getMemory();
+       minShareRatio2 = (double) s2.getResourceUsage().getMemory()
+-          / Resources.max(RESOURCE_CALCULATOR, null, minShare2, one).getMemory();
++          / Resources.max(RESOURCE_CALCULATOR, null, minShare2, ONE).getMemory();
+       useToWeightRatio1 = s1.getResourceUsage().getMemory() /
+           s1.getWeights().getWeight(ResourceType.MEMORY);
+       useToWeightRatio2 = s2.getResourceUsage().getMemory() /
+-- 
+1.7.9.5
+

@@ -1,0 +1,42 @@
+From 2a451fa1bf9aa20cbe3f62cdbe9ef0f131cd3831 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 22 Jul 2014 18:11:43 +0000
+Subject: [PATCH 167/813] YARN-2131. Addendum2: Document -format-state-store.
+ Add a way to format the RMStateStore. (Robert
+ Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1612635 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 24e4c4243c350d843870e3533e6589e9e936c156)
+(cherry picked from commit 6c578db3f9bcdef2e3aa8ff81ad66aac72114934)
+---
+ .../src/site/apt/YarnCommands.apt.vm               |    9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm
+index 4f3825b..d91c513 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YarnCommands.apt.vm
+@@ -157,15 +157,16 @@ Usage: yarn [--config confdir] COMMAND
+   Start the ResourceManager
+ 
+ -------
+-  Usage: yarn resourcemanager [-format]
++  Usage: yarn resourcemanager [-format-state-store]
+ -------
+ 
+ *---------------+--------------+
+ || COMMAND_OPTIONS || Description                   |
+ *---------------+--------------+
+-| -format | Formats the RMStateStore. This will clear the RMStateStore and is
+-|         | useful if past applications are no longer needed. This should be run
+-|         | only when the ResourceManager is not running.
++| -format-state-store | Formats the RMStateStore. This will clear the
++|                     | RMStateStore and is useful if past applications are no
++|                     | longer needed. This should be run only when the
++|                     | ResourceManager is not running.
+ *---------------+--------------+
+ 
+ ** nodemanager
+-- 
+1.7.9.5
+

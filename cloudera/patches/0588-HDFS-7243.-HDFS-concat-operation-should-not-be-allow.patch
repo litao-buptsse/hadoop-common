@@ -1,0 +1,67 @@
+From 7af1ace70cfa043c3df630551dd1751a52cd7d28 Mon Sep 17 00:00:00 2001
+From: yliu <yliu@apache.org>
+Date: Fri, 24 Oct 2014 11:12:18 +0800
+Subject: [PATCH 588/813] HDFS-7243. HDFS concat operation should not be
+ allowed in Encryption Zone. (clamb via yliu)
+ (cherry picked from commit
+ 57dec288070f903931771485d6424317b20551aa)
+
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    7 ++++++-
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |   22 ++++++++++++++++++++
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index fea9527..ebcc79b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2000,7 +2000,12 @@ private void concatInternal(FSPermissionChecker pc, String target,
+     // replication and blocks sizes should be the same for ALL the blocks
+ 
+     // check the target
+-    final INodeFile trgInode = INodeFile.valueOf(dir.getINode4Write(target),
++    final INodesInPath trgIip = dir.getINodesInPath4Write(target);
++    if (dir.getEZForPath(trgIip) != null) {
++      throw new HadoopIllegalArgumentException(
++          "concat can not be called for files in an encryption zone.");
++    }
++    final INodeFile trgInode = INodeFile.valueOf(trgIip.getLastINode(),
+         target);
+     if(trgInode.isUnderConstruction()) {
+       throw new HadoopIllegalArgumentException("concat: target file "
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index e88ec7f..0aa409e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -1220,6 +1220,28 @@ public void testEncryptionZonesWithSymlinks() throws Exception {
+     fs.delete(target, true);
+   }
+ 
++  @Test(timeout = 60000)
++  public void testConcatFailsInEncryptionZones() throws Exception {
++    final int len = 8192;
++    final Path ez = new Path("/ez");
++    fs.mkdirs(ez);
++    dfsAdmin.createEncryptionZone(ez, TEST_KEY);
++    final Path src1 = new Path(ez, "src1");
++    final Path src2 = new Path(ez, "src2");
++    final Path target = new Path(ez, "target");
++    DFSTestUtil.createFile(fs, src1, len, (short)1, 0xFEED);
++    DFSTestUtil.createFile(fs, src2, len, (short)1, 0xFEED);
++    DFSTestUtil.createFile(fs, target, len, (short)1, 0xFEED);
++    try {
++      fs.concat(target, new Path[] { src1, src2 });
++      fail("expected concat to throw en exception for files in an ez");
++    } catch (IOException e) {
++      assertExceptionContains(
++          "concat can not be called for files in an encryption zone", e);
++    }
++    fs.delete(ez, true);
++  }
++
+   /**
+    * Test running the OfflineImageViewer on a system with encryption zones.
+    */
+-- 
+1.7.9.5
+

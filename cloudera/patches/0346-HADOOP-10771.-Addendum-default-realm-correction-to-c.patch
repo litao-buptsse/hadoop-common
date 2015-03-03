@@ -1,0 +1,27 @@
+From c53605524c8a5292cd8e9c19661e6d2edeb84dff Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Fri, 8 Aug 2014 05:55:48 +0000
+Subject: [PATCH 346/813] HADOOP-10771. Addendum, default realm correction to
+ common test krb5.conf file. (tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1616682 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hadoop-common/src/test/resources/krb5.conf     |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/resources/krb5.conf b/hadoop-common-project/hadoop-common/src/test/resources/krb5.conf
+index 121ac6d..493a698 100644
+--- a/hadoop-common-project/hadoop-common/src/test/resources/krb5.conf
++++ b/hadoop-common-project/hadoop-common/src/test/resources/krb5.conf
+@@ -16,7 +16,7 @@
+ # limitations under the License.
+ # 
+ [libdefaults]
+-	default_realm = APACHE.ORG
++	default_realm = EXAMPLE.COM
+ 	udp_preference_limit = 1
+ 	extra_addresses = 127.0.0.1
+ [realms]
+-- 
+1.7.9.5
+

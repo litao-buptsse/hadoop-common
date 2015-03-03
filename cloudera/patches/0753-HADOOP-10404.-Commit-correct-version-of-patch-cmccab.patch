@@ -1,0 +1,78 @@
+From 5a8f971664c2d6f360e638f08b79a2e953562830 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Mon, 6 Oct 2014 14:44:13 -0700
+Subject: [PATCH 753/813] HADOOP-10404.  Commit correct version of patch
+ (cmccabe) (cherry picked from commit
+ 687d83c9e10a4432c8d54c2cd406c7ccb4392187) (cherry
+ picked from commit
+ b5158c8d24810899972fa625f3e42cbea3263155)
+
+---
+ .../hadoop/net/unix/DomainSocketWatcher.java       |   23 ++++++++++----------
+ 1 file changed, 12 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
+index 6215e58..95ef30d 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
+@@ -101,7 +101,7 @@ public static String getLoadingFailureReason() {
+    */
+   private class NotificationHandler implements Handler {
+     public boolean handle(DomainSocket sock) {
+-      lock.lock();
++      assert(lock.isHeldByCurrentThread());
+       try {
+         if (LOG.isTraceEnabled()) {
+           LOG.trace(this + ": NotificationHandler: doing a read on " +
+@@ -125,8 +125,6 @@ public boolean handle(DomainSocket sock) {
+         }
+         closed = true;
+         return true;
+-      } finally {
+-        lock.unlock();
+       }
+     }
+   }
+@@ -349,15 +347,13 @@ public void remove(DomainSocket sock) {
+    * Wake up the DomainSocketWatcher thread.
+    */
+   private void kick() {
+-    lock.lock();
++    assert(lock.isHeldByCurrentThread());
+     try {
+       notificationSockets[0].getOutputStream().write(0);
+     } catch (IOException e) {
+       if (!closed) {
+         LOG.error(this + ": error writing to notificationSockets[0]", e);
+       }
+-    } finally {
+-      lock.unlock();
+     }
+   }
+ 
+@@ -467,12 +463,17 @@ public void run() {
+       } catch (IOException e) {
+         LOG.error(toString() + " terminating on IOException", e);
+       } finally {
+-        kick(); // allow the handler for notificationSockets[0] to read a byte
+-        for (Entry entry : entries.values()) {
+-          sendCallback("close", entries, fdSet, entry.getDomainSocket().fd);
++        lock.lock();
++        try {
++          kick(); // allow the handler for notificationSockets[0] to read a byte
++          for (Entry entry : entries.values()) {
++            sendCallback("close", entries, fdSet, entry.getDomainSocket().fd);
++          }
++          entries.clear();
++          fdSet.close();
++        } finally {
++          lock.unlock();
+         }
+-        entries.clear();
+-        fdSet.close();
+       }
+     }
+   });
+-- 
+1.7.9.5
+

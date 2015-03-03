@@ -1,0 +1,101 @@
+From bdf7f29088260302057cb12737fa0e3be3305ea5 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Tue, 7 Oct 2014 14:46:59 -0700
+Subject: [PATCH 559/813] HADOOP-11169. Fix DelegationTokenAuthenticatedURL to
+ pass the connection Configurator to the
+ authenticator. (Arun Suresh via wang)
+
+(cherry picked from commit b2f619752355d4ef6733935c020f57c8a26d82e1)
+(cherry picked from commit 3e897da5fc07d9e0b5402691694a9b4433a6a690)
+---
+ .../web/DelegationTokenAuthenticatedURL.java       |   12 +++++++++---
+ .../web/DelegationTokenAuthenticator.java          |    4 +++-
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |    5 +++++
+ 3 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticatedURL.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticatedURL.java
+index 5aeb177..8c7cbdf 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticatedURL.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticatedURL.java
+@@ -117,9 +117,14 @@ public static void setDefaultDelegationTokenAuthenticator(
+   }
+ 
+   private static DelegationTokenAuthenticator
+-      obtainDelegationTokenAuthenticator(DelegationTokenAuthenticator dta) {
++      obtainDelegationTokenAuthenticator(DelegationTokenAuthenticator dta,
++            ConnectionConfigurator connConfigurator) {
+     try {
+-      return (dta != null) ? dta : DEFAULT_AUTHENTICATOR.newInstance();
++      if (dta == null) {
++        dta = DEFAULT_AUTHENTICATOR.newInstance();
++        dta.setConnectionConfigurator(connConfigurator);
++      }
++      return dta;
+     } catch (Exception ex) {
+       throw new IllegalArgumentException(ex);
+     }
+@@ -169,7 +174,8 @@ public DelegationTokenAuthenticatedURL(
+   public DelegationTokenAuthenticatedURL(
+       DelegationTokenAuthenticator authenticator,
+       ConnectionConfigurator connConfigurator) {
+-    super(obtainDelegationTokenAuthenticator(authenticator), connConfigurator);
++    super(obtainDelegationTokenAuthenticator(authenticator, connConfigurator),
++            connConfigurator);
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java
+index 7f22941..c614ee3 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/token/delegation/web/DelegationTokenAuthenticator.java
+@@ -95,6 +95,7 @@ public boolean requiresKerberosCredentials() {
+   }
+ 
+   private Authenticator authenticator;
++  private ConnectionConfigurator connConfigurator;
+ 
+   public DelegationTokenAuthenticator(Authenticator authenticator) {
+     this.authenticator = authenticator;
+@@ -103,6 +104,7 @@ public DelegationTokenAuthenticator(Authenticator authenticator) {
+   @Override
+   public void setConnectionConfigurator(ConnectionConfigurator configurator) {
+     authenticator.setConnectionConfigurator(configurator);
++    connConfigurator = configurator;
+   }
+ 
+   private boolean hasDelegationToken(URL url, AuthenticatedURL.Token token) {
+@@ -215,7 +217,7 @@ private Map doDelegationTokenOperation(URL url,
+       separator = "&";
+     }
+     url = new URL(sb.toString());
+-    AuthenticatedURL aUrl = new AuthenticatedURL(this);
++    AuthenticatedURL aUrl = new AuthenticatedURL(this, connConfigurator);
+     HttpURLConnection conn = aUrl.openConnection(url, token);
+     conn.setRequestMethod(operation.getHttpMethod());
+     HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index afa2d27..ad2f500 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -35,6 +35,7 @@
+ import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+ import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
++import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticatedURL;
+ import org.junit.AfterClass;
+ import org.junit.Assert;
+@@ -321,6 +322,10 @@ public Void run() throws Exception {
+           KeyProvider kp = new KMSClientProvider(uri, conf);
+           // getKeys() empty
+           Assert.assertTrue(kp.getKeys().isEmpty());
++
++          Token<?>[] tokens = ((KMSClientProvider)kp).addDelegationTokens("myuser", new Credentials());
++          Assert.assertEquals(1, tokens.length);
++          Assert.assertEquals("kms-dt", tokens[0].getKind().toString());
+         }
+         return null;
+       }
+-- 
+1.7.9.5
+

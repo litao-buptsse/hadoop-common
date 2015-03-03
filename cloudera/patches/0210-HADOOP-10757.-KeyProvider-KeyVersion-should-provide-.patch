@@ -1,0 +1,206 @@
+From 8597f7e7a0caf55dd68e0cfd16c08a0a648b88b7 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:11 +0000
+Subject: [PATCH 210/813] HADOOP-10757. KeyProvider KeyVersion should provide
+ the key name. (asuresh via tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619526 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fcb05adeeb4cda9562d21fef2279f71bbeb237cc)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |   10 +++++-----
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |    8 +++++++-
+ .../org/apache/hadoop/crypto/key/UserProvider.java |    9 +++++----
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    9 +++++----
+ .../apache/hadoop/crypto/key/TestKeyProvider.java  |    2 +-
+ .../apache/hadoop/crypto/key/kms/server/KMS.java   |    4 ++--
+ .../crypto/key/kms/server/KMSServerJSONUtils.java  |    2 ++
+ 7 files changed, 27 insertions(+), 17 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index 0f22f63..529a212 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -173,7 +173,7 @@ public KeyVersion getKeyVersion(String versionName) throws IOException {
+       } catch (UnrecoverableKeyException e) {
+         throw new IOException("Can't recover key " + key + " from " + path, e);
+       }
+-      return new KeyVersion(versionName, key.getEncoded());
++      return new KeyVersion(getBaseName(versionName), versionName, key.getEncoded());
+     } finally {
+       readLock.unlock();
+     }
+@@ -277,7 +277,7 @@ public KeyVersion createKey(String name, byte[] material,
+       }
+       cache.put(name, meta);
+       String versionName = buildVersionName(name, 0);
+-      return innerSetKeyVersion(versionName, material, meta.getCipher());
++      return innerSetKeyVersion(name, versionName, material, meta.getCipher());
+     } finally {
+       writeLock.unlock();
+     }
+@@ -316,7 +316,7 @@ public void deleteKey(String name) throws IOException {
+     }
+   }
+ 
+-  KeyVersion innerSetKeyVersion(String versionName, byte[] material,
++  KeyVersion innerSetKeyVersion(String name, String versionName, byte[] material,
+                                 String cipher) throws IOException {
+     try {
+       keyStore.setKeyEntry(versionName, new SecretKeySpec(material, cipher),
+@@ -326,7 +326,7 @@ KeyVersion innerSetKeyVersion(String versionName, byte[] material,
+           e);
+     }
+     changed = true;
+-    return new KeyVersion(versionName, material);
++    return new KeyVersion(name, versionName, material);
+   }
+ 
+   @Override
+@@ -344,7 +344,7 @@ public KeyVersion rollNewVersion(String name,
+       }
+       int nextVersion = meta.addVersion();
+       String versionName = buildVersionName(name, nextVersion);
+-      return innerSetKeyVersion(versionName, material, meta.getCipher());
++      return innerSetKeyVersion(name, versionName, material, meta.getCipher());
+     } finally {
+       writeLock.unlock();
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index 01d7b69..67eb832 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -63,15 +63,21 @@
+    * The combination of both the key version name and the key material.
+    */
+   public static class KeyVersion {
++    private final String name;
+     private final String versionName;
+     private final byte[] material;
+ 
+-    protected KeyVersion(String versionName,
++    protected KeyVersion(String name, String versionName,
+                          byte[] material) {
++      this.name = name;
+       this.versionName = versionName;
+       this.material = material;
+     }
+ 
++    public String getName() {
++      return name;
++    }
++
+     public String getVersionName() {
+       return versionName;
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+index 6cfb46b..e09b3f8 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+@@ -55,12 +55,13 @@ public boolean isTransient() {
+   }
+ 
+   @Override
+-  public synchronized KeyVersion getKeyVersion(String versionName) {
++  public synchronized KeyVersion getKeyVersion(String versionName)
++      throws IOException {
+     byte[] bytes = credentials.getSecretKey(new Text(versionName));
+     if (bytes == null) {
+       return null;
+     }
+-    return new KeyVersion(versionName, bytes);
++    return new KeyVersion(getBaseName(versionName), versionName, bytes);
+   }
+ 
+   @Override
+@@ -94,7 +95,7 @@ public synchronized KeyVersion createKey(String name, byte[] material,
+     String versionName = buildVersionName(name, 0);
+     credentials.addSecretKey(nameT, meta.serialize());
+     credentials.addSecretKey(new Text(versionName), material);
+-    return new KeyVersion(versionName, material);
++    return new KeyVersion(name, versionName, material);
+   }
+ 
+   @Override
+@@ -125,7 +126,7 @@ public synchronized KeyVersion rollNewVersion(String name,
+     credentials.addSecretKey(new Text(name), meta.serialize());
+     String versionName = buildVersionName(name, nextVersion);
+     credentials.addSecretKey(new Text(versionName), material);
+-    return new KeyVersion(versionName, material);
++    return new KeyVersion(name, versionName, material);
+   }
+ 
+   @Override
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index c18e861..7d52854 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -84,8 +84,9 @@ private static KeyVersion parseJSONKeyVersion(Map valueMap) {
+       byte[] material = (valueMap.containsKey(KMSRESTConstants.MATERIAL_FIELD))
+           ? Base64.decodeBase64((String) valueMap.get(KMSRESTConstants.MATERIAL_FIELD))
+           : null;
+-      keyVersion = new KMSKeyVersion((String)
+-          valueMap.get(KMSRESTConstants.VERSION_NAME_FIELD), material);
++      String versionName = (String)valueMap.get(KMSRESTConstants.VERSION_NAME_FIELD);
++      String keyName = (String)valueMap.get(KMSRESTConstants.NAME_FIELD);
++      keyVersion = new KMSKeyVersion(keyName, versionName, material);
+     }
+     return keyVersion;
+   }
+@@ -362,8 +363,8 @@ private static void validateResponse(HttpURLConnection conn, int expected)
+   }
+ 
+   public static class KMSKeyVersion extends KeyVersion {
+-    public KMSKeyVersion(String versionName, byte[] material) {
+-      super(versionName, material);
++    public KMSKeyVersion(String keyName, String versionName, byte[] material) {
++      super(keyName, versionName, material);
+     }
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+index 47e07a0..dbf0fe6 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+@@ -64,7 +64,7 @@ public void testParseVersionName() throws Exception {
+   @Test
+   public void testKeyMaterial() throws Exception {
+     byte[] key1 = new byte[]{1,2,3,4};
+-    KeyProvider.KeyVersion obj = new KeyProvider.KeyVersion("key1@1", key1);
++    KeyProvider.KeyVersion obj = new KeyProvider.KeyVersion("key1", "key1@1", key1);
+     assertEquals("key1@1", obj.getVersionName());
+     assertArrayEquals(new byte[]{1,2,3,4}, obj.getMaterial());
+   }
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+index 3446c78..3574bf4 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMS.java
+@@ -90,8 +90,8 @@ private static void assertAccess(KMSACLs.Type aclType, Principal principal,
+ 
+   private static KeyProvider.KeyVersion removeKeyMaterial(
+       KeyProvider.KeyVersion keyVersion) {
+-    return new KMSClientProvider.KMSKeyVersion(keyVersion.getVersionName(),
+-        null);
++    return new KMSClientProvider.KMSKeyVersion(keyVersion.getName(),
++        keyVersion.getVersionName(), null);
+   }
+ 
+   private static URI getKeyURI(String name) throws URISyntaxException {
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java
+index 9131a18..94501ec 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSServerJSONUtils.java
+@@ -35,6 +35,8 @@
+   public static Map toJSON(KeyProvider.KeyVersion keyVersion) {
+     Map json = new LinkedHashMap();
+     if (keyVersion != null) {
++      json.put(KMSRESTConstants.NAME_FIELD,
++          keyVersion.getName());
+       json.put(KMSRESTConstants.VERSION_NAME_FIELD,
+           keyVersion.getVersionName());
+       json.put(KMSRESTConstants.MATERIAL_FIELD, keyVersion.getMaterial());
+-- 
+1.7.9.5
+

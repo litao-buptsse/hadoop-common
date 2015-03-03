@@ -1,0 +1,53 @@
+From c6ceee0a9186c92f8cf1d14513920237d4c7ba1e Mon Sep 17 00:00:00 2001
+From: junping_du <junping_du@apache.org>
+Date: Thu, 2 Oct 2014 08:02:59 -0700
+Subject: [PATCH 565/813] YARN-1979. TestDirectoryCollection fails when the
+ umask is unusual. (Contributed by Vinod Kumar
+ Vavilapalli and Tsuyoshi OZAWA)
+
+(cherry picked from commit c7cee9b4551918d5d35bf4e9dc73982a050c73ba)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../nodemanager/TestDirectoryCollection.java       |   12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDirectoryCollection.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDirectoryCollection.java
+index 8528721..f19731f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDirectoryCollection.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDirectoryCollection.java
+@@ -31,9 +31,9 @@
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+-import org.junit.AfterClass;
++import org.junit.After;
+ import org.junit.Assert;
+-import org.junit.BeforeClass;
++import org.junit.Before;
+ import org.junit.Test;
+ 
+ public class TestDirectoryCollection {
+@@ -42,14 +42,14 @@
+       TestDirectoryCollection.class.getName()).getAbsoluteFile();
+   private static final File testFile = new File(testDir, "testfile");
+ 
+-  @BeforeClass
+-  public static void setup() throws IOException {
++  @Before
++  public void setup() throws IOException {
+     testDir.mkdirs();
+     testFile.createNewFile();
+   }
+ 
+-  @AfterClass
+-  public static void teardown() {
++  @After
++  public void teardown() {
+     FileUtil.fullyDelete(testDir);
+   }
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,356 @@
+From 0b4692da85cc7b2f4bc46de5c83ff701a10ae1e0 Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Thu, 10 Jul 2014 06:17:55 +0000
+Subject: [PATCH 483/813] svn merge -c 1609401 from trunk for HDFS-6643.
+ Refactor
+ INodeWithAdditionalFields.PermissionStatusFormat
+ and INodeFile.HeaderFormat.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1609402 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 52a07f1a39fb412518dd9102f000177f657b8ef1)
+---
+ .../hdfs/server/namenode/INodeAttributes.java      |    8 +--
+ .../hadoop/hdfs/server/namenode/INodeFile.java     |   48 ++++++--------
+ .../hdfs/server/namenode/INodeFileAttributes.java  |    4 +-
+ .../server/namenode/INodeWithAdditionalFields.java |   55 ++++++++--------
+ .../org/apache/hadoop/hdfs/util/LongBitFormat.java |   67 ++++++++++++++++++++
+ .../hadoop/hdfs/server/namenode/TestINodeFile.java |    2 +-
+ 6 files changed, 118 insertions(+), 66 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/LongBitFormat.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeAttributes.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeAttributes.java
+index 09abf27..8b0a5f0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeAttributes.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeAttributes.java
+@@ -97,14 +97,12 @@
+ 
+     @Override
+     public final String getUserName() {
+-      final int n = (int)PermissionStatusFormat.USER.retrieve(permission);
+-      return SerialNumberManager.INSTANCE.getUser(n);
++      return PermissionStatusFormat.getUser(permission);
+     }
+ 
+     @Override
+     public final String getGroupName() {
+-      final int n = (int)PermissionStatusFormat.GROUP.retrieve(permission);
+-      return SerialNumberManager.INSTANCE.getGroup(n);
++      return PermissionStatusFormat.getGroup(permission);
+     }
+ 
+     @Override
+@@ -114,7 +112,7 @@ public final FsPermission getFsPermission() {
+ 
+     @Override
+     public final short getFsPermissionShort() {
+-      return (short)PermissionStatusFormat.MODE.retrieve(permission);
++      return PermissionStatusFormat.getMode(permission);
+     }
+     
+     @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+index c96f40b..94fa686 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+@@ -39,6 +39,7 @@
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshotFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
++import org.apache.hadoop.hdfs.util.LongBitFormat;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Preconditions;
+@@ -71,37 +72,29 @@ public static INodeFile valueOf(INode inode, String path, boolean acceptNull)
+   }
+ 
+   /** Format: [16 bits for replication][48 bits for PreferredBlockSize] */
+-  static class HeaderFormat {
+-    /** Number of bits for Block size */
+-    static final int BLOCKBITS = 48;
+-    /** Header mask 64-bit representation */
+-    static final long HEADERMASK = 0xffffL << BLOCKBITS;
+-    static final long MAX_BLOCK_SIZE = ~HEADERMASK; 
+-    
+-    static short getReplication(long header) {
+-      return (short) ((header & HEADERMASK) >> BLOCKBITS);
++  static enum HeaderFormat {
++    PREFERRED_BLOCK_SIZE(null, 48, 1),
++    REPLICATION(PREFERRED_BLOCK_SIZE.BITS, 16, 1);
++
++    private final LongBitFormat BITS;
++
++    private HeaderFormat(LongBitFormat previous, int length, long min) {
++      BITS = new LongBitFormat(name(), previous, length, min);
+     }
+ 
+-    static long combineReplication(long header, short replication) {
+-      if (replication <= 0) {
+-         throw new IllegalArgumentException(
+-             "Unexpected value for the replication: " + replication);
+-      }
+-      return ((long)replication << BLOCKBITS) | (header & MAX_BLOCK_SIZE);
++    static short getReplication(long header) {
++      return (short)REPLICATION.BITS.retrieve(header);
+     }
+-    
++
+     static long getPreferredBlockSize(long header) {
+-      return header & MAX_BLOCK_SIZE;
++      return PREFERRED_BLOCK_SIZE.BITS.retrieve(header);
+     }
+ 
+-    static long combinePreferredBlockSize(long header, long blockSize) {
+-      if (blockSize < 0) {
+-         throw new IllegalArgumentException("Block size < 0: " + blockSize);
+-      } else if (blockSize > MAX_BLOCK_SIZE) {
+-        throw new IllegalArgumentException("Block size = " + blockSize
+-            + " > MAX_BLOCK_SIZE = " + MAX_BLOCK_SIZE);
+-     }
+-      return (header & HEADERMASK) | (blockSize & MAX_BLOCK_SIZE);
++    static long toLong(long preferredBlockSize, short replication) {
++      long h = 0;
++      h = PREFERRED_BLOCK_SIZE.BITS.combine(preferredBlockSize, h);
++      h = REPLICATION.BITS.combine(replication, h);
++      return h;
+     }
+   }
+ 
+@@ -113,8 +106,7 @@ static long combinePreferredBlockSize(long header, long blockSize) {
+       long atime, BlockInfo[] blklist, short replication,
+       long preferredBlockSize) {
+     super(id, name, permissions, mtime, atime);
+-    header = HeaderFormat.combineReplication(header, replication);
+-    header = HeaderFormat.combinePreferredBlockSize(header, preferredBlockSize);
++    header = HeaderFormat.toLong(preferredBlockSize, replication);
+     this.blocks = blklist;
+   }
+   
+@@ -346,7 +338,7 @@ public short getBlockReplication() {
+ 
+   /** Set the replication factor of this file. */
+   public final void setFileReplication(short replication) {
+-    header = HeaderFormat.combineReplication(header, replication);
++    header = HeaderFormat.REPLICATION.BITS.combine(replication, header);
+   }
+ 
+   /** Set the replication factor of this file. */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileAttributes.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileAttributes.java
+index 37bf088..47b76b7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileAttributes.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileAttributes.java
+@@ -48,9 +48,7 @@ public SnapshotCopy(byte[] name, PermissionStatus permissions,
+         short replication, long preferredBlockSize, XAttrFeature xAttrsFeature) {
+       super(name, permissions, aclFeature, modificationTime, accessTime, 
+           xAttrsFeature);
+-
+-      final long h = HeaderFormat.combineReplication(0L, replication);
+-      header = HeaderFormat.combinePreferredBlockSize(h, preferredBlockSize);
++      header = HeaderFormat.toLong(preferredBlockSize, replication);
+     }
+ 
+     public SnapshotCopy(INodeFile file) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
+index 0cb5b2a..93da052 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
+@@ -21,9 +21,8 @@
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.permission.PermissionStatus;
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-import org.apache.hadoop.hdfs.server.namenode.INode.Feature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+-import org.apache.hadoop.hdfs.server.namenode.XAttrFeature;
++import org.apache.hadoop.hdfs.util.LongBitFormat;
+ import org.apache.hadoop.util.LightWeightGSet.LinkedElement;
+ 
+ import com.google.common.base.Preconditions;
+@@ -36,26 +35,28 @@
+ public abstract class INodeWithAdditionalFields extends INode
+     implements LinkedElement {
+   static enum PermissionStatusFormat {
+-    MODE(0, 16),
+-    GROUP(MODE.OFFSET + MODE.LENGTH, 25),
+-    USER(GROUP.OFFSET + GROUP.LENGTH, 23);
+-
+-    final int OFFSET;
+-    final int LENGTH; //bit length
+-    final long MASK;
+-
+-    PermissionStatusFormat(int offset, int length) {
+-      OFFSET = offset;
+-      LENGTH = length;
+-      MASK = ((-1L) >>> (64 - LENGTH)) << OFFSET;
++    MODE(null, 16),
++    GROUP(MODE.BITS, 25),
++    USER(GROUP.BITS, 23);
++
++    final LongBitFormat BITS;
++
++    private PermissionStatusFormat(LongBitFormat previous, int length) {
++      BITS = new LongBitFormat(name(), previous, length, 0);
+     }
+ 
+-    long retrieve(long record) {
+-      return (record & MASK) >>> OFFSET;
++    static String getUser(long permission) {
++      final int n = (int)USER.BITS.retrieve(permission);
++      return SerialNumberManager.INSTANCE.getUser(n);
+     }
+ 
+-    long combine(long bits, long record) {
+-      return (record & ~MASK) | (bits << OFFSET);
++    static String getGroup(long permission) {
++      final int n = (int)GROUP.BITS.retrieve(permission);
++      return SerialNumberManager.INSTANCE.getGroup(n);
++    }
++    
++    static short getMode(long permission) {
++      return (short)MODE.BITS.retrieve(permission);
+     }
+ 
+     /** Encode the {@link PermissionStatus} to a long. */
+@@ -63,12 +64,12 @@ static long toLong(PermissionStatus ps) {
+       long permission = 0L;
+       final int user = SerialNumberManager.INSTANCE.getUserSerialNumber(
+           ps.getUserName());
+-      permission = USER.combine(user, permission);
++      permission = USER.BITS.combine(user, permission);
+       final int group = SerialNumberManager.INSTANCE.getGroupSerialNumber(
+           ps.getGroupName());
+-      permission = GROUP.combine(group, permission);
++      permission = GROUP.BITS.combine(group, permission);
+       final int mode = ps.getPermission().toShort();
+-      permission = MODE.combine(mode, permission);
++      permission = MODE.BITS.combine(mode, permission);
+       return permission;
+     }
+   }
+@@ -162,7 +163,7 @@ final PermissionStatus getPermissionStatus(int snapshotId) {
+   }
+ 
+   private final void updatePermissionStatus(PermissionStatusFormat f, long n) {
+-    this.permission = f.combine(n, permission);
++    this.permission = f.BITS.combine(n, permission);
+   }
+ 
+   @Override
+@@ -170,9 +171,7 @@ final String getUserName(int snapshotId) {
+     if (snapshotId != Snapshot.CURRENT_STATE_ID) {
+       return getSnapshotINode(snapshotId).getUserName();
+     }
+-
+-    int n = (int)PermissionStatusFormat.USER.retrieve(permission);
+-    return SerialNumberManager.INSTANCE.getUser(n);
++    return PermissionStatusFormat.getUser(permission);
+   }
+ 
+   @Override
+@@ -186,9 +185,7 @@ final String getGroupName(int snapshotId) {
+     if (snapshotId != Snapshot.CURRENT_STATE_ID) {
+       return getSnapshotINode(snapshotId).getGroupName();
+     }
+-
+-    int n = (int)PermissionStatusFormat.GROUP.retrieve(permission);
+-    return SerialNumberManager.INSTANCE.getGroup(n);
++    return PermissionStatusFormat.getGroup(permission);
+   }
+ 
+   @Override
+@@ -208,7 +205,7 @@ final FsPermission getFsPermission(int snapshotId) {
+ 
+   @Override
+   public final short getFsPermissionShort() {
+-    return (short)PermissionStatusFormat.MODE.retrieve(permission);
++    return PermissionStatusFormat.getMode(permission);
+   }
+   @Override
+   void setPermission(FsPermission permission) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/LongBitFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/LongBitFormat.java
+new file mode 100644
+index 0000000..863d9f7
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/LongBitFormat.java
+@@ -0,0 +1,67 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.util;
++
++import java.io.Serializable;
++
++
++/**
++ * Bit format in a long.
++ */
++public class LongBitFormat implements Serializable {
++  private static final long serialVersionUID = 1L;
++
++  private final String NAME;
++  /** Bit offset */
++  private final int OFFSET;
++  /** Bit length */
++  private final int LENGTH;
++  /** Minimum value */
++  private final long MIN;
++  /** Maximum value */
++  private final long MAX;
++  /** Bit mask */
++  private final long MASK;
++
++  public LongBitFormat(String name, LongBitFormat previous, int length, long min) {
++    NAME = name;
++    OFFSET = previous == null? 0: previous.OFFSET + previous.LENGTH;
++    LENGTH = length;
++    MIN = min;
++    MAX = ((-1L) >>> (64 - LENGTH));
++    MASK = MAX << OFFSET;
++  }
++
++  /** Retrieve the value from the record. */
++  public long retrieve(long record) {
++    return (record & MASK) >>> OFFSET;
++  }
++
++  /** Combine the value to the record. */
++  public long combine(long value, long record) {
++    if (value < MIN) {
++      throw new IllegalArgumentException(
++          "Illagal value: " + NAME + " = " + value + " < MIN = " + MIN);
++    }
++    if (value > MAX) {
++      throw new IllegalArgumentException(
++          "Illagal value: " + NAME + " = " + value + " > MAX = " + MAX);
++    }
++    return (record & ~MASK) | (value << OFFSET);
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+index 1f41ed74..b026257 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+@@ -81,7 +81,7 @@
+   private final PermissionStatus perm = new PermissionStatus(
+       "userName", null, FsPermission.getDefault());
+   private short replication;
+-  private long preferredBlockSize;
++  private long preferredBlockSize = 1024;
+ 
+   INodeFile createINodeFile(short replication, long preferredBlockSize) {
+     return new INodeFile(INodeId.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
+-- 
+1.7.9.5
+

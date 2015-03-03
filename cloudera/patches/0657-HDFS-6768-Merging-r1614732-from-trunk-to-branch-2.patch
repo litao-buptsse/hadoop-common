@@ -1,0 +1,211 @@
+From b3a591941e1687cad3b4cab761bd6efb3079c6f2 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Wed, 30 Jul 2014 18:38:07 +0000
+Subject: [PATCH 657/813] HDFS-6768: Merging r1614732 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1614733 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f71c0e67fa62509d28d93c20f1e3b41589f1529d)
+(cherry picked from commit 8ed90d1e336fc83d1cef8dab29d4998345ce51f2)
+---
+ hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt        |    3 ++
+ .../java/org/apache/hadoop/TestGenericRefresh.java |   29 ++++++++-----
+ .../org/apache/hadoop/TestRefreshCallQueue.java    |   44 ++++++++++++++------
+ .../hdfs/server/datanode/TestBlockRecovery.java    |    1 -
+ 4 files changed, 53 insertions(+), 24 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+index 5f009f7..13ba841 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+@@ -563,6 +563,9 @@ Release 2.5.0 - 2014-08-11
+     HDFS-6793. Missing changes in HftpFileSystem when Reintroduce
+     dfs.http.port / dfs.https.port in branch-2. (Juan Yu via wang).
+ 
++    HDFS-6768. Fix a few unit tests that use hard-coded port numbers. (Arpit
++    Agarwal)
++
+   BREAKDOWN OF HDFS-2006 SUBTASKS AND RELATED JIRAS
+ 
+     HDFS-6299. Protobuf for XAttr and client-side implementation. (Yi Liu via umamahesh)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestGenericRefresh.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestGenericRefresh.java
+index 664a478..3c73c28 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestGenericRefresh.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestGenericRefresh.java
+@@ -47,7 +47,6 @@
+ public class TestGenericRefresh {
+   private static MiniDFSCluster cluster;
+   private static Configuration config;
+-  private static final int NNPort = 54222;
+ 
+   private static RefreshHandler firstHandler;
+   private static RefreshHandler secondHandler;
+@@ -57,8 +56,8 @@ public static void setUpBeforeClass() throws Exception {
+     config = new Configuration();
+     config.set("hadoop.security.authorization", "true");
+ 
+-    FileSystem.setDefaultUri(config, "hdfs://localhost:" + NNPort);
+-    cluster = new MiniDFSCluster.Builder(config).nameNodePort(NNPort).build();
++    FileSystem.setDefaultUri(config, "hdfs://localhost:0");
++    cluster = new MiniDFSCluster.Builder(config).build();
+     cluster.waitActive();
+   }
+ 
+@@ -103,7 +102,8 @@ public void testInvalidCommand() throws Exception {
+   @Test
+   public void testInvalidIdentifier() throws Exception {
+     DFSAdmin admin = new DFSAdmin(config);
+-    String [] args = new String[]{"-refresh", "localhost:" + NNPort, "unregisteredIdentity"};
++    String [] args = new String[]{"-refresh", "localhost:" + 
++        cluster.getNameNodePort(), "unregisteredIdentity"};
+     int exitCode = admin.run(args);
+     assertEquals("DFSAdmin should fail due to no handler registered", -1, exitCode);
+   }
+@@ -111,7 +111,8 @@ public void testInvalidIdentifier() throws Exception {
+   @Test
+   public void testValidIdentifier() throws Exception {
+     DFSAdmin admin = new DFSAdmin(config);
+-    String[] args = new String[]{"-refresh", "localhost:" + NNPort, "firstHandler"};
++    String[] args = new String[]{"-refresh",
++        "localhost:" + cluster.getNameNodePort(), "firstHandler"};
+     int exitCode = admin.run(args);
+     assertEquals("DFSAdmin should succeed", 0, exitCode);
+ 
+@@ -124,11 +125,13 @@ public void testValidIdentifier() throws Exception {
+   @Test
+   public void testVariableArgs() throws Exception {
+     DFSAdmin admin = new DFSAdmin(config);
+-    String[] args = new String[]{"-refresh", "localhost:" + NNPort, "secondHandler", "one"};
++    String[] args = new String[]{"-refresh", "localhost:" +
++        cluster.getNameNodePort(), "secondHandler", "one"};
+     int exitCode = admin.run(args);
+     assertEquals("DFSAdmin should return 2", 2, exitCode);
+ 
+-    exitCode = admin.run(new String[]{"-refresh", "localhost:" + NNPort, "secondHandler", "one", "two"});
++    exitCode = admin.run(new String[]{"-refresh", "localhost:" +
++        cluster.getNameNodePort(), "secondHandler", "one", "two"});
+     assertEquals("DFSAdmin should now return 3", 3, exitCode);
+ 
+     Mockito.verify(secondHandler).handleRefresh("secondHandler", new String[]{"one"});
+@@ -141,7 +144,8 @@ public void testUnregistration() throws Exception {
+ 
+     // And now this should fail
+     DFSAdmin admin = new DFSAdmin(config);
+-    String[] args = new String[]{"-refresh", "localhost:" + NNPort, "firstHandler"};
++    String[] args = new String[]{"-refresh", "localhost:" +
++        cluster.getNameNodePort(), "firstHandler"};
+     int exitCode = admin.run(args);
+     assertEquals("DFSAdmin should return -1", -1, exitCode);
+   }
+@@ -161,7 +165,8 @@ public void testMultipleRegistration() throws Exception {
+ 
+     // this should trigger both
+     DFSAdmin admin = new DFSAdmin(config);
+-    String[] args = new String[]{"-refresh", "localhost:" + NNPort, "sharedId", "one"};
++    String[] args = new String[]{"-refresh", "localhost:" +
++        cluster.getNameNodePort(), "sharedId", "one"};
+     int exitCode = admin.run(args);
+     assertEquals(-1, exitCode); // -1 because one of the responses is unregistered
+ 
+@@ -189,7 +194,8 @@ public void testMultipleReturnCodeMerging() throws Exception {
+ 
+     // We refresh both
+     DFSAdmin admin = new DFSAdmin(config);
+-    String[] args = new String[]{"-refresh", "localhost:" + NNPort, "shared"};
++    String[] args = new String[]{"-refresh", "localhost:" +
++        cluster.getNameNodePort(), "shared"};
+     int exitCode = admin.run(args);
+     assertEquals(-1, exitCode); // We get -1 because of our logic for melding non-zero return codes
+ 
+@@ -215,7 +221,8 @@ public void testExceptionResultsInNormalError() throws Exception {
+     RefreshRegistry.defaultRegistry().register("exceptional", otherExceptionalHandler);
+ 
+     DFSAdmin admin = new DFSAdmin(config);
+-    String[] args = new String[]{"-refresh", "localhost:" + NNPort, "exceptional"};
++    String[] args = new String[]{"-refresh", "localhost:" +
++        cluster.getNameNodePort(), "exceptional"};
+     int exitCode = admin.run(args);
+     assertEquals(-1, exitCode); // Exceptions result in a -1
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestRefreshCallQueue.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestRefreshCallQueue.java
+index 9b0acbc..f66f9b6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestRefreshCallQueue.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/TestRefreshCallQueue.java
+@@ -24,6 +24,8 @@
+ import static org.junit.Assert.fail;
+ 
+ import java.io.IOException;
++import java.net.BindException;
++import java.util.Random;
+ import java.util.concurrent.BlockingQueue;
+ import java.util.concurrent.LinkedBlockingQueue;
+ 
+@@ -42,24 +44,42 @@
+   private FileSystem fs;
+   static int mockQueueConstructions;
+   static int mockQueuePuts;
+-  private static final int NNPort = 54222;
+-  private static String CALLQUEUE_CONFIG_KEY = "ipc." + NNPort + ".callqueue.impl";
++  private String callQueueConfigKey = "";
++  private final Random rand = new Random();
+ 
+   @Before
+   public void setUp() throws Exception {
+     // We want to count additional events, so we reset here
+     mockQueueConstructions = 0;
+     mockQueuePuts = 0;
+-
+-    config = new Configuration();
+-    config.setClass(CALLQUEUE_CONFIG_KEY,
+-        MockCallQueue.class, BlockingQueue.class);
+-    config.set("hadoop.security.authorization", "true");
+-
+-    FileSystem.setDefaultUri(config, "hdfs://localhost:" + NNPort);
+-    fs = FileSystem.get(config);
+-    cluster = new MiniDFSCluster.Builder(config).nameNodePort(NNPort).build();
+-    cluster.waitActive();
++    int portRetries = 5;
++    int nnPort;
++
++    for (; portRetries > 0; --portRetries) {
++      // Pick a random port in the range [30000,60000).
++      nnPort = 30000 + rand.nextInt(30000);  
++      config = new Configuration();
++      callQueueConfigKey = "ipc." + nnPort + ".callqueue.impl";
++      config.setClass(callQueueConfigKey,
++          MockCallQueue.class, BlockingQueue.class);
++      config.set("hadoop.security.authorization", "true");
++
++      FileSystem.setDefaultUri(config, "hdfs://localhost:" + nnPort);
++      fs = FileSystem.get(config);
++      
++      try {
++        cluster = new MiniDFSCluster.Builder(config).nameNodePort(nnPort).build();
++        cluster.waitActive();
++        break;
++      } catch (BindException be) {
++        // Retry with a different port number.
++      }
++    }
++    
++    if (portRetries == 0) {
++      // Bail if we get very unlucky with our choice of ports.
++      fail("Failed to pick an ephemeral port for the NameNode RPC server.");
++    }
+   }
+ 
+   @After
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery.java
+index a9e95da..f627c42 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery.java
+@@ -587,7 +587,6 @@ public void testRaceBetweenReplicaRecoveryAndFinalizeBlock() throws Exception {
+     Configuration conf = new HdfsConfiguration();
+     conf.set(DFSConfigKeys.DFS_DATANODE_XCEIVER_STOP_TIMEOUT_MILLIS_KEY, "1000");
+     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+-        .nnTopology(MiniDFSNNTopology.simpleSingleNN(8020, 50070))
+         .numDataNodes(1).build();
+     try {
+       cluster.waitClusterUp();
+-- 
+1.7.9.5
+

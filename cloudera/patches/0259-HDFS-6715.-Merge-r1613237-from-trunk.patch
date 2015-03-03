@@ -1,0 +1,206 @@
+From 13eafa3ba8e88c7ad68d9ebdcd1fba0ba13b2d27 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Thu, 24 Jul 2014 18:30:22 +0000
+Subject: [PATCH 259/813] HDFS-6715. Merge r1613237 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1613239 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 51c861d3cc6d6cdfdb15b1b84da41ec858d92bc1)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../web/resources/NamenodeWebHdfsMethods.java      |    3 +-
+ .../org/apache/hadoop/hdfs/web/TestWebHDFS.java    |   39 +++++++++-
+ .../apache/hadoop/hdfs/web/TestWebHDFSForHA.java   |   76 ++++++++++++++++++--
+ 3 files changed, 109 insertions(+), 9 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+index 92a58f9..d7235b3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+@@ -113,6 +113,7 @@
+ import org.apache.hadoop.hdfs.web.resources.XAttrSetFlagParam;
+ import org.apache.hadoop.hdfs.web.resources.XAttrValueParam;
+ import org.apache.hadoop.io.Text;
++import org.apache.hadoop.ipc.RetriableException;
+ import org.apache.hadoop.ipc.Server;
+ import org.apache.hadoop.net.NetworkTopology.InvalidTopologyException;
+ import org.apache.hadoop.net.Node;
+@@ -190,7 +191,7 @@ private static NamenodeProtocols getRPCServer(NameNode namenode)
+       throws IOException {
+      final NamenodeProtocols np = namenode.getRpcServer();
+      if (np == null) {
+-       throw new IOException("Namenode is in startup mode");
++       throw new RetriableException("Namenode is in startup mode");
+      }
+      return np;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
+index e9c74c6..1431211 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
+@@ -39,14 +39,18 @@
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.hdfs.TestDFSClientRetries;
++import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
+ import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+-import org.apache.hadoop.hdfs.TestDFSClientRetries;
++import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
++import org.apache.hadoop.ipc.RetriableException;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.apache.log4j.Level;
+ import org.junit.Assert;
+ import org.junit.Test;
++import org.mockito.internal.util.reflection.Whitebox;
+ 
+ /** Test WebHDFS */
+ public class TestWebHDFS {
+@@ -445,4 +449,37 @@ public void testWebHdfsRenameSnapshot() throws Exception {
+       }
+     }
+   }
++
++  /**
++   * Make sure a RetriableException is thrown when rpcServer is null in
++   * NamenodeWebHdfsMethods.
++   */
++  @Test
++  public void testRaceWhileNNStartup() throws Exception {
++    MiniDFSCluster cluster = null;
++    final Configuration conf = WebHdfsTestUtil.createConf();
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
++      cluster.waitActive();
++      final NameNode namenode = cluster.getNameNode();
++      final NamenodeProtocols rpcServer = namenode.getRpcServer();
++      Whitebox.setInternalState(namenode, "rpcServer", null);
++
++      final Path foo = new Path("/foo");
++      final FileSystem webHdfs = WebHdfsTestUtil.getWebHdfsFileSystem(conf,
++          WebHdfsFileSystem.SCHEME);
++      try {
++        webHdfs.mkdirs(foo);
++        fail("Expected RetriableException");
++      } catch (RetriableException e) {
++        GenericTestUtils.assertExceptionContains("Namenode is in startup mode",
++            e);
++      }
++      Whitebox.setInternalState(namenode, "rpcServer", rpcServer);
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
+index 772e367..0340b95 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
+@@ -18,6 +18,15 @@
+ 
+ package org.apache.hadoop.hdfs.web;
+ 
++import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
++import static org.mockito.Mockito.spy;
++import static org.mockito.Mockito.verify;
++
++import java.io.IOException;
++import java.net.URI;
++import java.util.HashMap;
++import java.util.Map;
++
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+@@ -29,18 +38,14 @@
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
++import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
++import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.security.token.Token;
+ import org.junit.Assert;
+ import org.junit.Test;
+-
+-import java.io.IOException;
+-import java.net.URI;
+-
+-import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
+-import static org.mockito.Mockito.spy;
+-import static org.mockito.Mockito.verify;
++import org.mockito.internal.util.reflection.Whitebox;
+ 
+ public class TestWebHDFSForHA {
+   private static final String LOGICAL_NAME = "minidfs";
+@@ -182,4 +187,61 @@ public void testMultipleNamespacesConfigured() throws Exception {
+       }
+     }
+   }
++
++  /**
++   * Make sure the WebHdfsFileSystem will retry based on RetriableException when
++   * rpcServer is null in NamenodeWebHdfsMethods while NameNode starts up.
++   */
++  @Test (timeout=120000)
++  public void testRetryWhileNNStartup() throws Exception {
++    final Configuration conf = DFSTestUtil.newHAConfiguration(LOGICAL_NAME);
++    MiniDFSCluster cluster = null;
++    final Map<String, Boolean> resultMap = new HashMap<String, Boolean>();
++
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).nnTopology(topo)
++          .numDataNodes(0).build();
++      HATestUtil.setFailoverConfigurations(cluster, conf, LOGICAL_NAME);
++      cluster.waitActive();
++      cluster.transitionToActive(0);
++
++      final NameNode namenode = cluster.getNameNode(0);
++      final NamenodeProtocols rpcServer = namenode.getRpcServer();
++      Whitebox.setInternalState(namenode, "rpcServer", null);
++
++      new Thread() {
++        @Override
++        public void run() {
++          boolean result = false;
++          FileSystem fs = null;
++          try {
++            fs = FileSystem.get(WEBHDFS_URI, conf);
++            final Path dir = new Path("/test");
++            result = fs.mkdirs(dir);
++          } catch (IOException e) {
++            result = false;
++          } finally {
++            IOUtils.cleanup(null, fs);
++          }
++          synchronized (TestWebHDFSForHA.this) {
++            resultMap.put("mkdirs", result);
++            TestWebHDFSForHA.this.notifyAll();
++          }
++        }
++      }.start();
++
++      Thread.sleep(1000);
++      Whitebox.setInternalState(namenode, "rpcServer", rpcServer);
++      synchronized (this) {
++        while (!resultMap.containsKey("mkdirs")) {
++          this.wait();
++        }
++        Assert.assertTrue(resultMap.get("mkdirs"));
++      }
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+-- 
+1.7.9.5
+

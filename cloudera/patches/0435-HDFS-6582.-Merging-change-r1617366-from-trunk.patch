@@ -1,0 +1,49 @@
+From 7397c8956aefa0e59af1012b3d5dccad795c73bb Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Mon, 11 Aug 2014 21:38:33 +0000
+Subject: [PATCH 435/813] HDFS-6582. Merging change r1617366 from trunk
+
+(cherry picked from afa125ccfd6f0d30405237885274da8dc585503d)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1617369 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    4 ++++
+ .../hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java   |    2 --
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index cccc464..3ef92402 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -724,6 +724,10 @@ READ3Response read(XDR xdr, SecurityHandler securityHandler,
+         FSDataInputStream fis = clientCache.getDfsInputStream(userName,
+             Nfs3Utils.getFileIdPath(handle));
+ 
++        if (fis == null) {
++            return new READ3Response(Nfs3Status.NFS3ERR_ACCES);
++        }
++
+         try {
+           readCount = fis.read(offset, readbuffer, 0, count);
+         } catch (IOException e) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+index e89929b..3fc0d99 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestRpcProgramNfs3.java
+@@ -278,13 +278,11 @@ public void testRead() throws Exception {
+     readReq.serialize(xdr_req);
+ 
+     // Attempt by an unpriviledged user should fail.
+-    /* Hits HDFS-6582. It needs to be fixed first.
+     READ3Response response1 = nfsd.read(xdr_req.asReadOnlyWrap(),
+         securityHandlerUnpriviledged,
+         new InetSocketAddress("localhost", 1234));
+     assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus());
+-    */
+ 
+     // Attempt by a priviledged user should pass.
+     READ3Response response2 = nfsd.read(xdr_req.asReadOnlyWrap(),
+-- 
+1.7.9.5
+

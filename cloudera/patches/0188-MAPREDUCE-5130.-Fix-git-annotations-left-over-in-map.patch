@@ -1,0 +1,52 @@
+From d30ad3d7bffa845988a2d413343ea92c6068474b Mon Sep 17 00:00:00 2001
+From: Ray Chiang <rchiang@cloudera.com>
+Date: Mon, 25 Aug 2014 15:00:59 -0700
+Subject: [PATCH 188/813] MAPREDUCE-5130.  Fix git annotations left over in
+ mapred-default.xml
+
+(cherry picked from commit 1e1706602267f834ab6ec9f1ae92ea441da2e4c2)
+---
+ .../src/main/resources/mapred-default.xml          |    6 ------
+ 1 file changed, 6 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml
+index e65d84d..5585b7d 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml
+@@ -442,8 +442,6 @@
+   </description>
+ </property>
+ 
+-<<<<<<< HEAD
+-=======
+ <property>
+   <name>mapreduce.map.memory.mb</name>
+   <value>1024</value>
+@@ -476,7 +474,6 @@
+   </description>
+ </property>
+ 
+->>>>>>> cd9622f... MAPREDUCE-5130. Add missing job config options to mapred-default.xml (Ray Chiang via Sandy Ryza)
+ <property>
+   <name>mapred.child.java.opts</name>
+   <value>-Xmx200m</value>
+@@ -832,8 +829,6 @@
+   A value of -1 indicates that there is no maximum.  </description>
+ </property>
+ 
+-<<<<<<< HEAD
+-=======
+ <property>
+   <name>mapreduce.input.lineinputformat.linespermap</name>
+   <value>1</value>
+@@ -842,7 +837,6 @@
+ </property>
+ 
+ 
+->>>>>>> cd9622f... MAPREDUCE-5130. Add missing job config options to mapred-default.xml (Ray Chiang via Sandy Ryza)
+ <property>
+   <name>mapreduce.client.submit.file.replication</name>
+   <value>10</value>
+-- 
+1.7.9.5
+

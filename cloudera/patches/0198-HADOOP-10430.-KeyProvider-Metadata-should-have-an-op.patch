@@ -1,0 +1,417 @@
+From 334a2107b37aed82802d3f357f471d5fa03168b3 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:42 +0000
+Subject: [PATCH 198/813] HADOOP-10430. KeyProvider Metadata should have an
+ optional description, there should be a method to
+ retrieve the metadata from all keys. (tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619515 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ff1f973264bb0f0c61955e689a27736f643d6240)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |    2 +-
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |   53 +++++++++++++++++++-
+ .../org/apache/hadoop/crypto/key/KeyShell.java     |   26 ++++++++--
+ .../org/apache/hadoop/crypto/key/UserProvider.java |    2 +-
+ .../apache/hadoop/crypto/key/TestKeyProvider.java  |   31 +++++++++++-
+ .../org/apache/hadoop/crypto/key/TestKeyShell.java |   32 +++++++++++-
+ 6 files changed, 134 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index 24be5d7..a0b6a8d 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -268,7 +268,7 @@ public KeyVersion createKey(String name, byte[] material,
+             e);
+       }
+       Metadata meta = new Metadata(options.getCipher(), options.getBitLength(),
+-          new Date(), 1);
++          options.getDescription(), new Date(), 1);
+       if (options.getBitLength() != 8 * material.length) {
+         throw new IOException("Wrong key length. Required " +
+             options.getBitLength() + ", but got " + (8 * material.length));
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index 993a447..b2177da 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -25,8 +25,11 @@
+ import java.io.OutputStreamWriter;
+ import java.net.URI;
+ import java.security.NoSuchAlgorithmException;
++import java.text.MessageFormat;
+ import java.util.Date;
++import java.util.LinkedHashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ import com.google.gson.stream.JsonReader;
+ import com.google.gson.stream.JsonWriter;
+@@ -104,21 +107,34 @@ public String toString() {
+     private final static String CIPHER_FIELD = "cipher";
+     private final static String BIT_LENGTH_FIELD = "bitLength";
+     private final static String CREATED_FIELD = "created";
++    private final static String DESCRIPTION_FIELD = "description";
+     private final static String VERSIONS_FIELD = "versions";
+ 
+     private final String cipher;
+     private final int bitLength;
++    private final String description;
+     private final Date created;
+     private int versions;
+ 
+     protected Metadata(String cipher, int bitLength,
+-                       Date created, int versions) {
++                       String description, Date created, int versions) {
+       this.cipher = cipher;
+       this.bitLength = bitLength;
++      this.description = description;
+       this.created = created;
+       this.versions = versions;
+     }
+ 
++    public String toString() {
++      return MessageFormat.format(
++          "cipher: {0}, length: {1} description: {2} created: {3} version: {4}",
++          cipher, bitLength, description, created, versions);
++    }
++
++    public String getDescription() {
++      return description;
++    }
++
+     public Date getCreated() {
+       return created;
+     }
+@@ -170,6 +186,9 @@ protected int addVersion() {
+       if (created != null) {
+         writer.name(CREATED_FIELD).value(created.getTime());
+       }
++      if (description != null) {
++        writer.name(DESCRIPTION_FIELD).value(description);
++      }
+       writer.name(VERSIONS_FIELD).value(versions);
+       writer.endObject();
+       writer.flush();
+@@ -186,6 +205,7 @@ protected Metadata(byte[] bytes) throws IOException {
+       int bitLength = 0;
+       Date created = null;
+       int versions = 0;
++      String description = null;
+       JsonReader reader = new JsonReader(new InputStreamReader
+           (new ByteArrayInputStream(bytes)));
+       reader.beginObject();
+@@ -199,12 +219,15 @@ protected Metadata(byte[] bytes) throws IOException {
+           created = new Date(reader.nextLong());
+         } else if (VERSIONS_FIELD.equals(field)) {
+           versions = reader.nextInt();
++        } else if (DESCRIPTION_FIELD.equals(field)) {
++          description = reader.nextString();
+         }
+       }
+       reader.endObject();
+       this.cipher = cipher;
+       this.bitLength = bitLength;
+       this.created = created;
++      this.description = description;
+       this.versions = versions;
+     }
+   }
+@@ -215,6 +238,7 @@ protected Metadata(byte[] bytes) throws IOException {
+   public static class Options {
+     private String cipher;
+     private int bitLength;
++    private String description;
+ 
+     public Options(Configuration conf) {
+       cipher = conf.get(DEFAULT_CIPHER_NAME, DEFAULT_CIPHER);
+@@ -231,6 +255,11 @@ public Options setBitLength(int bitLength) {
+       return this;
+     }
+ 
++    public Options setDescription(String description) {
++      this.description = description;
++      return this;
++    }
++
+     protected String getCipher() {
+       return cipher;
+     }
+@@ -238,6 +267,10 @@ protected String getCipher() {
+     protected int getBitLength() {
+       return bitLength;
+     }
++
++    protected String getDescription() {
++      return description;
++    }
+   }
+ 
+   /**
+@@ -277,6 +310,24 @@ public abstract KeyVersion getKeyVersion(String versionName
+    */
+   public abstract List<String> getKeys() throws IOException;
+ 
++
++  /**
++   * Get the key metadata for all keys.
++   *
++   * @return a Map with all the keys and their metadata
++   * @throws IOException
++   */
++  public Map<String, Metadata> getKeysMetadata() throws IOException {
++    Map<String, Metadata> keysMetadata = new LinkedHashMap<String, Metadata>();
++    for (String key : getKeys()) {
++      Metadata meta = getMetadata(key);
++      if (meta != null) {
++        keysMetadata.put(key, meta);
++      }
++    }
++    return keysMetadata;
++  }
++
+   /**
+    * Get the key material for all versions of a specific key name.
+    * @return the list of key material
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
+index 6093f23..aedcfc0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyShell.java
+@@ -23,6 +23,7 @@
+ import java.security.InvalidParameterException;
+ import java.security.NoSuchAlgorithmException;
+ import java.util.List;
++import java.util.Map;
+ 
+ import javax.crypto.KeyGenerator;
+ 
+@@ -45,6 +46,7 @@
+       "   [" + RollCommand.USAGE + "]\n" +
+       "   [" + DeleteCommand.USAGE + "]\n" +
+       "   [" + ListCommand.USAGE + "]\n";
++  private static final String LIST_METADATA = "keyShell.list.metadata";
+ 
+   private boolean interactive = false;
+   private Command command = null;
+@@ -121,6 +123,8 @@ private int init(String[] args) throws IOException {
+       } else if (args[i].equals("--provider")) {
+         userSuppliedProvider = true;
+         getConf().set(KeyProviderFactory.KEY_PROVIDER_PATH, args[++i]);
++      } else if (args[i].equals("--metadata")) {
++        getConf().setBoolean(LIST_METADATA, true);
+       } else if (args[i].equals("-i") || (args[i].equals("--interactive"))) {
+         interactive = true;
+       } else if (args[i].equals("--help")) {
+@@ -201,11 +205,15 @@ protected void warnIfTransientProvider() {
+   }
+ 
+   private class ListCommand extends Command {
+-    public static final String USAGE = "list <keyname> [--provider] [--help]";
++    public static final String USAGE =
++        "list [--provider] [--metadata] [--help]";
+     public static final String DESC =
+         "The list subcommand displays the keynames contained within \n" +
+         "a particular provider - as configured in core-site.xml or " +
+-        "indicated\nthrough the --provider argument.";
++        "indicated\nthrough the --provider argument.\n" +
++        "If the --metadata option is used, the keys metadata will be printed";
++
++    private boolean metadata = false;
+ 
+     public boolean validate() {
+       boolean rc = true;
+@@ -217,16 +225,24 @@ public boolean validate() {
+             + "you MUST use the --provider argument.");
+         rc = false;
+       }
++      metadata = getConf().getBoolean(LIST_METADATA, false);
+       return rc;
+     }
+ 
+     public void execute() throws IOException {
+       List<String> keys;
+       try {
+-        keys = provider.getKeys();
+         out.println("Listing keys for KeyProvider: " + provider.toString());
+-        for (String keyName : keys) {
+-          out.println(keyName);
++        if (metadata) {
++          Map<String, Metadata> keysMeta = provider.getKeysMetadata();
++          for (Map.Entry<String, Metadata> entry : keysMeta.entrySet()) {
++            out.println(entry.getKey() + " : " + entry.getValue());
++          }
++        } else {
++          keys = provider.getKeys();
++          for (String keyName : keys) {
++            out.println(keyName);
++          }
+         }
+       } catch (IOException e) {
+         out.println("Cannot list keys for KeyProvider: " + provider.toString()
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+index df2c071..371938b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+@@ -89,7 +89,7 @@ public synchronized KeyVersion createKey(String name, byte[] material,
+           options.getBitLength() + ", but got " + (8 * material.length));
+     }
+     Metadata meta = new Metadata(options.getCipher(), options.getBitLength(),
+-        new Date(), 1);
++        options.getDescription(), new Date(), 1);
+     cache.put(name, meta);
+     String versionName = buildVersionName(name, 0);
+     credentials.addSecretKey(nameT, meta.serialize());
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+index 2bd1bfe..1f046e6 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProvider.java
+@@ -32,6 +32,7 @@
+ import java.util.List;
+ 
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.assertArrayEquals;
+ 
+@@ -67,23 +68,47 @@ public void testKeyMaterial() throws Exception {
+ 
+   @Test
+   public void testMetadata() throws Exception {
++    //Metadata without description
+     DateFormat format = new SimpleDateFormat("y/m/d");
+     Date date = format.parse("2013/12/25");
+-    KeyProvider.Metadata meta = new KeyProvider.Metadata("myCipher", 100,
++    KeyProvider.Metadata meta = new KeyProvider.Metadata("myCipher", 100, null,
+         date, 123);
+     assertEquals("myCipher", meta.getCipher());
+     assertEquals(100, meta.getBitLength());
++    assertNull(meta.getDescription());
+     assertEquals(date, meta.getCreated());
+     assertEquals(123, meta.getVersions());
+     KeyProvider.Metadata second = new KeyProvider.Metadata(meta.serialize());
+     assertEquals(meta.getCipher(), second.getCipher());
+     assertEquals(meta.getBitLength(), second.getBitLength());
++    assertNull(second.getDescription());
+     assertEquals(meta.getCreated(), second.getCreated());
+     assertEquals(meta.getVersions(), second.getVersions());
+     int newVersion = second.addVersion();
+     assertEquals(123, newVersion);
+     assertEquals(124, second.getVersions());
+     assertEquals(123, meta.getVersions());
++
++    //Metadata with description
++    format = new SimpleDateFormat("y/m/d");
++    date = format.parse("2013/12/25");
++    meta = new KeyProvider.Metadata("myCipher", 100,
++        "description", date, 123);
++    assertEquals("myCipher", meta.getCipher());
++    assertEquals(100, meta.getBitLength());
++    assertEquals("description", meta.getDescription());
++    assertEquals(date, meta.getCreated());
++    assertEquals(123, meta.getVersions());
++    second = new KeyProvider.Metadata(meta.serialize());
++    assertEquals(meta.getCipher(), second.getCipher());
++    assertEquals(meta.getBitLength(), second.getBitLength());
++    assertEquals(meta.getDescription(), second.getDescription());
++    assertEquals(meta.getCreated(), second.getCreated());
++    assertEquals(meta.getVersions(), second.getVersions());
++    newVersion = second.addVersion();
++    assertEquals(123, newVersion);
++    assertEquals(124, second.getVersions());
++    assertEquals(123, meta.getVersions());
+   }
+ 
+   @Test
+@@ -95,9 +120,11 @@ public void testOptions() throws Exception {
+     assertEquals("myCipher", options.getCipher());
+     assertEquals(512, options.getBitLength());
+     options.setCipher("yourCipher");
++    options.setDescription("description");
+     options.setBitLength(128);
+     assertEquals("yourCipher", options.getCipher());
+     assertEquals(128, options.getBitLength());
++    assertEquals("description", options.getDescription());
+     options = KeyProvider.options(new Configuration());
+     assertEquals(KeyProvider.DEFAULT_CIPHER, options.getCipher());
+     assertEquals(KeyProvider.DEFAULT_BITLENGTH, options.getBitLength());
+@@ -139,7 +166,7 @@ public KeyVersion getKeyVersion(String versionName)
+ 
+     @Override
+     public Metadata getMetadata(String name) throws IOException {
+-      return new Metadata(CIPHER, 128, new Date(), 0);
++      return new Metadata(CIPHER, 128, "description", new Date(), 0);
+     }
+ 
+     @Override
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
+index fc32e4d..54193cf 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
+@@ -22,23 +22,42 @@
+ import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.io.PrintStream;
++import java.util.UUID;
+ 
+ import org.apache.hadoop.conf.Configuration;
++import org.junit.After;
++import org.junit.Assert;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+ public class TestKeyShell {
+   private final ByteArrayOutputStream outContent = new ByteArrayOutputStream();
+   private final ByteArrayOutputStream errContent = new ByteArrayOutputStream();
+-  private static final File tmpDir =
+-      new File(System.getProperty("test.build.data", "/tmp"), "key");
++
++  private static File tmpDir;
++
++  private PrintStream initialStdOut;
++  private PrintStream initialStdErr;
+ 
+   @Before
+   public void setup() throws Exception {
++    outContent.reset();
++    errContent.reset();
++    tmpDir = new File(System.getProperty("test.build.data", "target"),
++        UUID.randomUUID().toString());
++    tmpDir.mkdirs();
++    initialStdOut = System.out;
++    initialStdErr = System.err;
+     System.setOut(new PrintStream(outContent));
+     System.setErr(new PrintStream(errContent));
+   }
+ 
++  @After
++  public void cleanUp() throws Exception {
++    System.setOut(initialStdOut);
++    System.setErr(initialStdErr);
++  }
++
+   @Test
+   public void testKeySuccessfulKeyLifecycle() throws Exception {
+     outContent.reset();
+@@ -60,6 +79,15 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+     assertTrue(outContent.toString().contains("key1"));
+ 
+     outContent.reset();
++    String[] args2a = {"list", "--metadata", "--provider",
++                      "jceks://file" + tmpDir + "/keystore.jceks"};
++    rc = ks.run(args2a);
++    assertEquals(0, rc);
++    assertTrue(outContent.toString().contains("key1"));
++    assertTrue(outContent.toString().contains("description"));
++    assertTrue(outContent.toString().contains("created"));
++
++    outContent.reset();
+     String[] args3 = {"roll", "key1", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     rc = ks.run(args3);
+-- 
+1.7.9.5
+

@@ -1,0 +1,71 @@
+From 4a8e6770bf6d2599729297503016bb7d9cf6fdc6 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Mon, 20 Oct 2014 18:33:11 -0700
+Subject: [PATCH 608/813] HDFS-7154. Fix returning value of starting
+ reconfiguration task (Lei Xu via Colin P. McCabe)
+ (cherry picked from commit
+ 7aab5fa1bd9386b036af45cd8206622a4555d74a) (cherry
+ picked from commit
+ 8c3b007236e01c7ad4922d1bf611e68d09adcfa8)
+
+---
+ .../org/apache/hadoop/hdfs/tools/DFSAdmin.java     |    7 ++++---
+ .../org/apache/hadoop/hdfs/tools/TestDFSAdmin.java |    3 +--
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+index 580d9c5..46a37f9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+@@ -1349,11 +1349,12 @@ int startReconfiguration(String nodeType, String address) throws IOException {
+       ClientDatanodeProtocol dnProxy = getDataNodeProxy(address);
+       dnProxy.startReconfiguration();
+       System.out.println("Started reconfiguration task on DataNode " + address);
++      return 0;
+     } else {
+       System.err.println("Node type " + nodeType +
+           " does not support reconfiguration.");
++      return 1;
+     }
+-    return -1;
+   }
+ 
+   int getReconfigurationStatus(String nodeType, String address,
+@@ -1391,11 +1392,11 @@ int getReconfigurationStatus(String nodeType, String address,
+         }
+       } catch (IOException e) {
+         err.println("DataNode reloading configuration: " + e + ".");
+-        return -1;
++        return 1;
+       }
+     } else {
+       err.println("Node type " + nodeType + " does not support reconfiguration.");
+-      return -1;
++      return 1;
+     }
+     return 0;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/TestDFSAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/TestDFSAdmin.java
+index 35c61f0..9758955 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/TestDFSAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/TestDFSAdmin.java
+@@ -35,7 +35,6 @@
+ import java.io.IOException;
+ import java.io.PrintStream;
+ import java.util.ArrayList;
+-import java.util.Arrays;
+ import java.util.List;
+ import java.util.Scanner;
+ 
+@@ -109,7 +108,7 @@ public void testGetReconfigureStatus()
+     final int port = datanode.getIpcPort();
+     final String address = "localhost:" + port;
+ 
+-    admin.startReconfiguration("datanode", address);
++    assertThat(admin.startReconfiguration("datanode", address), is(0));
+ 
+     List<String> outputs = null;
+     int count = 100;
+-- 
+1.7.9.5
+

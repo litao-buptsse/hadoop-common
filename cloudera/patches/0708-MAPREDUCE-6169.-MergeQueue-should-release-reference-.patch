@@ -1,0 +1,84 @@
+From 71d4b8b650f99ab91bc641f9bde2ae8c18ebd9db Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Thu, 20 Nov 2014 15:36:57 -0800
+Subject: [PATCH 708/813] MAPREDUCE-6169. MergeQueue should release reference
+ to the current item from key and value at the end
+ of the iteration to save memory. (Zhihai Xu via
+ kasha)
+
+(cherry picked from commit 90194ca1cbd695d48c3705121c2ac9a8554578a2)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+	hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapreduce/task/reduce/TestMerger.java
+
+(cherry picked from commit 1d4e68cd792bc531ad25dcf080fab15dd882dbb4)
+---
+ .../main/java/org/apache/hadoop/mapred/Merger.java |   11 ++++++++++-
+ .../hadoop/mapreduce/task/reduce/TestMerger.java   |    3 +++
+ .../mapred/org/apache/hadoop/mapred/Merger.java    |    3 +++
+ 3 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapred/Merger.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapred/Merger.java
+index 9285516..c89deea 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapred/Merger.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapred/Merger.java
+@@ -528,9 +528,17 @@ private void adjustPriorityQueue(Segment<K, V> reader) throws IOException{
+       }
+     }
+ 
++    private void resetKeyValue() {
++      key = null;
++      value.reset(new byte[] {}, 0);
++      diskIFileValue.reset(new byte[] {}, 0);
++    }
++
+     public boolean next() throws IOException {
+-      if (size() == 0)
++      if (size() == 0) {
++        resetKeyValue();
+         return false;
++      }
+ 
+       if (minSegment != null) {
+         //minSegment is non-null for all invocations of next except the first
+@@ -539,6 +547,7 @@ public boolean next() throws IOException {
+         adjustPriorityQueue(minSegment);
+         if (size() == 0) {
+           minSegment = null;
++          resetKeyValue();
+           return false;
+         }
+       }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapreduce/task/reduce/TestMerger.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapreduce/task/reduce/TestMerger.java
+index c5ab420..698bdb5 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapreduce/task/reduce/TestMerger.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/test/java/org/apache/hadoop/mapreduce/task/reduce/TestMerger.java
+@@ -267,7 +267,10 @@ public void testMergeShouldReturnProperProgress(
+     RawKeyValueIterator mergeQueue = Merger.merge(conf, fs, keyClass,
+         valueClass, segments, 2, tmpDir, comparator, getReporter(),
+         readsCounter, writesCounter, mergePhase);
++    Assert.assertFalse(mergeQueue.next());
+     Assert.assertEquals(1.0f, mergeQueue.getProgress().get(), 0.0f);
++    Assert.assertTrue(mergeQueue.getKey() == null);
++    Assert.assertEquals(0, mergeQueue.getValue().getData().length);
+   }
+ 
+   private Progressable getReporter() {
+diff --git a/hadoop-mapreduce1-project/src/mapred/org/apache/hadoop/mapred/Merger.java b/hadoop-mapreduce1-project/src/mapred/org/apache/hadoop/mapred/Merger.java
+index 2a8594c..4489386 100644
+--- a/hadoop-mapreduce1-project/src/mapred/org/apache/hadoop/mapred/Merger.java
++++ b/hadoop-mapreduce1-project/src/mapred/org/apache/hadoop/mapred/Merger.java
+@@ -358,6 +358,9 @@ private void adjustPriorityQueue(Segment<K, V> reader) throws IOException{
+     }
+ 
+     public boolean next() throws IOException {
++      key = null;
++      value = null;
++
+       if (size() == 0)
+         return false;
+ 
+-- 
+1.7.9.5
+

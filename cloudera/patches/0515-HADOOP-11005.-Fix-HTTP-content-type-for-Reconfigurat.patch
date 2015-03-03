@@ -1,0 +1,35 @@
+From ae6ada8c11ce2a19d35156e822bebd163f2a6350 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <andrew.wang@cloudera.com>
+Date: Thu, 28 Aug 2014 17:39:50 -0700
+Subject: [PATCH 515/813] HADOOP-11005. Fix HTTP content type for
+ ReconfigurationServlet. Contributed by Lei Xu.
+
+(cherry picked from commit 7119bd49c870cf1e6b8c091d87025b439b9468df)
+(cherry picked from commit 7cdb619cc5932bda8fcdb91fdce73e0194cfda03)
+---
+ .../apache/hadoop/conf/ReconfigurationServlet.java |    2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurationServlet.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurationServlet.java
+index 3fa162b..eb1fb6b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurationServlet.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurationServlet.java
+@@ -200,6 +200,7 @@ private void applyChanges(PrintWriter out, Reconfigurable reconf,
+   protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+     throws ServletException, IOException {
+     LOG.info("GET");
++    resp.setContentType("text/html");
+     PrintWriter out = resp.getWriter();
+     
+     Reconfigurable reconf = getReconfigurable(req);
+@@ -214,6 +215,7 @@ protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+   protected void doPost(HttpServletRequest req, HttpServletResponse resp)
+     throws ServletException, IOException {
+     LOG.info("POST");
++    resp.setContentType("text/html");
+     PrintWriter out = resp.getWriter();
+ 
+     Reconfigurable reconf = getReconfigurable(req);
+-- 
+1.7.9.5
+

@@ -1,0 +1,252 @@
+From 9812f612e227ed39295d1b99d186de52f74d80db Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Mon, 24 Nov 2014 14:58:59 -0800
+Subject: [PATCH 807/813] YARN-2697. Remove useless RMAuthenticationHandler.
+ Contributed by Haosong Huang.
+
+(cherry picked from commit e37a4ff0c1712a1cb80e0412ec53a5d10b8d30f9)
+(cherry picked from commit 57d62d4ded47ac5751bf886d8de6086ba36d2c02)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/resourcemanager/ResourceManager.java    |   31 ++--
+ .../security/RMAuthenticationHandler.java          |  157 --------------------
+ 2 files changed, 10 insertions(+), 178 deletions(-)
+ delete mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/RMAuthenticationHandler.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 5864469..54bb143 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -18,15 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+-import java.io.IOException;
+-import java.io.InputStream;
+-import java.net.InetSocketAddress;
+-import java.security.PrivilegedExceptionAction;
+-import java.util.ArrayList;
+-import java.util.List;
+-import java.util.concurrent.BlockingQueue;
+-import java.util.concurrent.LinkedBlockingQueue;
+-
++import com.google.common.annotations.VisibleForTesting;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+@@ -83,16 +75,11 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEventType;
+-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ContainerPreemptEvent;
+-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ContainerPreemptEventType;
+-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.PreemptableResourceScheduler;
+-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
+-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.*;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEventType;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.DelegationTokenRenewer;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.QueueACLsManager;
+-import org.apache.hadoop.yarn.server.resourcemanager.security.RMAuthenticationHandler;
+ import org.apache.hadoop.yarn.server.resourcemanager.webapp.RMWebApp;
+ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
+ import org.apache.hadoop.yarn.server.security.http.RMAuthenticationFilter;
+@@ -106,7 +93,14 @@
+ import org.apache.hadoop.yarn.webapp.WebApps.Builder;
+ import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ 
+-import com.google.common.annotations.VisibleForTesting;
++import java.io.IOException;
++import java.io.InputStream;
++import java.net.InetSocketAddress;
++import java.security.PrivilegedExceptionAction;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.BlockingQueue;
++import java.util.concurrent.LinkedBlockingQueue;
+ 
+ /**
+  * The ResourceManager is the main class that is a set of components.
+@@ -847,13 +841,8 @@ protected void startWepApp() {
+ 
+         LOG.info("Using RM authentication filter(kerberos/delegation-token)"
+             + " for RM webapp authentication");
+-        RMAuthenticationHandler
+-          .setSecretManager(getClientRMService().rmDTSecretManager);
+         RMAuthenticationFilter
+           .setDelegationTokenSecretManager(getClientRMService().rmDTSecretManager);
+-        String yarnAuthKey =
+-            authPrefix + RMAuthenticationFilter.AUTH_HANDLER_PROPERTY;
+-        conf.setStrings(yarnAuthKey, RMAuthenticationHandler.class.getName());
+         conf.set(filterInitializerConfKey, actualInitializers);
+       }
+     }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/RMAuthenticationHandler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/RMAuthenticationHandler.java
+deleted file mode 100644
+index 798c479..0000000
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/RMAuthenticationHandler.java
++++ /dev/null
+@@ -1,157 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.yarn.server.resourcemanager.security;
+-
+-import java.io.ByteArrayInputStream;
+-import java.io.DataInputStream;
+-import java.io.IOException;
+-
+-import javax.servlet.http.HttpServletRequest;
+-import javax.servlet.http.HttpServletResponse;
+-
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.authentication.client.AuthenticationException;
+-import org.apache.hadoop.security.authentication.server.AuthenticationToken;
+-import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
+-import org.apache.hadoop.security.token.Token;
+-import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+-
+-public class RMAuthenticationHandler extends KerberosAuthenticationHandler {
+-
+-  public static final String TYPE = "kerberos-dt";
+-  public static final String HEADER = "Hadoop-YARN-Auth-Delegation-Token";
+-
+-  static RMDelegationTokenSecretManager secretManager;
+-  static boolean secretManagerInitialized = false;
+-
+-  public RMAuthenticationHandler() {
+-    super();
+-  }
+-
+-  /**
+-   * Returns authentication type of the handler.
+-   * 
+-   * @return <code>kerberos-dt</code>
+-   */
+-  @Override
+-  public String getType() {
+-    return TYPE;
+-  }
+-
+-  @Override
+-  public boolean managementOperation(AuthenticationToken token,
+-      HttpServletRequest request, HttpServletResponse response) {
+-    return true;
+-  }
+-
+-  /**
+-   * Authenticates a request looking for the <code>delegation</code> header and
+-   * verifying it is a valid token. If the header is missing, it delegates the
+-   * authentication to the {@link KerberosAuthenticationHandler} unless it is
+-   * disabled.
+-   * 
+-   * @param request
+-   *          the HTTP client request.
+-   * @param response
+-   *          the HTTP client response.
+-   * 
+-   * @return the authentication token for the authenticated request.
+-   * @throws IOException
+-   *           thrown if an IO error occurred.
+-   * @throws AuthenticationException
+-   *           thrown if the authentication failed.
+-   */
+-  @Override
+-  public AuthenticationToken authenticate(HttpServletRequest request,
+-      HttpServletResponse response) throws IOException, AuthenticationException {
+-
+-    AuthenticationToken token;
+-    String delegationParam = this.getEncodedDelegationTokenFromRequest(request);
+-    if (delegationParam != null) {
+-      Token<RMDelegationTokenIdentifier> dt =
+-          new Token<RMDelegationTokenIdentifier>();
+-      ;
+-      dt.decodeFromUrlString(delegationParam);
+-      UserGroupInformation ugi = this.verifyToken(dt);
+-      if (ugi == null) {
+-        throw new AuthenticationException("Invalid token");
+-      }
+-      final String shortName = ugi.getShortUserName();
+-      token = new AuthenticationToken(shortName, ugi.getUserName(), getType());
+-    } else {
+-      token = super.authenticate(request, response);
+-      if (token != null) {
+-        // create a token with auth type set correctly
+-        token =
+-            new AuthenticationToken(token.getUserName(), token.getName(),
+-              super.getType());
+-      }
+-    }
+-    return token;
+-  }
+-
+-  /**
+-   * Verifies a delegation token.
+-   * 
+-   * @param token
+-   *          delegation token to verify.
+-   * @return the UGI for the token; null if the verification fails
+-   * @throws IOException
+-   *           thrown if the token could not be verified.
+-   */
+-  protected UserGroupInformation verifyToken(
+-      Token<RMDelegationTokenIdentifier> token) throws IOException {
+-    if (secretManagerInitialized == false) {
+-      throw new IllegalStateException("Secret manager not initialized");
+-    }
+-    ByteArrayInputStream buf = new ByteArrayInputStream(token.getIdentifier());
+-    DataInputStream dis = new DataInputStream(buf);
+-    RMDelegationTokenIdentifier id = secretManager.createIdentifier();
+-    try {
+-      id.readFields(dis);
+-      secretManager.verifyToken(id, token.getPassword());
+-    } catch (Throwable t) {
+-      return null;
+-    } finally {
+-      dis.close();
+-    }
+-    return id.getUser();
+-  }
+-
+-  /**
+-   * Extract encoded delegation token from request
+-   * 
+-   * @param req
+-   *          HTTPServletRequest object
+-   * 
+-   * @return String containing the encoded token; null if encoded token not
+-   *         found
+-   * 
+-   */
+-  protected String getEncodedDelegationTokenFromRequest(HttpServletRequest req) {
+-    String header = req.getHeader(HEADER);
+-    return header;
+-  }
+-
+-  public static void setSecretManager(RMDelegationTokenSecretManager manager) {
+-    secretManager = manager;
+-    secretManagerInitialized = true;
+-  }
+-
+-}
+-- 
+1.7.9.5
+

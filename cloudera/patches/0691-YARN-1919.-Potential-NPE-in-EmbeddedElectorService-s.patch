@@ -1,0 +1,40 @@
+From 619334e9eaec992aef250870c9d51bfca7a9020f Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 20 Aug 2014 22:14:13 +0000
+Subject: [PATCH 691/813] YARN-1919. Potential NPE in
+ EmbeddedElectorService#stop. (Tsuyoshi Ozawa via
+ kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619253 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bf0e9e894dd0969682617fb11eb0c3d09f6b0642)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../resourcemanager/EmbeddedElectorService.java    |   10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java
+index 2d1893e..37cdd40 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java
+@@ -105,8 +105,14 @@ protected void serviceStart() throws Exception {
+ 
+   @Override
+   protected void serviceStop() throws Exception {
+-    elector.quitElection(false);
+-    elector.terminateConnection();
++    /**
++     * When error occurs in serviceInit(), serviceStop() can be called.
++     * We need null check for the case.
++     */
++    if (elector != null) {
++      elector.quitElection(false);
++      elector.terminateConnection();
++    }
+     super.serviceStop();
+   }
+ 
+-- 
+1.7.9.5
+

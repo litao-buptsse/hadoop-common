@@ -1,0 +1,42 @@
+From db73fe163cb4767c107a79f41369204934617ce0 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:33 +0000
+Subject: [PATCH 193/813] HADOOP-10432. Refactor SSLFactory to expose static
+ method to determine HostnameVerifier. (tucu)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619510 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7edb93c74155af0402bccfe0f689670e210553eb)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/security/ssl/SSLFactory.java |    8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/SSLFactory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/SSLFactory.java
+index c118948..404b007 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/SSLFactory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ssl/SSLFactory.java
+@@ -127,10 +127,14 @@ public void init() throws GeneralSecurityException, IOException {
+   }
+ 
+   private HostnameVerifier getHostnameVerifier(Configuration conf)
++      throws GeneralSecurityException, IOException {
++    return getHostnameVerifier(conf.get(SSL_HOSTNAME_VERIFIER_KEY, "DEFAULT").
++        trim().toUpperCase());
++  }
++
++  public static HostnameVerifier getHostnameVerifier(String verifier)
+     throws GeneralSecurityException, IOException {
+     HostnameVerifier hostnameVerifier;
+-    String verifier =
+-      conf.get(SSL_HOSTNAME_VERIFIER_KEY, "DEFAULT").trim().toUpperCase();
+     if (verifier.equals("DEFAULT")) {
+       hostnameVerifier = SSLHostnameVerifier.DEFAULT;
+     } else if (verifier.equals("DEFAULT_AND_LOCALHOST")) {
+-- 
+1.7.9.5
+

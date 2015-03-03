@@ -1,0 +1,77 @@
+From 2b87d43080c431665c6b3d464fd4ea559f19665d Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 22 Jul 2014 01:33:17 +0000
+Subject: [PATCH 166/813] YARN-2131. Addendum. Add a way to format the
+ RMStateStore. (Robert Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1612444 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b0dcf77e9524910abba24c23abc05e941f1915e2)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/bin/yarn
+
+(cherry picked from commit 0aead9084ea57edb2e96075daa2d612ea1e3171b)
+---
+ hadoop-yarn-project/hadoop-yarn/bin/yarn           |   29 +++++++++++---------
+ .../server/resourcemanager/ResourceManager.java    |    4 +--
+ 2 files changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/bin/yarn b/hadoop-yarn-project/hadoop-yarn/bin/yarn
+index 330aabd..33d5c5a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/bin/yarn
++++ b/hadoop-yarn-project/hadoop-yarn/bin/yarn
+@@ -61,20 +61,23 @@ HADOOP_LIBEXEC_DIR=${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}
+ function print_usage(){
+   echo "Usage: yarn [--config confdir] COMMAND"
+   echo "where COMMAND is one of:"
+-  echo "  resourcemanager -format deletes the RMStateStore"
+-  echo "  resourcemanager         run the ResourceManager"
+-  echo "  nodemanager             run a nodemanager on each slave"
+-  echo "  rmadmin                 admin tools"
+-  echo "  version                 print the version"
+-  echo "  jar <jar>               run a jar file"
+-  echo "  application             prints application(s) report/kill application"
+-  echo "  node                    prints node report(s)"
+-  echo "  logs                    dump container logs"
+-  echo "  classpath               prints the class path needed to get the"
+-  echo "                          Hadoop jar and the required libraries"
+-  echo "  daemonlog               get/set the log level for each daemon"
++  echo "  resourcemanager -format-state-store   deletes the RMStateStore"
++  echo "  resourcemanager                       run the ResourceManager"
++  echo "  nodemanager                           run a nodemanager on each slave"
++  echo "  rmadmin                               admin tools"
++  echo "  version                               print the version"
++  echo "  jar <jar>                             run a jar file"
++  echo "  application                           prints application(s)"
++  echo "                                        report/kill application"
++  echo "  node                                  prints node report(s)"
++  echo "  logs                                  dump container logs"
++  echo "  classpath                             prints the class path needed to"
++  echo "                                        get the Hadoop jar and the"
++  echo "                                        required libraries"
++  echo "  daemonlog                             get/set the log level for each"
++  echo "                                        daemon"
+   echo " or"
+-  echo "  CLASSNAME            run the class named CLASSNAME"
++  echo "  CLASSNAME                             run the class named CLASSNAME"
+   echo "Most commands print help when invoked w/o parameters."
+ }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index d332354..f08d346 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -1096,8 +1096,8 @@ public static void main(String argv[]) {
+     StringUtils.startupShutdownMessage(ResourceManager.class, argv, LOG);
+     try {
+       Configuration conf = new YarnConfiguration();
+-      // If -format, then delete RMStateStore; else startup normally
+-      if (argv.length == 1 && argv[0].equals("-format")) {
++      // If -format-state-store, then delete RMStateStore; else startup normally
++      if (argv.length == 1 && argv[0].equals("-format-state-store")) {
+         deleteRMStateStore(conf);
+       } else {
+         ResourceManager resourceManager = new ResourceManager();
+-- 
+1.7.9.5
+

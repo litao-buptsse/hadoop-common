@@ -1,0 +1,2526 @@
+From 3fa3ee84be46666878abf2f2118f94220778eacb Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Tue, 8 Jul 2014 00:08:18 +0000
+Subject: [PATCH 482/813] HDFS-6609. Use DirectorySnapshottableFeature to
+ represent a snapshottable directory. Contributed by
+ Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1608631 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b68818c4f085f6657f96c10e975c2b1f27362108)
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   53 ++-
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |   26 +-
+ .../hdfs/server/namenode/FSImageSerialization.java |    3 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    3 +-
+ .../hdfs/server/namenode/INodeDirectory.java       |  108 +++--
+ .../server/namenode/INodeWithAdditionalFields.java |    3 +-
+ .../hadoop/hdfs/server/namenode/INodesInPath.java  |    7 +-
+ .../snapshot/DirectorySnapshottableFeature.java    |  455 ++++++++++++++++++
+ .../snapshot/DirectoryWithSnapshotFeature.java     |    4 +-
+ .../namenode/snapshot/FSImageFormatPBSnapshot.java |   28 +-
+ .../snapshot/INodeDirectorySnapshottable.java      |  498 --------------------
+ .../hdfs/server/namenode/snapshot/Snapshot.java    |    5 +-
+ .../server/namenode/snapshot/SnapshotDiffInfo.java |    6 +-
+ .../namenode/snapshot/SnapshotFSImageFormat.java   |   25 +-
+ .../server/namenode/snapshot/SnapshotManager.java  |  105 +++--
+ .../server/namenode/TestFSImageWithSnapshot.java   |    5 +-
+ .../server/namenode/TestSnapshotPathINodes.java    |   12 +-
+ ...TestINodeFileUnderConstructionWithSnapshot.java |    8 +-
+ .../namenode/snapshot/TestNestedSnapshots.java     |    9 +-
+ .../namenode/snapshot/TestRenameWithSnapshots.java |   89 ++--
+ .../snapshot/TestSetQuotaWithSnapshot.java         |   31 +-
+ .../server/namenode/snapshot/TestSnapshot.java     |   15 +-
+ .../namenode/snapshot/TestSnapshotDeletion.java    |   11 +-
+ .../namenode/snapshot/TestSnapshotManager.java     |   12 +-
+ .../namenode/snapshot/TestSnapshotRename.java      |   16 +-
+ 25 files changed, 749 insertions(+), 788 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 37997fe..ba62a2f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -82,7 +82,7 @@
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+ import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot.Root;
+ import org.apache.hadoop.hdfs.util.ByteArray;
+@@ -103,7 +103,7 @@
+  **/
+ @InterfaceAudience.Private
+ public class FSDirectory implements Closeable {
+-  private static INodeDirectorySnapshottable createRoot(FSNamesystem namesystem) {
++  private static INodeDirectory createRoot(FSNamesystem namesystem) {
+     final INodeDirectory r = new INodeDirectory(
+         INodeId.ROOT_INODE_ID,
+         INodeDirectory.ROOT_NAME,
+@@ -112,9 +112,9 @@ private static INodeDirectorySnapshottable createRoot(FSNamesystem namesystem) {
+     r.addDirectoryWithQuotaFeature(
+         DirectoryWithQuotaFeature.DEFAULT_NAMESPACE_QUOTA,
+         DirectoryWithQuotaFeature.DEFAULT_DISKSPACE_QUOTA);
+-    final INodeDirectorySnapshottable s = new INodeDirectorySnapshottable(r);
+-    s.setSnapshotQuota(0);
+-    return s;
++    r.addSnapshottableFeature();
++    r.setSnapshotQuota(0);
++    return r;
+   }
+ 
+   @VisibleForTesting
+@@ -639,8 +639,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+ 
+     ezManager.checkMoveValidity(srcIIP, dstIIP, src);
+     final INode dstInode = dstIIP.getLastINode();
+-    List<INodeDirectorySnapshottable> snapshottableDirs = 
+-        new ArrayList<INodeDirectorySnapshottable>();
++    List<INodeDirectory> snapshottableDirs = new ArrayList<INodeDirectory>();
+     if (dstInode != null) { // Destination exists
+       validateRenameOverwrite(src, dst, overwrite, srcInode, dstInode);
+       checkSnapshot(dstInode, snapshottableDirs);
+@@ -1167,8 +1166,7 @@ long delete(String src, BlocksMapUpdateInfo collectedBlocks,
+       if (!deleteAllowed(inodesInPath, src) ) {
+         filesRemoved = -1;
+       } else {
+-        List<INodeDirectorySnapshottable> snapshottableDirs = 
+-            new ArrayList<INodeDirectorySnapshottable>();
++        List<INodeDirectory> snapshottableDirs = new ArrayList<INodeDirectory>();
+         checkSnapshot(inodesInPath.getLastINode(), snapshottableDirs);
+         filesRemoved = unprotectedDelete(inodesInPath, collectedBlocks,
+             removedINodes, mtime);
+@@ -1238,8 +1236,7 @@ void unprotectedDelete(String src, long mtime) throws UnresolvedLinkException,
+         normalizePath(src), false);
+     long filesRemoved = -1;
+     if (deleteAllowed(inodesInPath, src)) {
+-      List<INodeDirectorySnapshottable> snapshottableDirs = 
+-          new ArrayList<INodeDirectorySnapshottable>();
++      List<INodeDirectory> snapshottableDirs = new ArrayList<INodeDirectory>();
+       checkSnapshot(inodesInPath.getLastINode(), snapshottableDirs);
+       filesRemoved = unprotectedDelete(inodesInPath, collectedBlocks,
+           removedINodes, mtime);
+@@ -1314,19 +1311,20 @@ long unprotectedDelete(INodesInPath iip, BlocksMapUpdateInfo collectedBlocks,
+    *                          but do not have snapshots yet
+    */
+   private static void checkSnapshot(INode target,
+-      List<INodeDirectorySnapshottable> snapshottableDirs) throws SnapshotException {
++      List<INodeDirectory> snapshottableDirs) throws SnapshotException {
+     if (target.isDirectory()) {
+       INodeDirectory targetDir = target.asDirectory();
+-      if (targetDir.isSnapshottable()) {
+-        INodeDirectorySnapshottable ssTargetDir = 
+-            (INodeDirectorySnapshottable) targetDir;
+-        if (ssTargetDir.getNumSnapshots() > 0) {
+-          throw new SnapshotException("The directory " + ssTargetDir.getFullPathName()
+-              + " cannot be deleted since " + ssTargetDir.getFullPathName()
++      DirectorySnapshottableFeature sf = targetDir
++          .getDirectorySnapshottableFeature();
++      if (sf != null) {
++        if (sf.getNumSnapshots() > 0) {
++          String fullPath = targetDir.getFullPathName();
++          throw new SnapshotException("The directory " + fullPath
++              + " cannot be deleted since " + fullPath
+               + " is snapshottable and already has snapshots");
+         } else {
+           if (snapshottableDirs != null) {
+-            snapshottableDirs.add(ssTargetDir);
++            snapshottableDirs.add(targetDir);
+           }
+         }
+       } 
+@@ -1416,14 +1414,18 @@ private DirectoryListing getSnapshotsListing(String src, byte[] startAfter)
+     Preconditions.checkArgument(
+         src.endsWith(HdfsConstants.SEPARATOR_DOT_SNAPSHOT_DIR),
+         "%s does not end with %s", src, HdfsConstants.SEPARATOR_DOT_SNAPSHOT_DIR);
+-    
++
+     final String dirPath = normalizePath(src.substring(0,
+         src.length() - HdfsConstants.DOT_SNAPSHOT_DIR.length()));
+     
+     final INode node = this.getINode(dirPath);
+-    final INodeDirectorySnapshottable dirNode = INodeDirectorySnapshottable
+-        .valueOf(node, dirPath);
+-    final ReadOnlyList<Snapshot> snapshots = dirNode.getSnapshotList();
++    final INodeDirectory dirNode = INodeDirectory.valueOf(node, dirPath);
++    final DirectorySnapshottableFeature sf = dirNode.getDirectorySnapshottableFeature();
++    if (sf == null) {
++      throw new SnapshotException(
++          "Directory is not a snapshottable directory: " + dirPath);
++    }
++    final ReadOnlyList<Snapshot> snapshots = sf.getSnapshotList();
+     int skipSize = ReadOnlyList.Util.binarySearch(snapshots, startAfter);
+     skipSize = skipSize < 0 ? -skipSize - 1 : skipSize + 1;
+     int numOfListing = Math.min(snapshots.size() - skipSize, this.lsLimit);
+@@ -1488,9 +1490,8 @@ private INode getINode4DotSnapshot(String src) throws UnresolvedLinkException {
+         src.length() - HdfsConstants.DOT_SNAPSHOT_DIR.length()));
+     
+     final INode node = this.getINode(dirPath);
+-    if (node != null
+-        && node.isDirectory()
+-        && node.asDirectory() instanceof INodeDirectorySnapshottable) {
++    if (node != null && node.isDirectory()
++        && node.asDirectory().isSnapshottable()) {
+       return node;
+     }
+     return null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index 839bcba..2677332 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -59,7 +59,6 @@
+ import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+@@ -74,8 +73,8 @@
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.util.StringUtils;
+ 
+-import com.google.common.base.Preconditions;
+ import com.google.common.annotations.VisibleForTesting;
++import com.google.common.base.Preconditions;
+ 
+ /**
+  * Contains inner classes for reading or writing the on-disk format for
+@@ -555,21 +554,17 @@ private void loadDirectoryWithSnapshot(DataInput in, Counter counter)
+       if (!toLoadSubtree) {
+         return;
+       }
+-      
++
+       // Step 2. Load snapshots if parent is snapshottable
+       int numSnapshots = in.readInt();
+       if (numSnapshots >= 0) {
+-        final INodeDirectorySnapshottable snapshottableParent
+-            = INodeDirectorySnapshottable.valueOf(parent, parent.getLocalName());
+         // load snapshots and snapshotQuota
+-        SnapshotFSImageFormat.loadSnapshotList(snapshottableParent,
+-            numSnapshots, in, this);
+-        if (snapshottableParent.getSnapshotQuota() > 0) {
++        SnapshotFSImageFormat.loadSnapshotList(parent, numSnapshots, in, this);
++        if (parent.getDirectorySnapshottableFeature().getSnapshotQuota() > 0) {
+           // add the directory to the snapshottable directory list in 
+           // SnapshotManager. Note that we only add root when its snapshot quota
+           // is positive.
+-          this.namesystem.getSnapshotManager().addSnapshottable(
+-              snapshottableParent);
++          this.namesystem.getSnapshotManager().addSnapshottable(parent);
+         }
+       }
+ 
+@@ -832,7 +827,10 @@ INode loadINode(final byte[] localName, boolean isSnapshotINode,
+       if (withSnapshot) {
+         dir.addSnapshotFeature(null);
+       }
+-      return snapshottable ? new INodeDirectorySnapshottable(dir) : dir;
++      if (snapshottable) {
++        dir.addSnapshottableFeature();
++      }
++      return dir;
+     } else if (numBlocks == -2) {
+       //symlink
+       if (!FileSystem.areSymlinksEnabled()) {
+@@ -1383,10 +1381,8 @@ private void saveImage(INodeDirectory current, DataOutputStream out,
+ 
+       // 2. Write INodeDirectorySnapshottable#snapshotsByNames to record all
+       // Snapshots
+-      if (current instanceof INodeDirectorySnapshottable) {
+-        INodeDirectorySnapshottable snapshottableNode =
+-            (INodeDirectorySnapshottable) current;
+-        SnapshotFSImageFormat.saveSnapshots(snapshottableNode, out);
++      if (current.isDirectory() && current.asDirectory().isSnapshottable()) {
++        SnapshotFSImageFormat.saveSnapshots(current.asDirectory(), out);
+       } else {
+         out.writeInt(-1); // # of snapshots
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+index 5ad67da..3956d9a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+@@ -36,7 +36,6 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+ import org.apache.hadoop.hdfs.util.XMLUtils;
+@@ -243,7 +242,7 @@ public static void writeINodeDirectory(INodeDirectory node, DataOutput out)
+ 
+     writeQuota(node.getQuotaCounts(), out);
+ 
+-    if (node instanceof INodeDirectorySnapshottable) {
++    if (node.isSnapshottable()) {
+       out.writeBoolean(true);
+     } else {
+       out.writeBoolean(false);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index d168cb5..425eda4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -234,7 +234,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.ha.StandbyCheckpointer;
+ import org.apache.hadoop.hdfs.server.namenode.metrics.FSNamesystemMBean;
+ import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager;
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase;
+@@ -7972,7 +7971,7 @@ void deleteSnapshot(String snapshotRoot, String snapshotName)
+    * Remove a list of INodeDirectorySnapshottable from the SnapshotManager
+    * @param toRemove the list of INodeDirectorySnapshottable to be removed
+    */
+-  void removeSnapshottableDirs(List<INodeDirectorySnapshottable> toRemove) {
++  void removeSnapshottableDirs(List<INodeDirectory> toRemove) {
+     if (snapshotManager != null) {
+       snapshotManager.removeSnapshottable(toRemove);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index e7d6a3d..18b4109 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -29,10 +29,11 @@
+ import org.apache.hadoop.fs.permission.PermissionStatus;
+ import org.apache.hadoop.hdfs.DFSUtil;
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
++import org.apache.hadoop.hdfs.protocol.SnapshotException;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiffList;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.util.Diff.ListType;
+ import org.apache.hadoop.hdfs.util.ReadOnlyList;
+@@ -102,11 +103,6 @@ public final INodeDirectory asDirectory() {
+     return this;
+   }
+ 
+-  /** Is this a snapshottable directory? */
+-  public boolean isSnapshottable() {
+-    return false;
+-  }
+-
+   void setQuota(long nsQuota, long dsQuota) {
+     DirectoryWithQuotaFeature quota = getDirectoryWithQuotaFeature();
+     if (quota != null) {
+@@ -186,7 +182,7 @@ public final DirectoryWithSnapshotFeature getDirectoryWithSnapshotFeature() {
+   public final boolean isWithSnapshot() {
+     return getDirectoryWithSnapshotFeature() != null;
+   }
+-  
++
+   public DirectoryDiffList getDiffs() {
+     DirectoryWithSnapshotFeature sf = getDirectoryWithSnapshotFeature();
+     return sf != null ? sf.getDiffs() : null;
+@@ -204,50 +200,71 @@ public String toDetailString() {
+     return super.toDetailString() + (sf == null ? "" : ", " + sf.getDiffs()); 
+   }
+ 
+-  /** Replace itself with an {@link INodeDirectorySnapshottable}. */
+-  public INodeDirectorySnapshottable replaceSelf4INodeDirectorySnapshottable(
+-      int latestSnapshotId, final INodeMap inodeMap)
+-      throws QuotaExceededException {
+-    Preconditions.checkState(!(this instanceof INodeDirectorySnapshottable),
+-        "this is already an INodeDirectorySnapshottable, this=%s", this);
+-    final INodeDirectorySnapshottable s = new INodeDirectorySnapshottable(this);
+-    replaceSelf(s, inodeMap).getDirectoryWithSnapshotFeature().getDiffs()
+-        .saveSelf2Snapshot(latestSnapshotId, s, this);
+-    return s;
++  public DirectorySnapshottableFeature getDirectorySnapshottableFeature() {
++    return getFeature(DirectorySnapshottableFeature.class);
++  }
++
++  public boolean isSnapshottable() {
++    return getDirectorySnapshottableFeature() != null;
+   }
+ 
+-  /** Replace itself with {@link INodeDirectory}. */
+-  public INodeDirectory replaceSelf4INodeDirectory(final INodeMap inodeMap) {
+-    Preconditions.checkState(getClass() != INodeDirectory.class,
+-        "the class is already INodeDirectory, this=%s", this);
+-    return replaceSelf(new INodeDirectory(this, true, this.getFeatures()),
+-      inodeMap);
++  public Snapshot getSnapshot(byte[] snapshotName) {
++    return getDirectorySnapshottableFeature().getSnapshot(snapshotName);
+   }
+ 
+-  /** Replace itself with the given directory. */
+-  private final <N extends INodeDirectory> N replaceSelf(final N newDir,
+-      final INodeMap inodeMap) {
+-    final INodeReference ref = getParentReference();
+-    if (ref != null) {
+-      ref.setReferredINode(newDir);
+-      if (inodeMap != null) {
+-        inodeMap.put(newDir);
+-      }
+-    } else {
+-      final INodeDirectory parent = getParent();
+-      Preconditions.checkArgument(parent != null, "parent is null, this=%s", this);
+-      parent.replaceChild(this, newDir, inodeMap);
++  public void setSnapshotQuota(int snapshotQuota) {
++    getDirectorySnapshottableFeature().setSnapshotQuota(snapshotQuota);
++  }
++
++  public Snapshot addSnapshot(int id, String name) throws SnapshotException,
++      QuotaExceededException {
++    return getDirectorySnapshottableFeature().addSnapshot(this, id, name);
++  }
++
++  public Snapshot removeSnapshot(String snapshotName,
++      BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes)
++      throws SnapshotException {
++    return getDirectorySnapshottableFeature().removeSnapshot(this,
++        snapshotName, collectedBlocks, removedINodes);
++  }
++
++  public void renameSnapshot(String path, String oldName, String newName)
++      throws SnapshotException {
++    getDirectorySnapshottableFeature().renameSnapshot(path, oldName, newName);
++  }
++
++  /** add DirectorySnapshottableFeature */
++  public void addSnapshottableFeature() {
++    Preconditions.checkState(!isSnapshottable(),
++        "this is already snapshottable, this=%s", this);
++    DirectoryWithSnapshotFeature s = this.getDirectoryWithSnapshotFeature();
++    final DirectorySnapshottableFeature snapshottable =
++        new DirectorySnapshottableFeature(s);
++    if (s != null) {
++      this.removeFeature(s);
+     }
+-    clear();
+-    return newDir;
++    this.addFeature(snapshottable);
+   }
+-  
++
++  /** remove DirectorySnapshottableFeature */
++  public void removeSnapshottableFeature() {
++    DirectorySnapshottableFeature s = getDirectorySnapshottableFeature();
++    Preconditions.checkState(s != null,
++        "The dir does not have snapshottable feature: this=%s", this);
++    this.removeFeature(s);
++    if (s.getDiffs().asList().size() > 0) {
++      // add a DirectoryWithSnapshotFeature back
++      DirectoryWithSnapshotFeature sf = new DirectoryWithSnapshotFeature(
++          s.getDiffs());
++      addFeature(sf);
++    }
++  }
++
+   /** 
+    * Replace the given child with a new child. Note that we no longer need to
+    * replace an normal INodeDirectory or INodeFile into an
+    * INodeDirectoryWithSnapshot or INodeFileUnderConstruction. The only cases
+-   * for child replacement is for {@link INodeDirectorySnapshottable} and 
+-   * reference nodes.
++   * for child replacement is for reference nodes.
+    */
+   public void replaceChild(INode oldChild, final INode newChild,
+       final INodeMap inodeMap) {
+@@ -821,6 +838,11 @@ public void remove() {
+         };
+       }
+     });
++
++    final DirectorySnapshottableFeature s = getDirectorySnapshottableFeature();
++    if (s != null) {
++      s.dumpTreeRecursively(this, out, prefix, snapshot);
++    }
+   }
+ 
+   /**
+@@ -829,7 +851,7 @@ public void remove() {
+    * @param subs The subtrees.
+    */
+   @VisibleForTesting
+-  protected static void dumpTreeRecursively(PrintWriter out,
++  public static void dumpTreeRecursively(PrintWriter out,
+       StringBuilder prefix, Iterable<SnapshotAndINode> subs) {
+     if (subs != null) {
+       for(final Iterator<SnapshotAndINode> i = subs.iterator(); i.hasNext();) {
+@@ -842,7 +864,7 @@ protected static void dumpTreeRecursively(PrintWriter out,
+   }
+ 
+   /** A pair of Snapshot and INode objects. */
+-  protected static class SnapshotAndINode {
++  public static class SnapshotAndINode {
+     public final int snapshotId;
+     public final INode inode;
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
+index 94ce12f..0cb5b2a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
+@@ -318,8 +318,9 @@ protected void removeFeature(Feature f) {
+   }
+ 
+   protected <T extends Feature> T getFeature(Class<? extends Feature> clazz) {
++    Preconditions.checkArgument(clazz != null);
+     for (Feature f : features) {
+-      if (f.getClass() == clazz) {
++      if (clazz.isAssignableFrom(f.getClass())) {
+         @SuppressWarnings("unchecked")
+         T ret = (T) f;
+         return ret;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java
+index b7aaa9d..ba052a4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodesInPath.java
+@@ -27,7 +27,6 @@
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.UnresolvedPathException;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ 
+ import com.google.common.base.Preconditions;
+@@ -209,8 +208,7 @@ static INodesInPath resolve(final INodeDirectory startingDir,
+       final byte[] childName = components[count + 1];
+       
+       // check if the next byte[] in components is for ".snapshot"
+-      if (isDotSnapshotDir(childName)
+-          && isDir && dir instanceof INodeDirectorySnapshottable) {
++      if (isDotSnapshotDir(childName) && isDir && dir.isSnapshottable()) {
+         // skip the ".snapshot" in components
+         count++;
+         index++;
+@@ -223,8 +221,7 @@ static INodesInPath resolve(final INodeDirectory startingDir,
+           break;
+         }
+         // Resolve snapshot root
+-        final Snapshot s = ((INodeDirectorySnapshottable)dir).getSnapshot(
+-            components[count + 1]);
++        final Snapshot s = dir.getSnapshot(components[count + 1]);
+         if (s == null) {
+           //snapshot not found
+           curNode = null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java
+new file mode 100644
+index 0000000..42dc5e7
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java
+@@ -0,0 +1,455 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode.snapshot;
++
++import java.io.PrintWriter;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.Iterator;
++import java.util.LinkedList;
++import java.util.List;
++
++import org.apache.hadoop.HadoopIllegalArgumentException;
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.hdfs.DFSUtil;
++import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
++import org.apache.hadoop.hdfs.protocol.SnapshotException;
++import org.apache.hadoop.hdfs.server.namenode.Content;
++import org.apache.hadoop.hdfs.server.namenode.ContentSummaryComputationContext;
++import org.apache.hadoop.hdfs.server.namenode.INode;
++import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
++import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
++import org.apache.hadoop.hdfs.server.namenode.INodeDirectory.SnapshotAndINode;
++import org.apache.hadoop.hdfs.server.namenode.INodeFile;
++import org.apache.hadoop.hdfs.server.namenode.INodeReference;
++import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
++import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithName;
++import org.apache.hadoop.hdfs.server.namenode.Quota;
++import org.apache.hadoop.hdfs.util.Diff.ListType;
++import org.apache.hadoop.hdfs.util.ReadOnlyList;
++import org.apache.hadoop.util.Time;
++
++import com.google.common.annotations.VisibleForTesting;
++import com.google.common.base.Preconditions;
++import com.google.common.collect.Lists;
++
++/**
++ * A directory with this feature is a snapshottable directory, where snapshots
++ * can be taken. This feature extends {@link DirectoryWithSnapshotFeature}, and
++ * maintains extra information about all the snapshots taken on this directory.
++ */
++@InterfaceAudience.Private
++public class DirectorySnapshottableFeature extends DirectoryWithSnapshotFeature {
++  /** Limit the number of snapshot per snapshottable directory. */
++  static final int SNAPSHOT_LIMIT = 1 << 16;
++
++  /**
++   * Snapshots of this directory in ascending order of snapshot names.
++   * Note that snapshots in ascending order of snapshot id are stored in
++   * {@link DirectoryWithSnapshotFeature}.diffs (a private field).
++   */
++  private final List<Snapshot> snapshotsByNames = new ArrayList<Snapshot>();
++  /** Number of snapshots allowed. */
++  private int snapshotQuota = SNAPSHOT_LIMIT;
++
++  public DirectorySnapshottableFeature(DirectoryWithSnapshotFeature feature) {
++    super(feature == null ? null : feature.getDiffs());
++  }
++
++  /** @return the number of existing snapshots. */
++  public int getNumSnapshots() {
++    return snapshotsByNames.size();
++  }
++
++  private int searchSnapshot(byte[] snapshotName) {
++    return Collections.binarySearch(snapshotsByNames, snapshotName);
++  }
++
++  /** @return the snapshot with the given name. */
++  public Snapshot getSnapshot(byte[] snapshotName) {
++    final int i = searchSnapshot(snapshotName);
++    return i < 0? null: snapshotsByNames.get(i);
++  }
++
++  public Snapshot getSnapshotById(int sid) {
++    for (Snapshot s : snapshotsByNames) {
++      if (s.getId() == sid) {
++        return s;
++      }
++    }
++    return null;
++  }
++
++  /** @return {@link #snapshotsByNames} as a {@link ReadOnlyList} */
++  public ReadOnlyList<Snapshot> getSnapshotList() {
++    return ReadOnlyList.Util.asReadOnlyList(snapshotsByNames);
++  }
++
++  /**
++   * Rename a snapshot
++   * @param path
++   *          The directory path where the snapshot was taken. Used for
++   *          generating exception message.
++   * @param oldName
++   *          Old name of the snapshot
++   * @param newName
++   *          New name the snapshot will be renamed to
++   * @throws SnapshotException
++   *           Throw SnapshotException when either the snapshot with the old
++   *           name does not exist or a snapshot with the new name already
++   *           exists
++   */
++  public void renameSnapshot(String path, String oldName, String newName)
++      throws SnapshotException {
++    if (newName.equals(oldName)) {
++      return;
++    }
++    final int indexOfOld = searchSnapshot(DFSUtil.string2Bytes(oldName));
++    if (indexOfOld < 0) {
++      throw new SnapshotException("The snapshot " + oldName
++          + " does not exist for directory " + path);
++    } else {
++      final byte[] newNameBytes = DFSUtil.string2Bytes(newName);
++      int indexOfNew = searchSnapshot(newNameBytes);
++      if (indexOfNew >= 0) {
++        throw new SnapshotException("The snapshot " + newName
++            + " already exists for directory " + path);
++      }
++      // remove the one with old name from snapshotsByNames
++      Snapshot snapshot = snapshotsByNames.remove(indexOfOld);
++      final INodeDirectory ssRoot = snapshot.getRoot();
++      ssRoot.setLocalName(newNameBytes);
++      indexOfNew = -indexOfNew - 1;
++      if (indexOfNew <= indexOfOld) {
++        snapshotsByNames.add(indexOfNew, snapshot);
++      } else { // indexOfNew > indexOfOld
++        snapshotsByNames.add(indexOfNew - 1, snapshot);
++      }
++    }
++  }
++
++  public int getSnapshotQuota() {
++    return snapshotQuota;
++  }
++
++  public void setSnapshotQuota(int snapshotQuota) {
++    if (snapshotQuota < 0) {
++      throw new HadoopIllegalArgumentException(
++          "Cannot set snapshot quota to " + snapshotQuota + " < 0");
++    }
++    this.snapshotQuota = snapshotQuota;
++  }
++
++  /**
++   * Simply add a snapshot into the {@link #snapshotsByNames}. Used when loading
++   * fsimage.
++   */
++  void addSnapshot(Snapshot snapshot) {
++    this.snapshotsByNames.add(snapshot);
++  }
++
++  /** Add a snapshot. */
++  public Snapshot addSnapshot(INodeDirectory snapshotRoot, int id, String name)
++      throws SnapshotException, QuotaExceededException {
++    //check snapshot quota
++    final int n = getNumSnapshots();
++    if (n + 1 > snapshotQuota) {
++      throw new SnapshotException("Failed to add snapshot: there are already "
++          + n + " snapshot(s) and the snapshot quota is "
++          + snapshotQuota);
++    }
++    final Snapshot s = new Snapshot(id, name, snapshotRoot);
++    final byte[] nameBytes = s.getRoot().getLocalNameBytes();
++    final int i = searchSnapshot(nameBytes);
++    if (i >= 0) {
++      throw new SnapshotException("Failed to add snapshot: there is already a "
++          + "snapshot with the same name \"" + Snapshot.getSnapshotName(s) + "\".");
++    }
++
++    final DirectoryDiff d = getDiffs().addDiff(id, snapshotRoot);
++    d.setSnapshotRoot(s.getRoot());
++    snapshotsByNames.add(-i - 1, s);
++
++    // set modification time
++    final long now = Time.now();
++    snapshotRoot.updateModificationTime(now, Snapshot.CURRENT_STATE_ID);
++    s.getRoot().setModificationTime(now, Snapshot.CURRENT_STATE_ID);
++    return s;
++  }
++
++  /**
++   * Remove the snapshot with the given name from {@link #snapshotsByNames},
++   * and delete all the corresponding DirectoryDiff.
++   *
++   * @param snapshotRoot The directory where we take snapshots
++   * @param snapshotName The name of the snapshot to be removed
++   * @param collectedBlocks Used to collect information to update blocksMap
++   * @return The removed snapshot. Null if no snapshot with the given name
++   *         exists.
++   */
++  public Snapshot removeSnapshot(INodeDirectory snapshotRoot,
++      String snapshotName, BlocksMapUpdateInfo collectedBlocks,
++      final List<INode> removedINodes) throws SnapshotException {
++    final int i = searchSnapshot(DFSUtil.string2Bytes(snapshotName));
++    if (i < 0) {
++      throw new SnapshotException("Cannot delete snapshot " + snapshotName
++          + " from path " + snapshotRoot.getFullPathName()
++          + ": the snapshot does not exist.");
++    } else {
++      final Snapshot snapshot = snapshotsByNames.get(i);
++      int prior = Snapshot.findLatestSnapshot(snapshotRoot, snapshot.getId());
++      try {
++        Quota.Counts counts = snapshotRoot.cleanSubtree(snapshot.getId(),
++            prior, collectedBlocks, removedINodes, true);
++        INodeDirectory parent = snapshotRoot.getParent();
++        if (parent != null) {
++          // there will not be any WithName node corresponding to the deleted
++          // snapshot, thus only update the quota usage in the current tree
++          parent.addSpaceConsumed(-counts.get(Quota.NAMESPACE),
++              -counts.get(Quota.DISKSPACE), true);
++        }
++      } catch(QuotaExceededException e) {
++        INode.LOG.error("BUG: removeSnapshot increases namespace usage.", e);
++      }
++      // remove from snapshotsByNames after successfully cleaning the subtree
++      snapshotsByNames.remove(i);
++      return snapshot;
++    }
++  }
++
++  public ContentSummaryComputationContext computeContentSummary(
++      final INodeDirectory snapshotRoot,
++      final ContentSummaryComputationContext summary) {
++    snapshotRoot.computeContentSummary(summary);
++    summary.getCounts().add(Content.SNAPSHOT, snapshotsByNames.size());
++    summary.getCounts().add(Content.SNAPSHOTTABLE_DIRECTORY, 1);
++    return summary;
++  }
++
++  /**
++   * Compute the difference between two snapshots (or a snapshot and the current
++   * directory) of the directory.
++   *
++   * @param from The name of the start point of the comparison. Null indicating
++   *          the current tree.
++   * @param to The name of the end point. Null indicating the current tree.
++   * @return The difference between the start/end points.
++   * @throws SnapshotException If there is no snapshot matching the starting
++   *           point, or if endSnapshotName is not null but cannot be identified
++   *           as a previous snapshot.
++   */
++  SnapshotDiffInfo computeDiff(final INodeDirectory snapshotRoot,
++      final String from, final String to) throws SnapshotException {
++    Snapshot fromSnapshot = getSnapshotByName(snapshotRoot, from);
++    Snapshot toSnapshot = getSnapshotByName(snapshotRoot, to);
++    // if the start point is equal to the end point, return null
++    if (from.equals(to)) {
++      return null;
++    }
++    SnapshotDiffInfo diffs = new SnapshotDiffInfo(snapshotRoot, fromSnapshot,
++        toSnapshot);
++    computeDiffRecursively(snapshotRoot, snapshotRoot, new ArrayList<byte[]>(),
++        diffs);
++    return diffs;
++  }
++
++  /**
++   * Find the snapshot matching the given name.
++   *
++   * @param snapshotRoot The directory where snapshots were taken.
++   * @param snapshotName The name of the snapshot.
++   * @return The corresponding snapshot. Null if snapshotName is null or empty.
++   * @throws SnapshotException If snapshotName is not null or empty, but there
++   *           is no snapshot matching the name.
++   */
++  private Snapshot getSnapshotByName(INodeDirectory snapshotRoot,
++      String snapshotName) throws SnapshotException {
++    Snapshot s = null;
++    if (snapshotName != null && !snapshotName.isEmpty()) {
++      final int index = searchSnapshot(DFSUtil.string2Bytes(snapshotName));
++      if (index < 0) {
++        throw new SnapshotException("Cannot find the snapshot of directory "
++            + snapshotRoot.getFullPathName() + " with name " + snapshotName);
++      }
++      s = snapshotsByNames.get(index);
++    }
++    return s;
++  }
++
++  /**
++   * Recursively compute the difference between snapshots under a given
++   * directory/file.
++   * @param snapshotRoot The directory where snapshots were taken.
++   * @param node The directory/file under which the diff is computed.
++   * @param parentPath Relative path (corresponding to the snapshot root) of
++   *                   the node's parent.
++   * @param diffReport data structure used to store the diff.
++   */
++  private void computeDiffRecursively(final INodeDirectory snapshotRoot,
++      INode node, List<byte[]> parentPath, SnapshotDiffInfo diffReport) {
++    final Snapshot earlierSnapshot = diffReport.isFromEarlier() ?
++        diffReport.getFrom() : diffReport.getTo();
++    final Snapshot laterSnapshot = diffReport.isFromEarlier() ?
++        diffReport.getTo() : diffReport.getFrom();
++    byte[][] relativePath = parentPath.toArray(new byte[parentPath.size()][]);
++    if (node.isDirectory()) {
++      final ChildrenDiff diff = new ChildrenDiff();
++      INodeDirectory dir = node.asDirectory();
++      DirectoryWithSnapshotFeature sf = dir.getDirectoryWithSnapshotFeature();
++      if (sf != null) {
++        boolean change = sf.computeDiffBetweenSnapshots(earlierSnapshot,
++            laterSnapshot, diff, dir);
++        if (change) {
++          diffReport.addDirDiff(dir, relativePath, diff);
++        }
++      }
++      ReadOnlyList<INode> children = dir.getChildrenList(earlierSnapshot
++          .getId());
++      for (INode child : children) {
++        final byte[] name = child.getLocalNameBytes();
++        boolean toProcess = diff.searchIndex(ListType.DELETED, name) < 0;
++        if (!toProcess && child instanceof INodeReference.WithName) {
++          byte[][] renameTargetPath = findRenameTargetPath(
++              snapshotRoot, (WithName) child,
++              laterSnapshot == null ? Snapshot.CURRENT_STATE_ID :
++                laterSnapshot.getId());
++          if (renameTargetPath != null) {
++            toProcess = true;
++            diffReport.setRenameTarget(child.getId(), renameTargetPath);
++          }
++        }
++        if (toProcess) {
++          parentPath.add(name);
++          computeDiffRecursively(snapshotRoot, child, parentPath, diffReport);
++          parentPath.remove(parentPath.size() - 1);
++        }
++      }
++    } else if (node.isFile() && node.asFile().isWithSnapshot()) {
++      INodeFile file = node.asFile();
++      boolean change = file.getFileWithSnapshotFeature()
++          .changedBetweenSnapshots(file, earlierSnapshot, laterSnapshot);
++      if (change) {
++        diffReport.addFileDiff(file, relativePath);
++      }
++    }
++  }
++
++  /**
++   * We just found a deleted WithName node as the source of a rename operation.
++   * However, we should include it in our snapshot diff report as rename only
++   * if the rename target is also under the same snapshottable directory.
++   */
++  private byte[][] findRenameTargetPath(final INodeDirectory snapshotRoot,
++      INodeReference.WithName wn, final int snapshotId) {
++    INode inode = wn.getReferredINode();
++    final LinkedList<byte[]> ancestors = Lists.newLinkedList();
++    while (inode != null) {
++      if (inode == snapshotRoot) {
++        return ancestors.toArray(new byte[ancestors.size()][]);
++      }
++      if (inode instanceof INodeReference.WithCount) {
++        inode = ((WithCount) inode).getParentRef(snapshotId);
++      } else {
++        INode parent = inode.getParentReference() != null ? inode
++            .getParentReference() : inode.getParent();
++        if (parent != null && parent instanceof INodeDirectory) {
++          int sid = parent.asDirectory().searchChild(inode);
++          if (sid < snapshotId) {
++            return null;
++          }
++        }
++        if (!(parent instanceof WithCount)) {
++          ancestors.addFirst(inode.getLocalNameBytes());
++        }
++        inode = parent;
++      }
++    }
++    return null;
++  }
++
++  @Override
++  public String toString() {
++    return "snapshotsByNames=" + snapshotsByNames;
++  }
++
++  @VisibleForTesting
++  public void dumpTreeRecursively(INodeDirectory snapshotRoot, PrintWriter out,
++      StringBuilder prefix, int snapshot) {
++    if (snapshot == Snapshot.CURRENT_STATE_ID) {
++      out.println();
++      out.print(prefix);
++
++      out.print("Snapshot of ");
++      final String name = snapshotRoot.getLocalName();
++      out.print(name.isEmpty()? "/": name);
++      out.print(": quota=");
++      out.print(getSnapshotQuota());
++
++      int n = 0;
++      for(DirectoryDiff diff : getDiffs()) {
++        if (diff.isSnapshotRoot()) {
++          n++;
++        }
++      }
++      Preconditions.checkState(n == snapshotsByNames.size(), "#n=" + n
++          + ", snapshotsByNames.size()=" + snapshotsByNames.size());
++      out.print(", #snapshot=");
++      out.println(n);
++
++      INodeDirectory.dumpTreeRecursively(out, prefix,
++          new Iterable<SnapshotAndINode>() {
++        @Override
++        public Iterator<SnapshotAndINode> iterator() {
++          return new Iterator<SnapshotAndINode>() {
++            final Iterator<DirectoryDiff> i = getDiffs().iterator();
++            private DirectoryDiff next = findNext();
++
++            private DirectoryDiff findNext() {
++              for(; i.hasNext(); ) {
++                final DirectoryDiff diff = i.next();
++                if (diff.isSnapshotRoot()) {
++                  return diff;
++                }
++              }
++              return null;
++            }
++
++            @Override
++            public boolean hasNext() {
++              return next != null;
++            }
++
++            @Override
++            public SnapshotAndINode next() {
++              final SnapshotAndINode pair = new SnapshotAndINode(next
++                  .getSnapshotId(), getSnapshotById(next.getSnapshotId())
++                  .getRoot());
++              next = findNext();
++              return pair;
++            }
++
++            @Override
++            public void remove() {
++              throw new UnsupportedOperationException();
++            }
++          };
++        }
++      });
++    }
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java
+index af3b0e1..9c9d435 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java
+@@ -48,7 +48,9 @@
+ import com.google.common.base.Preconditions;
+ 
+ /**
+- * Feature for directory with snapshot-related information.
++ * Feature used to store and process the snapshot diff information for a
++ * directory. In particular, it contains a directory diff list recording changes
++ * made to the directory and its children for each snapshot.
+  */
+ @InterfaceAudience.Private
+ public class DirectoryWithSnapshotFeature implements INode.Feature {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
+index b36b4ab..3f4cda5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
+@@ -127,9 +127,8 @@ private INodeReference loadINodeReference(
+     }
+ 
+     /**
+-     * Load the snapshots section from fsimage. Also convert snapshottable
+-     * directories into {@link INodeDirectorySnapshottable}.
+-     *
++     * Load the snapshots section from fsimage. Also add snapshottable feature
++     * to snapshottable directories.
+      */
+     public void loadSnapshotSection(InputStream in) throws IOException {
+       SnapshotManager sm = fsn.getSnapshotManager();
+@@ -139,16 +138,13 @@ public void loadSnapshotSection(InputStream in) throws IOException {
+       sm.setSnapshotCounter(section.getSnapshotCounter());
+       for (long sdirId : section.getSnapshottableDirList()) {
+         INodeDirectory dir = fsDir.getInode(sdirId).asDirectory();
+-        final INodeDirectorySnapshottable sdir;
+         if (!dir.isSnapshottable()) {
+-          sdir = new INodeDirectorySnapshottable(dir);
+-          fsDir.addToInodeMap(sdir);
++          dir.addSnapshottableFeature();
+         } else {
+           // dir is root, and admin set root to snapshottable before
+-          sdir = (INodeDirectorySnapshottable) dir;
+-          sdir.setSnapshotQuota(INodeDirectorySnapshottable.SNAPSHOT_LIMIT);
++          dir.setSnapshotQuota(DirectorySnapshottableFeature.SNAPSHOT_LIMIT);
+         }
+-        sm.addSnapshottable(sdir);
++        sm.addSnapshottable(dir);
+       }
+       loadSnapshots(in, snum);
+     }
+@@ -160,12 +156,11 @@ private void loadSnapshots(InputStream in, int size) throws IOException {
+         INodeDirectory root = loadINodeDirectory(pbs.getRoot(),
+             parent.getLoaderContext());
+         int sid = pbs.getSnapshotId();
+-        INodeDirectorySnapshottable parent = (INodeDirectorySnapshottable) fsDir
+-            .getInode(root.getId()).asDirectory();
++        INodeDirectory parent = fsDir.getInode(root.getId()).asDirectory();
+         Snapshot snapshot = new Snapshot(sid, root, parent);
+         // add the snapshot to parent, since we follow the sequence of
+         // snapshotsByNames when saving, we do not need to sort when loading
+-        parent.addSnapshot(snapshot);
++        parent.getDirectorySnapshottableFeature().addSnapshot(snapshot);
+         snapshotMap.put(sid, snapshot);
+       }
+     }
+@@ -373,14 +368,15 @@ public void serializeSnapshotSection(OutputStream out) throws IOException {
+           .setSnapshotCounter(sm.getSnapshotCounter())
+           .setNumSnapshots(sm.getNumSnapshots());
+ 
+-      INodeDirectorySnapshottable[] snapshottables = sm.getSnapshottableDirs();
+-      for (INodeDirectorySnapshottable sdir : snapshottables) {
++      INodeDirectory[] snapshottables = sm.getSnapshottableDirs();
++      for (INodeDirectory sdir : snapshottables) {
+         b.addSnapshottableDir(sdir.getId());
+       }
+       b.build().writeDelimitedTo(out);
+       int i = 0;
+-      for(INodeDirectorySnapshottable sdir : snapshottables) {
+-        for(Snapshot s : sdir.getSnapshotsByNames()) {
++      for(INodeDirectory sdir : snapshottables) {
++        for (Snapshot s : sdir.getDirectorySnapshottableFeature()
++            .getSnapshotList()) {
+           Root sroot = s.getRoot();
+           SnapshotSection.Snapshot.Builder sb = SnapshotSection.Snapshot
+               .newBuilder().setSnapshotId(s.getId());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+deleted file mode 100644
+index a929b84..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
++++ /dev/null
+@@ -1,498 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs.server.namenode.snapshot;
+-
+-import java.io.IOException;
+-import java.io.PrintWriter;
+-import java.util.ArrayList;
+-import java.util.Collections;
+-import java.util.Iterator;
+-import java.util.LinkedList;
+-import java.util.List;
+-
+-import org.apache.hadoop.HadoopIllegalArgumentException;
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.hdfs.DFSUtil;
+-import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-import org.apache.hadoop.hdfs.protocol.SnapshotException;
+-import org.apache.hadoop.hdfs.server.namenode.Content;
+-import org.apache.hadoop.hdfs.server.namenode.ContentSummaryComputationContext;
+-import org.apache.hadoop.hdfs.server.namenode.INode;
+-import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+-import org.apache.hadoop.hdfs.server.namenode.INodeMap;
+-import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+-import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
+-import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithName;
+-import org.apache.hadoop.hdfs.server.namenode.Quota;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.ChildrenDiff;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
+-import org.apache.hadoop.hdfs.util.Diff.ListType;
+-import org.apache.hadoop.hdfs.util.ReadOnlyList;
+-import org.apache.hadoop.util.Time;
+-
+-import com.google.common.base.Preconditions;
+-import com.google.common.collect.Lists;
+-
+-/**
+- * Directories where taking snapshots is allowed.
+- * 
+- * Like other {@link INode} subclasses, this class is synchronized externally
+- * by the namesystem and FSDirectory locks.
+- */
+-@InterfaceAudience.Private
+-public class INodeDirectorySnapshottable extends INodeDirectory {
+-  /** Limit the number of snapshot per snapshottable directory. */
+-  static final int SNAPSHOT_LIMIT = 1 << 16;
+-
+-  /** Cast INode to INodeDirectorySnapshottable. */
+-  static public INodeDirectorySnapshottable valueOf(
+-      INode inode, String src) throws IOException {
+-    final INodeDirectory dir = INodeDirectory.valueOf(inode, src);
+-    if (!dir.isSnapshottable()) {
+-      throw new SnapshotException(
+-          "Directory is not a snapshottable directory: " + src);
+-    }
+-    return (INodeDirectorySnapshottable)dir;
+-  }
+-
+-  /**
+-   * Snapshots of this directory in ascending order of snapshot names.
+-   * Note that snapshots in ascending order of snapshot id are stored in
+-   * {@link DirectoryWithSnapshotFeature}.diffs (a private field).
+-   */
+-  private final List<Snapshot> snapshotsByNames = new ArrayList<Snapshot>();
+-
+-  /**
+-   * @return {@link #snapshotsByNames}
+-   */
+-  ReadOnlyList<Snapshot> getSnapshotsByNames() {
+-    return ReadOnlyList.Util.asReadOnlyList(this.snapshotsByNames);
+-  }
+-  
+-  /** Number of snapshots allowed. */
+-  private int snapshotQuota = SNAPSHOT_LIMIT;
+-
+-  public INodeDirectorySnapshottable(INodeDirectory dir) {
+-    super(dir, true, dir.getFeatures());
+-    // add snapshot feature if the original directory does not have it
+-    if (!isWithSnapshot()) {
+-      addSnapshotFeature(null);
+-    }
+-  }
+-  
+-  /** @return the number of existing snapshots. */
+-  public int getNumSnapshots() {
+-    return snapshotsByNames.size();
+-  }
+-  
+-  private int searchSnapshot(byte[] snapshotName) {
+-    return Collections.binarySearch(snapshotsByNames, snapshotName);
+-  }
+-
+-  /** @return the snapshot with the given name. */
+-  public Snapshot getSnapshot(byte[] snapshotName) {
+-    final int i = searchSnapshot(snapshotName);
+-    return i < 0? null: snapshotsByNames.get(i);
+-  }
+-  
+-  public Snapshot getSnapshotById(int sid) {
+-    for (Snapshot s : snapshotsByNames) {
+-      if (s.getId() == sid) {
+-        return s;
+-      }
+-    }
+-    return null;
+-  }
+-  
+-  /** @return {@link #snapshotsByNames} as a {@link ReadOnlyList} */
+-  public ReadOnlyList<Snapshot> getSnapshotList() {
+-    return ReadOnlyList.Util.asReadOnlyList(snapshotsByNames);
+-  }
+-  
+-  /**
+-   * Rename a snapshot
+-   * @param path
+-   *          The directory path where the snapshot was taken. Used for
+-   *          generating exception message.
+-   * @param oldName
+-   *          Old name of the snapshot
+-   * @param newName
+-   *          New name the snapshot will be renamed to
+-   * @throws SnapshotException
+-   *           Throw SnapshotException when either the snapshot with the old
+-   *           name does not exist or a snapshot with the new name already
+-   *           exists
+-   */
+-  void renameSnapshot(String path, String oldName, String newName)
+-      throws SnapshotException {
+-    if (newName.equals(oldName)) {
+-      return;
+-    }
+-    final int indexOfOld = searchSnapshot(DFSUtil.string2Bytes(oldName));
+-    if (indexOfOld < 0) {
+-      throw new SnapshotException("The snapshot " + oldName
+-          + " does not exist for directory " + path);
+-    } else {
+-      final byte[] newNameBytes = DFSUtil.string2Bytes(newName);
+-      int indexOfNew = searchSnapshot(newNameBytes);
+-      if (indexOfNew >= 0) {
+-        throw new SnapshotException("The snapshot " + newName
+-            + " already exists for directory " + path);
+-      }
+-      // remove the one with old name from snapshotsByNames
+-      Snapshot snapshot = snapshotsByNames.remove(indexOfOld);
+-      final INodeDirectory ssRoot = snapshot.getRoot();
+-      ssRoot.setLocalName(newNameBytes);
+-      indexOfNew = -indexOfNew - 1;
+-      if (indexOfNew <= indexOfOld) {
+-        snapshotsByNames.add(indexOfNew, snapshot);
+-      } else { // indexOfNew > indexOfOld
+-        snapshotsByNames.add(indexOfNew - 1, snapshot);
+-      }
+-    }
+-  }
+-
+-  public int getSnapshotQuota() {
+-    return snapshotQuota;
+-  }
+-
+-  public void setSnapshotQuota(int snapshotQuota) {
+-    if (snapshotQuota < 0) {
+-      throw new HadoopIllegalArgumentException(
+-          "Cannot set snapshot quota to " + snapshotQuota + " < 0");
+-    }
+-    this.snapshotQuota = snapshotQuota;
+-  }
+-
+-  @Override
+-  public boolean isSnapshottable() {
+-    return true;
+-  }
+-  
+-  /**
+-   * Simply add a snapshot into the {@link #snapshotsByNames}. Used by FSImage
+-   * loading.
+-   */
+-  void addSnapshot(Snapshot snapshot) {
+-    this.snapshotsByNames.add(snapshot);
+-  }
+-
+-  /** Add a snapshot. */
+-  Snapshot addSnapshot(int id, String name) throws SnapshotException,
+-      QuotaExceededException {
+-    //check snapshot quota
+-    final int n = getNumSnapshots();
+-    if (n + 1 > snapshotQuota) {
+-      throw new SnapshotException("Failed to add snapshot: there are already "
+-          + n + " snapshot(s) and the snapshot quota is "
+-          + snapshotQuota);
+-    }
+-    final Snapshot s = new Snapshot(id, name, this);
+-    final byte[] nameBytes = s.getRoot().getLocalNameBytes();
+-    final int i = searchSnapshot(nameBytes);
+-    if (i >= 0) {
+-      throw new SnapshotException("Failed to add snapshot: there is already a "
+-          + "snapshot with the same name \"" + Snapshot.getSnapshotName(s) + "\".");
+-    }
+-
+-    final DirectoryDiff d = getDiffs().addDiff(id, this);
+-    d.setSnapshotRoot(s.getRoot());
+-    snapshotsByNames.add(-i - 1, s);
+-
+-    //set modification time
+-    updateModificationTime(Time.now(), Snapshot.CURRENT_STATE_ID);
+-    s.getRoot().setModificationTime(getModificationTime(),
+-        Snapshot.CURRENT_STATE_ID);
+-    return s;
+-  }
+-  
+-  /**
+-   * Remove the snapshot with the given name from {@link #snapshotsByNames},
+-   * and delete all the corresponding DirectoryDiff.
+-   * 
+-   * @param snapshotName The name of the snapshot to be removed
+-   * @param collectedBlocks Used to collect information to update blocksMap
+-   * @return The removed snapshot. Null if no snapshot with the given name 
+-   *         exists.
+-   */
+-  Snapshot removeSnapshot(String snapshotName,
+-      BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes)
+-      throws SnapshotException {
+-    final int i = searchSnapshot(DFSUtil.string2Bytes(snapshotName));
+-    if (i < 0) {
+-      throw new SnapshotException("Cannot delete snapshot " + snapshotName
+-          + " from path " + this.getFullPathName()
+-          + ": the snapshot does not exist.");
+-    } else {
+-      final Snapshot snapshot = snapshotsByNames.get(i);
+-      int prior = Snapshot.findLatestSnapshot(this, snapshot.getId());
+-      try {
+-        Quota.Counts counts = cleanSubtree(snapshot.getId(), prior,
+-            collectedBlocks, removedINodes, true);
+-        INodeDirectory parent = getParent();
+-        if (parent != null) {
+-          // there will not be any WithName node corresponding to the deleted 
+-          // snapshot, thus only update the quota usage in the current tree
+-          parent.addSpaceConsumed(-counts.get(Quota.NAMESPACE),
+-              -counts.get(Quota.DISKSPACE), true);
+-        }
+-      } catch(QuotaExceededException e) {
+-        LOG.error("BUG: removeSnapshot increases namespace usage.", e);
+-      }
+-      // remove from snapshotsByNames after successfully cleaning the subtree
+-      snapshotsByNames.remove(i);
+-      return snapshot;
+-    }
+-  }
+-  
+-  @Override
+-  public ContentSummaryComputationContext computeContentSummary(
+-      final ContentSummaryComputationContext summary) {
+-    super.computeContentSummary(summary);
+-    summary.getCounts().add(Content.SNAPSHOT, snapshotsByNames.size());
+-    summary.getCounts().add(Content.SNAPSHOTTABLE_DIRECTORY, 1);
+-    return summary;
+-  }
+-
+-  /**
+-   * Compute the difference between two snapshots (or a snapshot and the current
+-   * directory) of the directory.
+-   * 
+-   * @param from The name of the start point of the comparison. Null indicating
+-   *          the current tree.
+-   * @param to The name of the end point. Null indicating the current tree.
+-   * @return The difference between the start/end points.
+-   * @throws SnapshotException If there is no snapshot matching the starting
+-   *           point, or if endSnapshotName is not null but cannot be identified
+-   *           as a previous snapshot.
+-   */
+-  SnapshotDiffInfo computeDiff(final String from, final String to)
+-      throws SnapshotException {
+-    Snapshot fromSnapshot = getSnapshotByName(from);
+-    Snapshot toSnapshot = getSnapshotByName(to);
+-    // if the start point is equal to the end point, return null
+-    if (from.equals(to)) {
+-      return null;
+-    }
+-    SnapshotDiffInfo diffs = new SnapshotDiffInfo(this, fromSnapshot,
+-        toSnapshot);
+-    computeDiffRecursively(this, new ArrayList<byte[]>(), diffs);
+-    return diffs;
+-  }
+-  
+-  /**
+-   * Find the snapshot matching the given name.
+-   * 
+-   * @param snapshotName The name of the snapshot.
+-   * @return The corresponding snapshot. Null if snapshotName is null or empty.
+-   * @throws SnapshotException If snapshotName is not null or empty, but there
+-   *           is no snapshot matching the name.
+-   */
+-  private Snapshot getSnapshotByName(String snapshotName)
+-      throws SnapshotException {
+-    Snapshot s = null;
+-    if (snapshotName != null && !snapshotName.isEmpty()) {
+-      final int index = searchSnapshot(DFSUtil.string2Bytes(snapshotName));
+-      if (index < 0) {
+-        throw new SnapshotException("Cannot find the snapshot of directory "
+-            + this.getFullPathName() + " with name " + snapshotName);
+-      }
+-      s = snapshotsByNames.get(index);
+-    }
+-    return s;
+-  }
+-  
+-  /**
+-   * Recursively compute the difference between snapshots under a given
+-   * directory/file.
+-   * @param node The directory/file under which the diff is computed. 
+-   * @param parentPath Relative path (corresponding to the snapshot root) of 
+-   *                   the node's parent.
+-   * @param diffReport data structure used to store the diff.
+-   */
+-  private void computeDiffRecursively(INode node, List<byte[]> parentPath,
+-      SnapshotDiffInfo diffReport) {
+-    final Snapshot earlierSnapshot = diffReport.isFromEarlier() ?
+-        diffReport.getFrom() : diffReport.getTo();
+-    final Snapshot laterSnapshot = diffReport.isFromEarlier() ?
+-        diffReport.getTo() : diffReport.getFrom();
+-    byte[][] relativePath = parentPath.toArray(new byte[parentPath.size()][]);
+-    if (node.isDirectory()) {
+-      final ChildrenDiff diff = new ChildrenDiff();
+-      INodeDirectory dir = node.asDirectory();
+-      DirectoryWithSnapshotFeature sf = dir.getDirectoryWithSnapshotFeature();
+-      if (sf != null) {
+-        boolean change = sf.computeDiffBetweenSnapshots(earlierSnapshot,
+-            laterSnapshot, diff, dir);
+-        if (change) {
+-          diffReport.addDirDiff(dir, relativePath, diff);
+-        }
+-      }
+-      ReadOnlyList<INode> children = dir.getChildrenList(earlierSnapshot
+-          .getId());
+-      for (INode child : children) {
+-        final byte[] name = child.getLocalNameBytes();
+-        boolean toProcess = diff.searchIndex(ListType.DELETED, name) < 0;
+-        if (!toProcess && child instanceof INodeReference.WithName) {
+-          byte[][] renameTargetPath = findRenameTargetPath((WithName) child,
+-              laterSnapshot == null ? Snapshot.CURRENT_STATE_ID : 
+-                                      laterSnapshot.getId());
+-          if (renameTargetPath != null) {
+-            toProcess = true;
+-            diffReport.setRenameTarget(child.getId(), renameTargetPath);
+-          }
+-        }
+-        if (toProcess) {
+-          parentPath.add(name);
+-          computeDiffRecursively(child, parentPath, diffReport);
+-          parentPath.remove(parentPath.size() - 1);
+-        }
+-      }
+-    } else if (node.isFile() && node.asFile().isWithSnapshot()) {
+-      INodeFile file = node.asFile();
+-      boolean change = file.getFileWithSnapshotFeature()
+-          .changedBetweenSnapshots(file, earlierSnapshot, laterSnapshot);
+-      if (change) {
+-        diffReport.addFileDiff(file, relativePath);
+-      }
+-    }
+-  }
+-
+-  /**
+-   * We just found a deleted WithName node as the source of a rename operation.
+-   * However, we should include it in our snapshot diff report as rename only
+-   * if the rename target is also under the same snapshottable directory.
+-   */
+-  private byte[][] findRenameTargetPath(INodeReference.WithName wn,
+-      final int snapshotId) {
+-    INode inode = wn.getReferredINode();
+-    final LinkedList<byte[]> ancestors = Lists.newLinkedList();
+-    while (inode != null) {
+-      if (inode == this) {
+-        return ancestors.toArray(new byte[ancestors.size()][]);
+-      }
+-      if (inode instanceof INodeReference.WithCount) {
+-        inode = ((WithCount) inode).getParentRef(snapshotId);
+-      } else {
+-        INode parent = inode.getParentReference() != null ? inode
+-            .getParentReference() : inode.getParent();
+-        if (parent != null && parent instanceof INodeDirectory) {
+-          int sid = parent.asDirectory().searchChild(inode);
+-          if (sid < snapshotId) {
+-            return null;
+-          }
+-        }
+-        if (!(parent instanceof WithCount)) {
+-          ancestors.addFirst(inode.getLocalNameBytes());
+-        }
+-        inode = parent;
+-      }
+-    }
+-    return null;
+-  }
+-
+-  /**
+-   * Replace itself with {@link INodeDirectoryWithSnapshot} or
+-   * {@link INodeDirectory} depending on the latest snapshot.
+-   */
+-  INodeDirectory replaceSelf(final int latestSnapshotId, final INodeMap inodeMap)
+-      throws QuotaExceededException {
+-    if (latestSnapshotId == Snapshot.CURRENT_STATE_ID) {
+-      Preconditions.checkState(getDirectoryWithSnapshotFeature()
+-          .getLastSnapshotId() == Snapshot.CURRENT_STATE_ID, "this=%s", this);
+-    }
+-    INodeDirectory dir = replaceSelf4INodeDirectory(inodeMap);
+-    if (latestSnapshotId != Snapshot.CURRENT_STATE_ID) {
+-      dir.recordModification(latestSnapshotId);
+-    }
+-    return dir;
+-  }
+-
+-  @Override
+-  public String toDetailString() {
+-    return super.toDetailString() + ", snapshotsByNames=" + snapshotsByNames;
+-  }
+-
+-  @Override
+-  public void dumpTreeRecursively(PrintWriter out, StringBuilder prefix,
+-      int snapshot) {
+-    super.dumpTreeRecursively(out, prefix, snapshot);
+-
+-    if (snapshot == Snapshot.CURRENT_STATE_ID) {
+-      out.println();
+-      out.print(prefix);
+-
+-      out.print("Snapshot of ");
+-      final String name = getLocalName();
+-      out.print(name.isEmpty()? "/": name);
+-      out.print(": quota=");
+-      out.print(getSnapshotQuota());
+-
+-      int n = 0;
+-      for(DirectoryDiff diff : getDiffs()) {
+-        if (diff.isSnapshotRoot()) {
+-          n++;
+-        }
+-      }
+-      Preconditions.checkState(n == snapshotsByNames.size(), "#n=" + n
+-          + ", snapshotsByNames.size()=" + snapshotsByNames.size());
+-      out.print(", #snapshot=");
+-      out.println(n);
+-
+-      dumpTreeRecursively(out, prefix, new Iterable<SnapshotAndINode>() {
+-        @Override
+-        public Iterator<SnapshotAndINode> iterator() {
+-          return new Iterator<SnapshotAndINode>() {
+-            final Iterator<DirectoryDiff> i = getDiffs().iterator();
+-            private DirectoryDiff next = findNext();
+-  
+-            private DirectoryDiff findNext() {
+-              for(; i.hasNext(); ) {
+-                final DirectoryDiff diff = i.next();
+-                if (diff.isSnapshotRoot()) {
+-                  return diff;
+-                }
+-              }
+-              return null;
+-            }
+-
+-            @Override
+-            public boolean hasNext() {
+-              return next != null;
+-            }
+-  
+-            @Override
+-            public SnapshotAndINode next() {
+-              final SnapshotAndINode pair = new SnapshotAndINode(next
+-                  .getSnapshotId(), getSnapshotById(next.getSnapshotId())
+-                  .getRoot());
+-              next = findNext();
+-              return pair;
+-            }
+-  
+-            @Override
+-            public void remove() {
+-              throw new UnsupportedOperationException();
+-            }
+-          };
+-        }
+-      });
+-    }
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
+index c1450e0..56d3418 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
+@@ -184,15 +184,14 @@ public String getFullPathName() {
+   /** The root directory of the snapshot. */
+   private final Root root;
+ 
+-  Snapshot(int id, String name, INodeDirectorySnapshottable dir) {
++  Snapshot(int id, String name, INodeDirectory dir) {
+     this(id, dir, dir);
+     this.root.setLocalName(DFSUtil.string2Bytes(name));
+   }
+ 
+-  Snapshot(int id, INodeDirectory dir, INodeDirectorySnapshottable parent) {
++  Snapshot(int id, INodeDirectory dir, INodeDirectory parent) {
+     this.id = id;
+     this.root = new Root(dir);
+-
+     this.root.setParent(parent);
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotDiffInfo.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotDiffInfo.java
+index f709f87..197b8ae 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotDiffInfo.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotDiffInfo.java
+@@ -99,7 +99,7 @@ boolean isRename() {
+   }
+ 
+   /** The root directory of the snapshots */
+-  private final INodeDirectorySnapshottable snapshotRoot;
++  private final INodeDirectory snapshotRoot;
+   /** The starting point of the difference */
+   private final Snapshot from;
+   /** The end point of the difference */
+@@ -122,8 +122,8 @@ boolean isRename() {
+   private final Map<Long, RenameEntry> renameMap =
+       new HashMap<Long, RenameEntry>();
+ 
+-  SnapshotDiffInfo(INodeDirectorySnapshottable snapshotRoot, Snapshot start,
+-      Snapshot end) {
++  SnapshotDiffInfo(INodeDirectory snapshotRoot, Snapshot start, Snapshot end) {
++    Preconditions.checkArgument(snapshotRoot.isSnapshottable());
+     this.snapshotRoot = snapshotRoot;
+     this.from = start;
+     this.to = end;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
+index 0194898..fcab53a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
+@@ -41,6 +41,8 @@
+ import org.apache.hadoop.hdfs.util.Diff.ListType;
+ import org.apache.hadoop.hdfs.util.ReadOnlyList;
+ 
++import com.google.common.base.Preconditions;
++
+ /**
+  * A helper class defining static methods for reading/writing snapshot related
+  * information from/to FSImage.
+@@ -52,17 +54,19 @@
+    * @param out The {@link DataOutput} to write.
+    * @throws IOException
+    */
+-  public static void saveSnapshots(INodeDirectorySnapshottable current,
+-      DataOutput out) throws IOException {
++  public static void saveSnapshots(INodeDirectory current, DataOutput out)
++      throws IOException {
++    DirectorySnapshottableFeature sf = current.getDirectorySnapshottableFeature();
++    Preconditions.checkArgument(sf != null);
+     // list of snapshots in snapshotsByNames
+-    ReadOnlyList<Snapshot> snapshots = current.getSnapshotsByNames();
++    ReadOnlyList<Snapshot> snapshots = sf.getSnapshotList();
+     out.writeInt(snapshots.size());
+     for (Snapshot s : snapshots) {
+       // write the snapshot id
+       out.writeInt(s.getId());
+     }
+     // snapshot quota
+-    out.writeInt(current.getSnapshotQuota());
++    out.writeInt(sf.getSnapshotQuota());
+   }
+ 
+   /**
+@@ -216,19 +220,22 @@ public static INode loadCreated(byte[] createdNodeName,
+    * @param loader
+    *          The loader
+    */
+-  public static void loadSnapshotList(
+-      INodeDirectorySnapshottable snapshottableParent, int numSnapshots,
+-      DataInput in, FSImageFormat.Loader loader) throws IOException {
++  public static void loadSnapshotList(INodeDirectory snapshottableParent,
++      int numSnapshots, DataInput in, FSImageFormat.Loader loader)
++      throws IOException {
++    DirectorySnapshottableFeature sf = snapshottableParent
++        .getDirectorySnapshottableFeature();
++    Preconditions.checkArgument(sf != null);
+     for (int i = 0; i < numSnapshots; i++) {
+       // read snapshots
+       final Snapshot s = loader.getSnapshot(in);
+       s.getRoot().setParent(snapshottableParent);
+-      snapshottableParent.addSnapshot(s);
++      sf.addSnapshot(s);
+     }
+     int snapshotQuota = in.readInt();
+     snapshottableParent.setSnapshotQuota(snapshotQuota);
+   }
+-  
++
+   /**
+    * Load the {@link SnapshotDiff} list for the INodeDirectoryWithSnapshot
+    * directory.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java
+index ef83089..a808013 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java
+@@ -44,6 +44,8 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodesInPath;
+ import org.apache.hadoop.metrics2.util.MBeans;
+ 
++import com.google.common.base.Preconditions;
++
+ /**
+  * Manage snapshottable directories and their snapshots.
+  * 
+@@ -66,8 +68,8 @@
+   private int snapshotCounter = 0;
+   
+   /** All snapshottable directories in the namesystem. */
+-  private final Map<Long, INodeDirectorySnapshottable> snapshottables
+-      = new HashMap<Long, INodeDirectorySnapshottable>();
++  private final Map<Long, INodeDirectory> snapshottables =
++      new HashMap<Long, INodeDirectory>();
+ 
+   public SnapshotManager(final FSDirectory fsdir) {
+     this.fsdir = fsdir;
+@@ -84,7 +86,7 @@ private void checkNestedSnapshottable(INodeDirectory dir, String path)
+       return;
+     }
+ 
+-    for(INodeDirectorySnapshottable s : snapshottables.values()) {
++    for(INodeDirectory s : snapshottables.values()) {
+       if (s.isAncestorDirectory(dir)) {
+         throw new SnapshotException(
+             "Nested snapshottable directories not allowed: path=" + path
+@@ -112,33 +114,30 @@ public void setSnapshottable(final String path, boolean checkNestedSnapshottable
+       checkNestedSnapshottable(d, path);
+     }
+ 
+-
+-    final INodeDirectorySnapshottable s;
+     if (d.isSnapshottable()) {
+       //The directory is already a snapshottable directory.
+-      s = (INodeDirectorySnapshottable)d; 
+-      s.setSnapshotQuota(INodeDirectorySnapshottable.SNAPSHOT_LIMIT);
++      d.setSnapshotQuota(DirectorySnapshottableFeature.SNAPSHOT_LIMIT);
+     } else {
+-      s = d.replaceSelf4INodeDirectorySnapshottable(iip.getLatestSnapshotId(),
+-          fsdir.getINodeMap());
++      d.addSnapshottableFeature();
+     }
+-    addSnapshottable(s);
++    addSnapshottable(d);
+   }
+   
+   /** Add the given snapshottable directory to {@link #snapshottables}. */
+-  public void addSnapshottable(INodeDirectorySnapshottable dir) {
++  public void addSnapshottable(INodeDirectory dir) {
++    Preconditions.checkArgument(dir.isSnapshottable());
+     snapshottables.put(dir.getId(), dir);
+   }
+ 
+   /** Remove the given snapshottable directory from {@link #snapshottables}. */
+-  private void removeSnapshottable(INodeDirectorySnapshottable s) {
++  private void removeSnapshottable(INodeDirectory s) {
+     snapshottables.remove(s.getId());
+   }
+   
+   /** Remove snapshottable directories from {@link #snapshottables} */
+-  public void removeSnapshottable(List<INodeDirectorySnapshottable> toRemove) {
++  public void removeSnapshottable(List<INodeDirectory> toRemove) {
+     if (toRemove != null) {
+-      for (INodeDirectorySnapshottable s : toRemove) {
++      for (INodeDirectory s : toRemove) {
+         removeSnapshottable(s);
+       }
+     }
+@@ -152,22 +151,22 @@ public void removeSnapshottable(List<INodeDirectorySnapshottable> toRemove) {
+   public void resetSnapshottable(final String path) throws IOException {
+     final INodesInPath iip = fsdir.getINodesInPath4Write(path);
+     final INodeDirectory d = INodeDirectory.valueOf(iip.getLastINode(), path);
+-    if (!d.isSnapshottable()) {
++    DirectorySnapshottableFeature sf = d.getDirectorySnapshottableFeature();
++    if (sf == null) {
+       // the directory is already non-snapshottable
+       return;
+     }
+-    final INodeDirectorySnapshottable s = (INodeDirectorySnapshottable) d;
+-    if (s.getNumSnapshots() > 0) {
++    if (sf.getNumSnapshots() > 0) {
+       throw new SnapshotException("The directory " + path + " has snapshot(s). "
+           + "Please redo the operation after removing all the snapshots.");
+     }
+ 
+-    if (s == fsdir.getRoot()) {
+-      s.setSnapshotQuota(0); 
++    if (d == fsdir.getRoot()) {
++      d.setSnapshotQuota(0);
+     } else {
+-      s.replaceSelf(iip.getLatestSnapshotId(), fsdir.getINodeMap());
++      d.removeSnapshottableFeature();
+     }
+-    removeSnapshottable(s);
++    removeSnapshottable(d);
+   }
+ 
+   /**
+@@ -180,10 +179,15 @@ public void resetSnapshottable(final String path) throws IOException {
+   *           Throw IOException when the given path does not lead to an
+   *           existing snapshottable directory.
+   */
+-  public INodeDirectorySnapshottable getSnapshottableRoot(final String path
+-      ) throws IOException {
+-    final INodesInPath i = fsdir.getINodesInPath4Write(path);
+-    return INodeDirectorySnapshottable.valueOf(i.getLastINode(), path);
++  public INodeDirectory getSnapshottableRoot(final String path)
++      throws IOException {
++    final INodeDirectory dir = INodeDirectory.valueOf(fsdir
++        .getINodesInPath4Write(path).getLastINode(), path);
++    if (!dir.isSnapshottable()) {
++      throw new SnapshotException(
++          "Directory is not a snapshottable directory: " + path);
++    }
++    return dir;
+   }
+ 
+   /**
+@@ -202,7 +206,7 @@ public INodeDirectorySnapshottable getSnapshottableRoot(final String path
+    */
+   public String createSnapshot(final String path, String snapshotName
+       ) throws IOException {
+-    INodeDirectorySnapshottable srcRoot = getSnapshottableRoot(path);
++    INodeDirectory srcRoot = getSnapshottableRoot(path);
+ 
+     if (snapshotCounter == getMaxSnapshotID()) {
+       // We have reached the maximum allowable snapshot ID and since we don't
+@@ -235,7 +239,7 @@ public void deleteSnapshot(final String path, final String snapshotName,
+     // parse the path, and check if the path is a snapshot path
+     // the INodeDirectorySnapshottable#valueOf method will throw Exception 
+     // if the path is not for a snapshottable directory
+-    INodeDirectorySnapshottable srcRoot = getSnapshottableRoot(path);
++    INodeDirectory srcRoot = getSnapshottableRoot(path);
+     srcRoot.removeSnapshot(snapshotName, collectedBlocks, removedINodes);
+     numSnapshots.getAndDecrement();
+   }
+@@ -258,8 +262,7 @@ public void renameSnapshot(final String path, final String oldSnapshotName,
+       final String newSnapshotName) throws IOException {
+     // Find the source root directory path where the snapshot was taken.
+     // All the check for path has been included in the valueOf method.
+-    final INodeDirectorySnapshottable srcRoot
+-        = INodeDirectorySnapshottable.valueOf(fsdir.getINode(path), path);
++    final INodeDirectory srcRoot = getSnapshottableRoot(path);
+     // Note that renameSnapshot and createSnapshot are synchronized externally
+     // through FSNamesystem's write lock
+     srcRoot.renameSnapshot(path, oldSnapshotName, newSnapshotName);
+@@ -285,9 +288,9 @@ void setSnapshotCounter(int counter) {
+     snapshotCounter = counter;
+   }
+ 
+-  INodeDirectorySnapshottable[] getSnapshottableDirs() {
++  INodeDirectory[] getSnapshottableDirs() {
+     return snapshottables.values().toArray(
+-        new INodeDirectorySnapshottable[snapshottables.size()]);
++        new INodeDirectory[snapshottables.size()]);
+   }
+ 
+   /**
+@@ -299,8 +302,9 @@ public void write(DataOutput out) throws IOException {
+     out.writeInt(numSnapshots.get());
+ 
+     // write all snapshots.
+-    for(INodeDirectorySnapshottable snapshottableDir : snapshottables.values()) {
+-      for(Snapshot s : snapshottableDir.getSnapshotsByNames()) {
++    for(INodeDirectory snapshottableDir : snapshottables.values()) {
++      for (Snapshot s : snapshottableDir.getDirectorySnapshottableFeature()
++          .getSnapshotList()) {
+         s.write(out);
+       }
+     }
+@@ -339,16 +343,16 @@ public void write(DataOutput out) throws IOException {
+     
+     List<SnapshottableDirectoryStatus> statusList = 
+         new ArrayList<SnapshottableDirectoryStatus>();
+-    for (INodeDirectorySnapshottable dir : snapshottables.values()) {
++    for (INodeDirectory dir : snapshottables.values()) {
+       if (userName == null || userName.equals(dir.getUserName())) {
+         SnapshottableDirectoryStatus status = new SnapshottableDirectoryStatus(
+             dir.getModificationTime(), dir.getAccessTime(),
+             dir.getFsPermission(), dir.getUserName(), dir.getGroupName(),
+             dir.getLocalNameBytes(), dir.getId(), 
+             dir.getChildrenNum(Snapshot.CURRENT_STATE_ID),
+-            dir.getNumSnapshots(),
+-            dir.getSnapshotQuota(), dir.getParent() == null ? 
+-                DFSUtil.EMPTY_BYTES : 
++            dir.getDirectorySnapshottableFeature().getNumSnapshots(),
++            dir.getDirectorySnapshottableFeature().getSnapshotQuota(),
++            dir.getParent() == null ? DFSUtil.EMPTY_BYTES :
+                 DFSUtil.string2Bytes(dir.getParent().getFullPathName()));
+         statusList.add(status);
+       }
+@@ -364,20 +368,18 @@ public void write(DataOutput out) throws IOException {
+    */
+   public SnapshotDiffReport diff(final String path, final String from,
+       final String to) throws IOException {
++    // Find the source root directory path where the snapshots were taken.
++    // All the check for path has been included in the valueOf method.
++    final INodeDirectory snapshotRoot = getSnapshottableRoot(path);
++
+     if ((from == null || from.isEmpty())
+         && (to == null || to.isEmpty())) {
+       // both fromSnapshot and toSnapshot indicate the current tree
+       return new SnapshotDiffReport(path, from, to,
+           Collections.<DiffReportEntry> emptyList());
+     }
+-
+-    // Find the source root directory path where the snapshots were taken.
+-    // All the check for path has been included in the valueOf method.
+-    INodesInPath inodesInPath = fsdir.getINodesInPath4Write(path.toString());
+-    final INodeDirectorySnapshottable snapshotRoot = INodeDirectorySnapshottable
+-        .valueOf(inodesInPath.getLastINode(), path);
+-
+-    final SnapshotDiffInfo diffs = snapshotRoot.computeDiff(from, to);
++    final SnapshotDiffInfo diffs = snapshotRoot
++        .getDirectorySnapshottableFeature().computeDiff(snapshotRoot, from, to);
+     return diffs != null ? diffs.generateReport() : new SnapshotDiffReport(
+         path, from, to, Collections.<DiffReportEntry> emptyList());
+   }
+@@ -412,7 +414,7 @@ public void shutdown() {
+     getSnapshottableDirectories() {
+     List<SnapshottableDirectoryStatus.Bean> beans =
+         new ArrayList<SnapshottableDirectoryStatus.Bean>();
+-    for (INodeDirectorySnapshottable d : getSnapshottableDirs()) {
++    for (INodeDirectory d : getSnapshottableDirs()) {
+       beans.add(toBean(d));
+     }
+     return beans.toArray(new SnapshottableDirectoryStatus.Bean[beans.size()]);
+@@ -421,20 +423,19 @@ public void shutdown() {
+   @Override // SnapshotStatsMXBean
+   public SnapshotInfo.Bean[] getSnapshots() {
+     List<SnapshotInfo.Bean> beans = new ArrayList<SnapshotInfo.Bean>();
+-    for (INodeDirectorySnapshottable d : getSnapshottableDirs()) {
+-      for (Snapshot s : d.getSnapshotList()) {
++    for (INodeDirectory d : getSnapshottableDirs()) {
++      for (Snapshot s : d.getDirectorySnapshottableFeature().getSnapshotList()) {
+         beans.add(toBean(s));
+       }
+     }
+     return beans.toArray(new SnapshotInfo.Bean[beans.size()]);
+   }
+ 
+-  public static SnapshottableDirectoryStatus.Bean toBean(
+-      INodeDirectorySnapshottable d) {
++  public static SnapshottableDirectoryStatus.Bean toBean(INodeDirectory d) {
+     return new SnapshottableDirectoryStatus.Bean(
+         d.getFullPathName(),
+-        d.getNumSnapshots(),
+-        d.getSnapshotQuota(),
++        d.getDirectorySnapshottableFeature().getNumSnapshots(),
++        d.getDirectorySnapshottableFeature().getSnapshotQuota(),
+         d.getModificationTime(),
+         Short.valueOf(Integer.toOctalString(
+             d.getFsPermissionShort())),
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java
+index 044de85..dc5186e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java
+@@ -43,7 +43,6 @@
+ import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
+ import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
+ import org.apache.hadoop.hdfs.util.Canceler;
+@@ -194,8 +193,8 @@ public void testSnapshotOnRoot() throws Exception {
+     fsn = cluster.getNamesystem();
+     hdfs = cluster.getFileSystem();
+     
+-    INodeDirectorySnapshottable rootNode = 
+-        (INodeDirectorySnapshottable) fsn.dir.getINode4Write(root.toString());
++    INodeDirectory rootNode = fsn.dir.getINode4Write(root.toString())
++        .asDirectory();
+     assertTrue("The children list of root should be empty", 
+         rootNode.getChildrenList(Snapshot.CURRENT_STATE_ID).isEmpty());
+     // one snapshot on root: s1
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSnapshotPathINodes.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSnapshotPathINodes.java
+index 2a5edbf..f9fb1cf 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSnapshotPathINodes.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSnapshotPathINodes.java
+@@ -30,7 +30,6 @@
+ import org.apache.hadoop.hdfs.DFSUtil;
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.junit.AfterClass;
+ import org.junit.Assert;
+@@ -90,22 +89,20 @@ public void testAllowSnapshot() throws Exception {
+     final INode before = fsdir.getINode(pathStr);
+     
+     // Before a directory is snapshottable
+-    Assert.assertTrue(before instanceof INodeDirectory);
+-    Assert.assertFalse(before instanceof INodeDirectorySnapshottable);
++    Assert.assertFalse(before.asDirectory().isSnapshottable());
+ 
+     // After a directory is snapshottable
+     final Path path = new Path(pathStr);
+     hdfs.allowSnapshot(path);
+     {
+       final INode after = fsdir.getINode(pathStr);
+-      Assert.assertTrue(after instanceof INodeDirectorySnapshottable);
++      Assert.assertTrue(after.asDirectory().isSnapshottable());
+     }
+     
+     hdfs.disallowSnapshot(path);
+     {
+       final INode after = fsdir.getINode(pathStr);
+-      Assert.assertTrue(after instanceof INodeDirectory);
+-      Assert.assertFalse(after instanceof INodeDirectorySnapshottable);
++      Assert.assertFalse(after.asDirectory().isSnapshottable());
+     }
+   }
+   
+@@ -115,8 +112,7 @@ static Snapshot getSnapshot(INodesInPath inodesInPath, String name) {
+     }
+     final int i = inodesInPath.getSnapshotRootIndex() - 1;
+     final INode inode = inodesInPath.getINodes()[i];
+-    return ((INodeDirectorySnapshottable)inode).getSnapshot(
+-        DFSUtil.string2Bytes(name)); 
++    return inode.asDirectory().getSnapshot(DFSUtil.string2Bytes(name));
+   }
+ 
+   static void assertSnapshot(INodesInPath inodesInPath, boolean isSnapshot,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestINodeFileUnderConstructionWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestINodeFileUnderConstructionWithSnapshot.java
+index 1d1082c..aba3bb3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestINodeFileUnderConstructionWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestINodeFileUnderConstructionWithSnapshot.java
+@@ -43,6 +43,7 @@
+ import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
++import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
+ import org.apache.log4j.Level;
+@@ -153,8 +154,7 @@ public void testSnapshotWhileAppending() throws Exception {
+     // deleted list, with size BLOCKSIZE*2
+     INodeFile fileNode = (INodeFile) fsdir.getINode(file.toString());
+     assertEquals(BLOCKSIZE * 2, fileNode.computeFileSize());
+-    INodeDirectorySnapshottable dirNode = (INodeDirectorySnapshottable) fsdir
+-        .getINode(dir.toString());
++    INodeDirectory dirNode = fsdir.getINode(dir.toString()).asDirectory();
+     DirectoryDiff last = dirNode.getDiffs().getLast();
+     
+     // 2. append without closing stream
+@@ -162,7 +162,7 @@ public void testSnapshotWhileAppending() throws Exception {
+     out.hsync(EnumSet.of(SyncFlag.UPDATE_LENGTH));
+     
+     // re-check nodeInDeleted_S0
+-    dirNode = (INodeDirectorySnapshottable) fsdir.getINode(dir.toString());
++    dirNode = fsdir.getINode(dir.toString()).asDirectory();
+     assertEquals(BLOCKSIZE * 2, fileNode.computeFileSize(last.getSnapshotId()));
+     
+     // 3. take snapshot --> close stream
+@@ -172,7 +172,7 @@ public void testSnapshotWhileAppending() throws Exception {
+     // check: an INodeFileUnderConstructionWithSnapshot with size BLOCKSIZE*3 should
+     // have been stored in s1's deleted list
+     fileNode = (INodeFile) fsdir.getINode(file.toString());
+-    dirNode = (INodeDirectorySnapshottable) fsdir.getINode(dir.toString());
++    dirNode = fsdir.getINode(dir.toString()).asDirectory();
+     last = dirNode.getDiffs().getLast();
+     assertTrue(fileNode.isWithSnapshot());
+     assertEquals(BLOCKSIZE * 3, fileNode.computeFileSize(last.getSnapshotId()));
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestNestedSnapshots.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestNestedSnapshots.java
+index 69ab04e..6b879b4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestNestedSnapshots.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestNestedSnapshots.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
+-import static org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable.SNAPSHOT_LIMIT;
++import static org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature.SNAPSHOT_LIMIT;
+ import static org.junit.Assert.assertTrue;
+ 
+ import java.io.IOException;
+@@ -312,10 +312,9 @@ public void testSnapshotWithQuota() throws Exception {
+   public void testIdCmp() {
+     final PermissionStatus perm = PermissionStatus.createImmutable(
+         "user", "group", FsPermission.createImmutable((short)0));
+-    final INodeDirectory dir = new INodeDirectory(0,
++    final INodeDirectory snapshottable = new INodeDirectory(0,
+         DFSUtil.string2Bytes("foo"), perm, 0L);
+-    final INodeDirectorySnapshottable snapshottable
+-        = new INodeDirectorySnapshottable(dir);
++    snapshottable.addSnapshottableFeature();
+     final Snapshot[] snapshots = {
+       new Snapshot(1, "s1", snapshottable),
+       new Snapshot(1, "s1", snapshottable),
+@@ -362,7 +361,7 @@ public void testDisallowNestedSnapshottableDir() throws Exception {
+     
+     hdfs.allowSnapshot(sub);
+     subNode = fsdir.getINode(sub.toString());
+-    assertTrue(subNode instanceof INodeDirectorySnapshottable);
++    assertTrue(subNode.isDirectory() && subNode.asDirectory().isSnapshottable());
+     
+     hdfs.disallowSnapshot(sub);
+     subNode = fsdir.getINode(sub.toString());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+index 2d1fa77..62f0841 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+@@ -402,8 +402,7 @@ public void testRenameFileAcrossSnapshottableDirs() throws Exception {
+     final Path foo_s3 = SnapshotTestHelper.getSnapshotPath(sdir1, "s3",
+         "foo");
+     assertFalse(hdfs.exists(foo_s3));
+-    INodeDirectorySnapshottable sdir2Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir2.toString());
++    INodeDirectory sdir2Node = fsdir.getINode(sdir2.toString()).asDirectory();
+     Snapshot s2 = sdir2Node.getSnapshot(DFSUtil.string2Bytes("s2"));
+     INodeFile sfoo = fsdir.getINode(newfoo.toString()).asFile();
+     assertEquals(s2.getId(), sfoo.getDiffs().getLastSnapshotId());
+@@ -606,8 +605,7 @@ public void testRenameFileAndDeleteSnapshot() throws Exception {
+     
+     INodeFile snode = fsdir.getINode(newfoo.toString()).asFile();
+     assertEquals(1, snode.getDiffs().asList().size());
+-    INodeDirectorySnapshottable sdir2Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir2.toString());
++    INodeDirectory sdir2Node = fsdir.getINode(sdir2.toString()).asDirectory();
+     Snapshot s2 = sdir2Node.getSnapshot(DFSUtil.string2Bytes("s2"));
+     assertEquals(s2.getId(), snode.getDiffs().getLastSnapshotId());
+     
+@@ -762,8 +760,7 @@ public void testRenameMoreThanOnceAcrossSnapDirs() throws Exception {
+     assertEquals(2, fooWithCount.getReferenceCount());
+     INodeDirectory foo = fooWithCount.asDirectory();
+     assertEquals(1, foo.getDiffs().asList().size());
+-    INodeDirectorySnapshottable sdir1Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir1.toString());
++    INodeDirectory sdir1Node = fsdir.getINode(sdir1.toString()).asDirectory();
+     Snapshot s1 = sdir1Node.getSnapshot(DFSUtil.string2Bytes("s1"));
+     assertEquals(s1.getId(), foo.getDirectoryWithSnapshotFeature()
+         .getLastSnapshotId());
+@@ -972,12 +969,9 @@ public void testRenameMoreThanOnceAcrossSnapDirs_2() throws Exception {
+     hdfs.rename(bar_dir2, bar_dir1);
+     
+     // check the internal details
+-    INodeDirectorySnapshottable sdir1Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir1.toString());
+-    INodeDirectorySnapshottable sdir2Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir2.toString());
+-    INodeDirectorySnapshottable sdir3Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir3.toString());
++    INodeDirectory sdir1Node = fsdir.getINode(sdir1.toString()).asDirectory();
++    INodeDirectory sdir2Node = fsdir.getINode(sdir2.toString()).asDirectory();
++    INodeDirectory sdir3Node = fsdir.getINode(sdir3.toString()).asDirectory();
+     
+     INodeReference fooRef = fsdir.getINode4Write(foo_dir1.toString())
+         .asReference();
+@@ -1182,8 +1176,7 @@ public void testRenameDirAndDeleteSnapshot_2() throws Exception {
+     assertTrue(hdfs.exists(bar_s2));
+     
+     // check internal details
+-    INodeDirectorySnapshottable sdir2Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(sdir2.toString());
++    INodeDirectory sdir2Node = fsdir.getINode(sdir2.toString()).asDirectory();
+     Snapshot s2 = sdir2Node.getSnapshot(DFSUtil.string2Bytes("s2"));
+     final Path foo_s2 = SnapshotTestHelper.getSnapshotPath(sdir2, "s2", "foo");
+     INodeReference fooRef = fsdir.getINode(foo_s2.toString()).asReference();
+@@ -1290,8 +1283,8 @@ public void testRenameUndo_1() throws Exception {
+     assertFalse(result);
+     
+     // check the current internal details
+-    INodeDirectorySnapshottable dir1Node = (INodeDirectorySnapshottable) fsdir
+-        .getINode4Write(sdir1.toString());
++    INodeDirectory dir1Node = fsdir.getINode4Write(sdir1.toString())
++        .asDirectory();
+     Snapshot s1 = dir1Node.getSnapshot(DFSUtil.string2Bytes("s1"));
+     ReadOnlyList<INode> dir1Children = dir1Node
+         .getChildrenList(Snapshot.CURRENT_STATE_ID);
+@@ -1360,8 +1353,8 @@ public void testRenameUndo_2() throws Exception {
+     assertFalse(result);
+     
+     // check the current internal details
+-    INodeDirectorySnapshottable dir1Node = (INodeDirectorySnapshottable) fsdir
+-        .getINode4Write(sdir1.toString());
++    INodeDirectory dir1Node = fsdir.getINode4Write(sdir1.toString())
++        .asDirectory();
+     Snapshot s1 = dir1Node.getSnapshot(DFSUtil.string2Bytes("s1"));
+     ReadOnlyList<INode> dir1Children = dir1Node
+         .getChildrenList(Snapshot.CURRENT_STATE_ID);
+@@ -1427,11 +1420,11 @@ public void testRenameUndo_3() throws Exception {
+     assertFalse(result);
+     
+     // check the current internal details
+-    INodeDirectorySnapshottable dir1Node = (INodeDirectorySnapshottable) fsdir
+-        .getINode4Write(sdir1.toString());
++    INodeDirectory dir1Node = fsdir.getINode4Write(sdir1.toString())
++        .asDirectory();
+     Snapshot s1 = dir1Node.getSnapshot(DFSUtil.string2Bytes("s1"));
+-    INodeDirectorySnapshottable dir2Node = (INodeDirectorySnapshottable) fsdir
+-        .getINode4Write(sdir2.toString());
++    INodeDirectory dir2Node = fsdir.getINode4Write(sdir2.toString())
++        .asDirectory();
+     Snapshot s2 = dir2Node.getSnapshot(DFSUtil.string2Bytes("s2"));
+     ReadOnlyList<INode> dir2Children = dir2Node
+         .getChildrenList(Snapshot.CURRENT_STATE_ID);
+@@ -1458,8 +1451,7 @@ public void testRenameUndo_3() throws Exception {
+     assertFalse(result);
+ 
+     // check internal details again
+-    dir2Node = (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir2
+-        .toString());
++    dir2Node = fsdir.getINode4Write(sdir2.toString()).asDirectory();
+     Snapshot s3 = dir2Node.getSnapshot(DFSUtil.string2Bytes("s3"));
+     fooNode = fsdir.getINode4Write(foo_dir2.toString());
+     dir2Children = dir2Node.getChildrenList(Snapshot.CURRENT_STATE_ID);
+@@ -1599,8 +1591,8 @@ public void testRenameUndo_5() throws Exception {
+     assertTrue(diff.getChildrenDiff().getList(ListType.DELETED).isEmpty());
+     
+     // check dir2
+-    INode dir2Node = fsdir.getINode4Write(dir2.toString());
+-    assertTrue(dir2Node.getClass() == INodeDirectorySnapshottable.class);
++    INodeDirectory dir2Node = fsdir.getINode4Write(dir2.toString()).asDirectory();
++    assertTrue(dir2Node.isSnapshottable());
+     Quota.Counts counts = dir2Node.computeQuotaUsage();
+     assertEquals(3, counts.get(Quota.NAMESPACE));
+     assertEquals(0, counts.get(Quota.DISKSPACE));
+@@ -1610,8 +1602,7 @@ public void testRenameUndo_5() throws Exception {
+     INode subdir2Node = childrenList.get(0);
+     assertSame(dir2Node, subdir2Node.getParent());
+     assertSame(subdir2Node, fsdir.getINode4Write(subdir2.toString()));
+-    diffList = ((INodeDirectorySnapshottable) dir2Node)
+-        .getDiffs().asList();
++    diffList = dir2Node.getDiffs().asList();
+     assertEquals(1, diffList.size());
+     diff = diffList.get(0);
+     assertTrue(diff.getChildrenDiff().getList(ListType.CREATED).isEmpty());
+@@ -1673,8 +1664,8 @@ public void testRenameUndo_6() throws Exception {
+     assertTrue(diff.getChildrenDiff().getList(ListType.DELETED).isEmpty());
+     
+     // check dir2
+-    INode dir2Node = fsdir.getINode4Write(dir2.toString());
+-    assertTrue(dir2Node.getClass() == INodeDirectorySnapshottable.class);
++    INodeDirectory dir2Node = fsdir.getINode4Write(dir2.toString()).asDirectory();
++    assertTrue(dir2Node.isSnapshottable());
+     Quota.Counts counts = dir2Node.computeQuotaUsage();
+     assertEquals(4, counts.get(Quota.NAMESPACE));
+     assertEquals(0, counts.get(Quota.DISKSPACE));
+@@ -1689,7 +1680,7 @@ public void testRenameUndo_6() throws Exception {
+     assertTrue(subsubdir2Node.getClass() == INodeDirectory.class);
+     assertSame(subdir2Node, subsubdir2Node.getParent());
+     
+-    diffList = ((INodeDirectorySnapshottable) dir2Node).getDiffs().asList();
++    diffList = (  dir2Node).getDiffs().asList();
+     assertEquals(1, diffList.size());
+     diff = diffList.get(0);
+     assertTrue(diff.getChildrenDiff().getList(ListType.CREATED).isEmpty());
+@@ -1723,8 +1714,8 @@ public void testRenameUndo_7() throws Exception {
+     }
+     
+     // check
+-    INodeDirectorySnapshottable rootNode = (INodeDirectorySnapshottable) fsdir
+-        .getINode4Write(root.toString());
++    INodeDirectory rootNode = fsdir.getINode4Write(root.toString())
++        .asDirectory();
+     INodeDirectory fooNode = fsdir.getINode4Write(foo.toString()).asDirectory();
+     ReadOnlyList<INode> children = fooNode
+         .getChildrenList(Snapshot.CURRENT_STATE_ID);
+@@ -1794,7 +1785,7 @@ public void testRenameExceedQuota() throws Exception {
+     
+     // check dir2
+     INode dir2Node = fsdir.getINode4Write(dir2.toString());
+-    assertTrue(dir2Node.getClass() == INodeDirectorySnapshottable.class);
++    assertTrue(dir2Node.asDirectory().isSnapshottable());
+     Quota.Counts counts = dir2Node.computeQuotaUsage();
+     assertEquals(7, counts.get(Quota.NAMESPACE));
+     assertEquals(BLOCKSIZE * REPL * 2, counts.get(Quota.DISKSPACE));
+@@ -1961,12 +1952,12 @@ public void testRenameDirAndDeleteSnapshot_3() throws Exception {
+     hdfs.deleteSnapshot(sdir2, "s3");
+     
+     // check
+-    final INodeDirectorySnapshottable dir1Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir1.toString());
++    final INodeDirectory dir1Node = fsdir.getINode4Write(sdir1.toString())
++        .asDirectory();
+     Quota.Counts q1 = dir1Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
+     assertEquals(4, q1.get(Quota.NAMESPACE));
+-    final INodeDirectorySnapshottable dir2Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir2.toString());
++    final INodeDirectory dir2Node = fsdir.getINode4Write(sdir2.toString())
++        .asDirectory();
+     Quota.Counts q2 = dir2Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
+     assertEquals(2, q2.get(Quota.NAMESPACE));
+     
+@@ -2030,13 +2021,13 @@ public void testRenameDirAndDeleteSnapshot_4() throws Exception {
+     hdfs.deleteSnapshot(sdir2, "s3");
+     
+     // check
+-    final INodeDirectorySnapshottable dir1Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir1.toString());
++    final INodeDirectory dir1Node = fsdir.getINode4Write(sdir1.toString())
++        .asDirectory();
+     // sdir1 + s1 + foo_s1 (foo) + foo (foo + s1 + bar~bar3)
+     Quota.Counts q1 = dir1Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
+     assertEquals(9, q1.get(Quota.NAMESPACE));
+-    final INodeDirectorySnapshottable dir2Node = 
+-        (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir2.toString());
++    final INodeDirectory dir2Node = fsdir.getINode4Write(sdir2.toString())
++        .asDirectory();
+     Quota.Counts q2 = dir2Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
+     assertEquals(2, q2.get(Quota.NAMESPACE));
+     
+@@ -2252,8 +2243,8 @@ public void testRenameDirAndDeleteSnapshot_7() throws Exception {
+     List<DirectoryDiff> barDiffList = barNode.getDiffs().asList();
+     assertEquals(1, barDiffList.size());
+     DirectoryDiff diff = barDiffList.get(0);
+-    INodeDirectorySnapshottable testNode = 
+-        (INodeDirectorySnapshottable) fsdir.getINode4Write(test.toString());
++    INodeDirectory testNode = fsdir.getINode4Write(test.toString())
++        .asDirectory();
+     Snapshot s0 = testNode.getSnapshot(DFSUtil.string2Bytes("s0"));
+     assertEquals(s0.getId(), diff.getSnapshotId());
+     // and file should be stored in the deleted list of this snapshot diff
+@@ -2265,14 +2256,10 @@ public void testRenameDirAndDeleteSnapshot_7() throws Exception {
+     INodeDirectory dir2Node = fsdir.getINode4Write(dir2.toString())
+         .asDirectory();
+     List<DirectoryDiff> dir2DiffList = dir2Node.getDiffs().asList();
+-    // dir2Node should contain 2 snapshot diffs, one for s2, and the other was
+-    // originally s1 (created when dir2 was transformed to a snapshottable dir),
+-    // and currently is s0
+-    assertEquals(2, dir2DiffList.size());
+-    dList = dir2DiffList.get(1).getChildrenDiff().getList(ListType.DELETED);
++    // dir2Node should contain 1 snapshot diffs for s2
++    assertEquals(1, dir2DiffList.size());
++    dList = dir2DiffList.get(0).getChildrenDiff().getList(ListType.DELETED);
+     assertEquals(1, dList.size());
+-    cList = dir2DiffList.get(0).getChildrenDiff().getList(ListType.CREATED);
+-    assertTrue(cList.isEmpty());
+     final Path foo_s2 = SnapshotTestHelper.getSnapshotPath(dir2, "s2", 
+         foo.getName());
+     INodeReference.WithName fooNode_s2 = 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSetQuotaWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSetQuotaWithSnapshot.java
+index 187f29e..89e7416 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSetQuotaWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSetQuotaWithSnapshot.java
+@@ -112,23 +112,20 @@ public void testClearQuota() throws Exception {
+     hdfs.allowSnapshot(dir);
+     hdfs.setQuota(dir, HdfsConstants.QUOTA_DONT_SET,
+         HdfsConstants.QUOTA_DONT_SET);
+-    INode dirNode = fsdir.getINode4Write(dir.toString());
+-    assertTrue(dirNode instanceof INodeDirectorySnapshottable);
+-    assertEquals(0, ((INodeDirectorySnapshottable) dirNode).getDiffs().asList()
+-        .size());
++    INodeDirectory dirNode = fsdir.getINode4Write(dir.toString()).asDirectory();
++    assertTrue(dirNode.isSnapshottable());
++    assertEquals(0, dirNode.getDiffs().asList().size());
+     
+     hdfs.setQuota(dir, HdfsConstants.QUOTA_DONT_SET - 1,
+         HdfsConstants.QUOTA_DONT_SET - 1);
+-    dirNode = fsdir.getINode4Write(dir.toString());
+-    assertTrue(dirNode instanceof INodeDirectorySnapshottable);
+-    assertEquals(0, ((INodeDirectorySnapshottable) dirNode).getDiffs().asList()
+-        .size());
++    dirNode = fsdir.getINode4Write(dir.toString()).asDirectory();
++    assertTrue(dirNode.isSnapshottable());
++    assertEquals(0, dirNode.getDiffs().asList().size());
+     
+     hdfs.setQuota(dir, HdfsConstants.QUOTA_RESET, HdfsConstants.QUOTA_RESET);
+-    dirNode = fsdir.getINode4Write(dir.toString());
+-    assertTrue(dirNode instanceof INodeDirectorySnapshottable);
+-    assertEquals(0, ((INodeDirectorySnapshottable) dirNode).getDiffs().asList()
+-        .size());
++    dirNode = fsdir.getINode4Write(dir.toString()).asDirectory();
++    assertTrue(dirNode.isSnapshottable());
++    assertEquals(0, dirNode.getDiffs().asList().size());
+     
+     // allow snapshot on dir and create snapshot s1
+     SnapshotTestHelper.createSnapshot(hdfs, dir, "s1");
+@@ -136,10 +133,9 @@ public void testClearQuota() throws Exception {
+     // clear quota of dir
+     hdfs.setQuota(dir, HdfsConstants.QUOTA_RESET, HdfsConstants.QUOTA_RESET);
+     // dir should still be a snapshottable directory
+-    dirNode = fsdir.getINode4Write(dir.toString());
+-    assertTrue(dirNode instanceof INodeDirectorySnapshottable);
+-    assertEquals(1, ((INodeDirectorySnapshottable) dirNode).getDiffs().asList()
+-        .size());
++    dirNode = fsdir.getINode4Write(dir.toString()).asDirectory();
++    assertTrue(dirNode.isSnapshottable());
++    assertEquals(1, dirNode.getDiffs().asList().size());
+     SnapshottableDirectoryStatus[] status = hdfs.getSnapshottableDirListing();
+     assertEquals(1, status.length);
+     assertEquals(dir, status[0].getFullPath());
+@@ -154,8 +150,7 @@ public void testClearQuota() throws Exception {
+     assertTrue(subNode.asDirectory().isWithSnapshot());
+     List<DirectoryDiff> diffList = subNode.asDirectory().getDiffs().asList();
+     assertEquals(1, diffList.size());
+-    Snapshot s2 = ((INodeDirectorySnapshottable) dirNode).getSnapshot(DFSUtil
+-        .string2Bytes("s2"));
++    Snapshot s2 = dirNode.getSnapshot(DFSUtil.string2Bytes("s2"));
+     assertEquals(s2.getId(), diffList.get(0).getSnapshotId());
+     List<INode> createdList = diffList.get(0).getChildrenDiff().getList(ListType.CREATED);
+     assertEquals(1, createdList.size());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java
+index f89d22e..0763c5e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java
+@@ -430,30 +430,31 @@ public void testAllowAndDisallowSnapshot() throws Exception {
+         .asDirectory();
+     assertTrue(rootNode.isSnapshottable());
+     // root is snapshottable dir, but with 0 snapshot quota
+-    assertEquals(0, ((INodeDirectorySnapshottable) rootNode).getSnapshotQuota());
++    assertEquals(0, rootNode.getDirectorySnapshottableFeature()
++        .getSnapshotQuota());
+     
+     hdfs.allowSnapshot(root);
+     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
+     assertTrue(rootNode.isSnapshottable());
+-    assertEquals(INodeDirectorySnapshottable.SNAPSHOT_LIMIT,
+-        ((INodeDirectorySnapshottable) rootNode).getSnapshotQuota());
++    assertEquals(DirectorySnapshottableFeature.SNAPSHOT_LIMIT,
++        rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
+     // call allowSnapshot again
+     hdfs.allowSnapshot(root);
+     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
+     assertTrue(rootNode.isSnapshottable());
+-    assertEquals(INodeDirectorySnapshottable.SNAPSHOT_LIMIT,
+-        ((INodeDirectorySnapshottable) rootNode).getSnapshotQuota());
++    assertEquals(DirectorySnapshottableFeature.SNAPSHOT_LIMIT,
++        rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
+     
+     // disallowSnapshot on dir
+     hdfs.disallowSnapshot(root);
+     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
+     assertTrue(rootNode.isSnapshottable());
+-    assertEquals(0, ((INodeDirectorySnapshottable) rootNode).getSnapshotQuota());
++    assertEquals(0, rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
+     // do it again
+     hdfs.disallowSnapshot(root);
+     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
+     assertTrue(rootNode.isSnapshottable());
+-    assertEquals(0, ((INodeDirectorySnapshottable) rootNode).getSnapshotQuota());
++    assertEquals(0, rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
+index 6b0c9ba..1450a7d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
+@@ -282,10 +282,10 @@ public void testDeleteCurrentFileDirectory() throws Exception {
+     checkQuotaUsageComputation(dir, 14L, BLOCKSIZE * REPLICATION * 4);
+     
+     // get two snapshots for later use
+-    Snapshot snapshot0 = ((INodeDirectorySnapshottable) fsdir.getINode(dir
+-        .toString())).getSnapshot(DFSUtil.string2Bytes("s0"));
+-    Snapshot snapshot1 = ((INodeDirectorySnapshottable) fsdir.getINode(dir
+-        .toString())).getSnapshot(DFSUtil.string2Bytes("s1"));
++    Snapshot snapshot0 = fsdir.getINode(dir.toString()).asDirectory()
++        .getSnapshot(DFSUtil.string2Bytes("s0"));
++    Snapshot snapshot1 = fsdir.getINode(dir.toString()).asDirectory()
++        .getSnapshot(DFSUtil.string2Bytes("s1"));
+     
+     // Case 2 + Case 3: delete noChangeDirParent, noChangeFile, and
+     // metaChangeFile2. Note that when we directly delete a directory, the 
+@@ -510,8 +510,7 @@ public void testDeleteEarliestSnapshot2() throws Exception {
+     }
+     
+     // check 1. there is no snapshot s0
+-    final INodeDirectorySnapshottable dirNode = 
+-        (INodeDirectorySnapshottable) fsdir.getINode(dir.toString());
++    final INodeDirectory dirNode = fsdir.getINode(dir.toString()).asDirectory();
+     Snapshot snapshot0 = dirNode.getSnapshot(DFSUtil.string2Bytes("s0"));
+     assertNull(snapshot0);
+     Snapshot snapshot1 = dirNode.getSnapshot(DFSUtil.string2Bytes("s1"));
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotManager.java
+index 017448a..617bec8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotManager.java
+@@ -18,13 +18,19 @@
+ 
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
++import static org.mockito.Matchers.anyString;
++import static org.mockito.Mockito.doReturn;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.spy;
++
+ import java.util.ArrayList;
+ 
+ import org.apache.hadoop.hdfs.protocol.SnapshotException;
+ import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+-import org.junit.*;
+-import static org.mockito.Mockito.*;
++import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
++import org.junit.Assert;
++import org.junit.Test;
+ 
+ 
+ /**
+@@ -40,7 +46,7 @@
+   public void testSnapshotLimits() throws Exception {
+     // Setup mock objects for SnapshotManager.createSnapshot.
+     //
+-    INodeDirectorySnapshottable ids = mock(INodeDirectorySnapshottable.class);
++    INodeDirectory ids = mock(INodeDirectory.class);
+     FSDirectory fsdir = mock(FSDirectory.class);
+ 
+     SnapshotManager sm = spy(new SnapshotManager(fsdir));
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotRename.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotRename.java
+index 98d2acc..3dcbad9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotRename.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotRename.java
+@@ -37,6 +37,7 @@
+ import org.apache.hadoop.hdfs.protocol.SnapshotException;
+ import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
++import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
+ import org.apache.hadoop.hdfs.util.ReadOnlyList;
+ import org.apache.hadoop.ipc.RemoteException;
+@@ -88,12 +89,13 @@ public void tearDown() throws Exception {
+   public ExpectedException exception = ExpectedException.none();
+   
+   /**
+-   * Check the correctness of snapshot list within
+-   * {@link INodeDirectorySnapshottable}
++   * Check the correctness of snapshot list within snapshottable dir
+    */
+-  private void checkSnapshotList(INodeDirectorySnapshottable srcRoot,
++  private void checkSnapshotList(INodeDirectory srcRoot,
+       String[] sortedNames, String[] names) {
+-    ReadOnlyList<Snapshot> listByName = srcRoot.getSnapshotsByNames();
++    assertTrue(srcRoot.isSnapshottable());
++    ReadOnlyList<Snapshot> listByName = srcRoot
++        .getDirectorySnapshottableFeature().getSnapshotList();
+     assertEquals(sortedNames.length, listByName.size());
+     for (int i = 0; i < listByName.size(); i++) {
+       assertEquals(sortedNames[i], listByName.get(i).getRoot().getLocalName());
+@@ -101,7 +103,8 @@ private void checkSnapshotList(INodeDirectorySnapshottable srcRoot,
+     List<DirectoryDiff> listByTime = srcRoot.getDiffs().asList();
+     assertEquals(names.length, listByTime.size());
+     for (int i = 0; i < listByTime.size(); i++) {
+-      Snapshot s = srcRoot.getSnapshotById(listByTime.get(i).getSnapshotId());
++      Snapshot s = srcRoot.getDirectorySnapshottableFeature().getSnapshotById(
++          listByTime.get(i).getSnapshotId());
+       assertEquals(names[i], s.getRoot().getLocalName());
+     }
+   }
+@@ -121,8 +124,7 @@ public void testSnapshotList() throws Exception {
+     // Rename s3 to s22
+     hdfs.renameSnapshot(sub1, "s3", "s22");
+     // Check the snapshots list
+-    INodeDirectorySnapshottable srcRoot = INodeDirectorySnapshottable.valueOf(
+-        fsdir.getINode(sub1.toString()), sub1.toString());
++    INodeDirectory srcRoot = fsdir.getINode(sub1.toString()).asDirectory();
+     checkSnapshotList(srcRoot, new String[] { "s1", "s2", "s22" },
+         new String[] { "s1", "s2", "s22" });
+     
+-- 
+1.7.9.5
+

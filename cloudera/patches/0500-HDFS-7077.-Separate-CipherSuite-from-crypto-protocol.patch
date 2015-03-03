@@ -1,0 +1,1593 @@
+From 40c30345682f0d9ecfc81a2072e4355b4e7a1c75 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 25 Sep 2014 18:40:40 -0700
+Subject: [PATCH 500/813] HDFS-7077. Separate CipherSuite from crypto protocol
+ version. (wang)
+
+(cherry picked from commit e96ce6f3e3e549202ce3c48d4733ba34098870ad)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+
+(cherry picked from commit 3f71a158137940f2f3b985a7e72450705953352c)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+---
+ .../java/org/apache/hadoop/crypto/CryptoCodec.java |    7 +-
+ .../hadoop/crypto/CryptoProtocolVersion.java       |   90 +++++++++++++++
+ .../org/apache/hadoop/fs/FileEncryptionInfo.java   |   16 ++-
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |   89 ++++++++++-----
+ .../org/apache/hadoop/hdfs/DFSOutputStream.java    |   14 ++-
+ .../hadoop/hdfs/UnknownCipherSuiteException.java   |   11 +-
+ .../UnknownCryptoProtocolVersionException.java     |   38 +++++++
+ .../hadoop/hdfs/protocol/ClientProtocol.java       |    5 +-
+ .../hadoop/hdfs/protocol/EncryptionZone.java       |   20 +++-
+ ...ientNamenodeProtocolServerSideTranslatorPB.java |    5 +-
+ .../ClientNamenodeProtocolTranslatorPB.java        |    7 +-
+ .../apache/hadoop/hdfs/protocolPB/PBHelper.java    |   90 ++++++++++-----
+ .../server/namenode/EncryptionZoneManager.java     |   31 ++++--
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   15 ++-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |  100 +++++++++--------
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |    6 +-
+ .../src/main/proto/ClientNamenodeProtocol.proto    |    2 +-
+ .../hadoop-hdfs/src/main/proto/encryption.proto    |    5 +-
+ .../hadoop-hdfs/src/main/proto/hdfs.proto          |   26 +++--
+ .../apache/hadoop/hdfs/TestDFSClientRetries.java   |    3 +-
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |  117 ++++++++++++++++----
+ .../java/org/apache/hadoop/hdfs/TestLease.java     |    3 +-
+ .../server/namenode/ha/TestRetryCacheWithHA.java   |    4 +-
+ 23 files changed, 511 insertions(+), 193 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoProtocolVersion.java
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCryptoProtocolVersionException.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java
+index 9bd1846..c5ac2ae 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoCodec.java
+@@ -82,12 +82,7 @@ public static CryptoCodec getInstance(Configuration conf,
+       }
+     }
+     
+-    if (codec != null) {
+-      return codec;
+-    }
+-    
+-    throw new RuntimeException("No available crypto codec which meets " + 
+-        "the cipher suite " + cipherSuite.getName() + ".");
++    return codec;
+   }
+   
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoProtocolVersion.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoProtocolVersion.java
+new file mode 100644
+index 0000000..fed8289
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoProtocolVersion.java
+@@ -0,0 +1,90 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.crypto;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++
++/**
++ * Versions of the client/server protocol used for HDFS encryption.
++ */
++@InterfaceAudience.Private
++public enum CryptoProtocolVersion {
++  UNKNOWN("Unknown", 1),
++  ENCRYPTION_ZONES("Encryption zones", 2);
++
++  private final String description;
++  private final int version;
++  private Integer unknownValue = null;
++
++  private static CryptoProtocolVersion[] supported = {ENCRYPTION_ZONES};
++
++  /**
++   * @return Array of supported protocol versions.
++   */
++  public static CryptoProtocolVersion[] supported() {
++    return supported;
++  }
++
++  CryptoProtocolVersion(String description, int version) {
++    this.description = description;
++    this.version = version;
++  }
++
++  /**
++   * Returns if a given protocol version is supported.
++   *
++   * @param version version number
++   * @return true if the version is supported, else false
++   */
++  public static boolean supports(CryptoProtocolVersion version) {
++    if (version.getVersion() == UNKNOWN.getVersion()) {
++      return false;
++    }
++    for (CryptoProtocolVersion v : CryptoProtocolVersion.values()) {
++      if (v.getVersion() == version.getVersion()) {
++        return true;
++      }
++    }
++    return false;
++  }
++
++  public void setUnknownValue(int unknown) {
++    this.unknownValue = unknown;
++  }
++
++  public int getUnknownValue() {
++    return unknownValue;
++  }
++
++  public String getDescription() {
++    return description;
++  }
++
++  public int getVersion() {
++    return version;
++  }
++
++  @Override
++  public String toString() {
++    return "CryptoProtocolVersion{" +
++        "description='" + description + '\'' +
++        ", version=" + version +
++        ", unknownValue=" + unknownValue +
++        '}';
++  }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
+index 641709d..27e0c85 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileEncryptionInfo.java
+@@ -20,6 +20,7 @@
+ import org.apache.commons.codec.binary.Hex;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ 
+ import static com.google.common.base.Preconditions.checkArgument;
+ import static com.google.common.base.Preconditions.checkNotNull;
+@@ -32,6 +33,7 @@
+ public class FileEncryptionInfo {
+ 
+   private final CipherSuite cipherSuite;
++  private final CryptoProtocolVersion version;
+   private final byte[] edek;
+   private final byte[] iv;
+   private final String keyName;
+@@ -47,9 +49,11 @@
+    * @param ezKeyVersionName name of the KeyVersion used to encrypt the
+    *                         encrypted data encryption key.
+    */
+-  public FileEncryptionInfo(final CipherSuite suite, final byte[] edek,
++  public FileEncryptionInfo(final CipherSuite suite,
++      final CryptoProtocolVersion version, final byte[] edek,
+       final byte[] iv, final String keyName, final String ezKeyVersionName) {
+     checkNotNull(suite);
++    checkNotNull(version);
+     checkNotNull(edek);
+     checkNotNull(iv);
+     checkNotNull(keyName);
+@@ -59,6 +63,7 @@ public FileEncryptionInfo(final CipherSuite suite, final byte[] edek,
+     checkArgument(iv.length == suite.getAlgorithmBlockSize(),
+         "Unexpected IV length");
+     this.cipherSuite = suite;
++    this.version = version;
+     this.edek = edek;
+     this.iv = iv;
+     this.keyName = keyName;
+@@ -74,6 +79,14 @@ public CipherSuite getCipherSuite() {
+   }
+ 
+   /**
++   * @return {@link org.apache.hadoop.crypto.CryptoProtocolVersion} to use
++   * to access the file.
++   */
++  public CryptoProtocolVersion getCryptoProtocolVersion() {
++    return version;
++  }
++
++  /**
+    * @return encrypted data encryption key (EDEK) for the file
+    */
+   public byte[] getEncryptedDataEncryptionKey() {
+@@ -102,6 +115,7 @@ public CipherSuite getCipherSuite() {
+   public String toString() {
+     StringBuilder builder = new StringBuilder("{");
+     builder.append("cipherSuite: " + cipherSuite);
++    builder.append(", cryptoProtocolVersion: " + version);
+     builder.append(", edek: " + Hex.encodeHexString(edek));
+     builder.append(", iv: " + Hex.encodeHexString(iv));
+     builder.append(", keyName: " + keyName);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index 90af0dd..eb6c1ea 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -21,7 +21,6 @@
+ import static org.apache.hadoop.crypto.key.KeyProviderCryptoExtension
+     .EncryptedKeyVersion;
+ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_KEY_PREFIX;
+-import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CRYPTO_CIPHER_SUITE_KEY;
+ import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_DEFAULT;
+ import static org.apache.hadoop.fs.CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_SIZE_DEFAULT;
+@@ -105,6 +104,7 @@
+ import org.apache.hadoop.crypto.CryptoCodec;
+ import org.apache.hadoop.crypto.CryptoInputStream;
+ import org.apache.hadoop.crypto.CryptoOutputStream;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.fs.BlockLocation;
+ import org.apache.hadoop.fs.BlockStorageLocation;
+@@ -263,9 +263,6 @@
+   private static final DFSHedgedReadMetrics HEDGED_READ_METRIC =
+       new DFSHedgedReadMetrics();
+   private static ThreadPoolExecutor HEDGED_READ_THREAD_POOL;
+-  private final CryptoCodec codec;
+-  @VisibleForTesting
+-  List<CipherSuite> cipherSuites;
+   @VisibleForTesting
+   KeyProviderCryptoExtension provider;
+   /**
+@@ -599,11 +596,6 @@ public DFSClient(URI nameNodeUri, ClientProtocol rpcNamenode,
+     this.authority = nameNodeUri == null? "null": nameNodeUri.getAuthority();
+     this.clientName = "DFSClient_" + dfsClientConf.taskId + "_" + 
+         DFSUtil.getRandom().nextInt()  + "_" + Thread.currentThread().getId();
+-    this.codec = CryptoCodec.getInstance(conf);
+-    this.cipherSuites = Lists.newArrayListWithCapacity(1);
+-    if (codec != null) {
+-      cipherSuites.add(codec.getCipherSuite());
+-    }
+     provider = DFSUtil.createKeyProviderCryptoExtension(conf);
+     if (LOG.isDebugEnabled()) {
+       if (provider == null) {
+@@ -1320,6 +1312,55 @@ private KeyVersion decryptEncryptedDataEncryptionKey(FileEncryptionInfo
+   }
+ 
+   /**
++   * Obtain the crypto protocol version from the provided FileEncryptionInfo,
++   * checking to see if this version is supported by.
++   *
++   * @param feInfo FileEncryptionInfo
++   * @return CryptoProtocolVersion from the feInfo
++   * @throws IOException if the protocol version is unsupported.
++   */
++  private static CryptoProtocolVersion getCryptoProtocolVersion
++      (FileEncryptionInfo feInfo) throws IOException {
++    final CryptoProtocolVersion version = feInfo.getCryptoProtocolVersion();
++    if (!CryptoProtocolVersion.supports(version)) {
++      throw new IOException("Client does not support specified " +
++          "CryptoProtocolVersion " + version.getDescription() + " version " +
++          "number" + version.getVersion());
++    }
++    return version;
++  }
++
++  /**
++   * Obtain a CryptoCodec based on the CipherSuite set in a FileEncryptionInfo
++   * and the available CryptoCodecs configured in the Configuration.
++   *
++   * @param conf   Configuration
++   * @param feInfo FileEncryptionInfo
++   * @return CryptoCodec
++   * @throws IOException if no suitable CryptoCodec for the CipherSuite is
++   *                     available.
++   */
++  private static CryptoCodec getCryptoCodec(Configuration conf,
++      FileEncryptionInfo feInfo) throws IOException {
++    final CipherSuite suite = feInfo.getCipherSuite();
++    if (suite.equals(CipherSuite.UNKNOWN)) {
++      throw new IOException("NameNode specified unknown CipherSuite with ID "
++          + suite.getUnknownValue() + ", cannot instantiate CryptoCodec.");
++    }
++    final CryptoCodec codec = CryptoCodec.getInstance(conf, suite);
++    if (codec == null) {
++      throw new UnknownCipherSuiteException(
++          "No configuration found for the cipher suite "
++          + suite.getConfigSuffix() + " prefixed with "
++          + HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_KEY_PREFIX
++          + ". Please see the example configuration "
++          + "hadoop.security.crypto.codec.classes.EXAMPLECIPHERSUITE "
++          + "at core-default.xml for details.");
++    }
++    return codec;
++  }
++
++  /**
+    * Wraps the stream in a CryptoInputStream if the underlying file is
+    * encrypted.
+    */
+@@ -1328,17 +1369,10 @@ public HdfsDataInputStream createWrappedInputStream(DFSInputStream dfsis)
+     final FileEncryptionInfo feInfo = dfsis.getFileEncryptionInfo();
+     if (feInfo != null) {
+       // File is encrypted, wrap the stream in a crypto stream.
+-      KeyVersion decrypted = decryptEncryptedDataEncryptionKey(feInfo);
+-      CryptoCodec codec = CryptoCodec
+-          .getInstance(conf, feInfo.getCipherSuite());
+-      if (codec == null) {
+-        throw new IOException("No configuration found for the cipher suite "
+-            + feInfo.getCipherSuite().getConfigSuffix() + " prefixed with "
+-            + HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_KEY_PREFIX
+-            + ". Please see the example configuration "
+-            + "hadoop.security.crypto.codec.classes.EXAMPLECIPHERSUITE "
+-            + "at core-default.xml for details.");
+-      }
++      // Currently only one version, so no special logic based on the version #
++      getCryptoProtocolVersion(feInfo);
++      final CryptoCodec codec = getCryptoCodec(conf, feInfo);
++      final KeyVersion decrypted = decryptEncryptedDataEncryptionKey(feInfo);
+       final CryptoInputStream cryptoIn =
+           new CryptoInputStream(dfsis, codec, decrypted.getMaterial(),
+               feInfo.getIV());
+@@ -1366,15 +1400,10 @@ public HdfsDataOutputStream createWrappedOutputStream(DFSOutputStream dfsos,
+       FileSystem.Statistics statistics, long startPos) throws IOException {
+     final FileEncryptionInfo feInfo = dfsos.getFileEncryptionInfo();
+     if (feInfo != null) {
+-      if (codec == null) {
+-        throw new IOException("No configuration found for the cipher suite "
+-            + HADOOP_SECURITY_CRYPTO_CIPHER_SUITE_KEY + " value prefixed with "
+-            + HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_KEY_PREFIX
+-            + ". Please see the example configuration "
+-            + "hadoop.security.crypto.codec.classes.EXAMPLECIPHERSUITE "
+-            + "at core-default.xml for details.");
+-      }
+       // File is encrypted, wrap the stream in a crypto stream.
++      // Currently only one version, so no special logic based on the version #
++      getCryptoProtocolVersion(feInfo);
++      final CryptoCodec codec = getCryptoCodec(conf, feInfo);
+       KeyVersion decrypted = decryptEncryptedDataEncryptionKey(feInfo);
+       final CryptoOutputStream cryptoOut =
+           new CryptoOutputStream(dfsos, codec,
+@@ -1589,7 +1618,7 @@ public DFSOutputStream create(String src,
+     final DFSOutputStream result = DFSOutputStream.newStreamForCreate(this,
+         src, masked, flag, createParent, replication, blockSize, progress,
+         buffersize, dfsClientConf.createChecksum(checksumOpt),
+-        favoredNodeStrs, cipherSuites);
++        favoredNodeStrs);
+     beginFileLease(result.getFileId(), result);
+     return result;
+   }
+@@ -1636,7 +1665,7 @@ public DFSOutputStream primitiveCreate(String src,
+       DataChecksum checksum = dfsClientConf.createChecksum(checksumOpt);
+       result = DFSOutputStream.newStreamForCreate(this, src, absPermission,
+           flag, createParent, replication, blockSize, progress, buffersize,
+-          checksum, null, cipherSuites);
++          checksum, null);
+     }
+     beginFileLease(result.getFileId(), result);
+     return result;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java
+index a51bacb..ecfc27f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java
+@@ -43,7 +43,6 @@
+ 
+ import com.google.common.base.Preconditions;
+ import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.crypto.CipherSuite;
+ import org.apache.hadoop.fs.CanSetDropBehind;
+ import org.apache.hadoop.fs.CreateFlag;
+ import org.apache.hadoop.fs.FSOutputSummer;
+@@ -54,6 +53,7 @@
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
+ import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+@@ -130,7 +130,10 @@
+    * errors (typically related to encryption zones and KeyProvider operations).
+    */
+   @VisibleForTesting
+-  public static final int CREATE_RETRY_COUNT = 10;
++  static final int CREATE_RETRY_COUNT = 10;
++  @VisibleForTesting
++  static CryptoProtocolVersion[] SUPPORTED_CRYPTO_VERSIONS =
++      CryptoProtocolVersion.supported();
+ 
+   private final DFSClient dfsClient;
+   private Socket s;
+@@ -1629,8 +1632,7 @@ private DFSOutputStream(DFSClient dfsClient, String src, HdfsFileStatus stat,
+   static DFSOutputStream newStreamForCreate(DFSClient dfsClient, String src,
+       FsPermission masked, EnumSet<CreateFlag> flag, boolean createParent,
+       short replication, long blockSize, Progressable progress, int buffersize,
+-      DataChecksum checksum, String[] favoredNodes,
+-      List<CipherSuite> cipherSuites) throws IOException {
++      DataChecksum checksum, String[] favoredNodes) throws IOException {
+     HdfsFileStatus stat = null;
+ 
+     // Retry the create if we get a RetryStartFileException up to a maximum
+@@ -1642,7 +1644,7 @@ static DFSOutputStream newStreamForCreate(DFSClient dfsClient, String src,
+       try {
+         stat = dfsClient.namenode.create(src, masked, dfsClient.clientName,
+             new EnumSetWritable<CreateFlag>(flag), createParent, replication,
+-            blockSize, cipherSuites);
++            blockSize, SUPPORTED_CRYPTO_VERSIONS);
+         break;
+       } catch (RemoteException re) {
+         IOException e = re.unwrapRemoteException(
+@@ -1656,7 +1658,7 @@ static DFSOutputStream newStreamForCreate(DFSClient dfsClient, String src,
+             SafeModeException.class,
+             UnresolvedPathException.class,
+             SnapshotAccessControlException.class,
+-            UnknownCipherSuiteException.class);
++            UnknownCryptoProtocolVersionException.class);
+         if (e instanceof RetryStartFileException) {
+           if (retryCount > 0) {
+             shouldRetry = true;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCipherSuiteException.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCipherSuiteException.java
+index b85edf6..ec17bb8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCipherSuiteException.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCipherSuiteException.java
+@@ -23,15 +23,12 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ 
++/**
++ * Thrown when an unknown cipher suite is encountered.
++ */
+ @InterfaceAudience.Public
+-@InterfaceStability.Evolving
++@InterfaceStability.Stable
+ public class UnknownCipherSuiteException extends IOException {
+-  private static final long serialVersionUID = 8957192l;
+-
+-  public UnknownCipherSuiteException() {
+-    super();
+-  }
+-
+   public UnknownCipherSuiteException(String msg) {
+     super(msg);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCryptoProtocolVersionException.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCryptoProtocolVersionException.java
+new file mode 100644
+index 0000000..0aac8c8
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/UnknownCryptoProtocolVersionException.java
+@@ -0,0 +1,38 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.hdfs;
++
++import java.io.IOException;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
++
++@InterfaceAudience.Public
++@InterfaceStability.Evolving
++public class UnknownCryptoProtocolVersionException extends IOException {
++  private static final long serialVersionUID = 8957192l;
++
++  public UnknownCryptoProtocolVersionException() {
++    super();
++  }
++
++  public UnknownCryptoProtocolVersionException(String msg) {
++    super(msg);
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+index d8b7a79..c79bbb3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+@@ -24,7 +24,7 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+-import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedEntries;
+ import org.apache.hadoop.fs.CacheFlag;
+ import org.apache.hadoop.fs.ContentSummary;
+@@ -165,6 +165,7 @@ public LocatedBlocks getBlockLocations(String src,
+    * @param createParent create missing parent directory if true
+    * @param replication block replication factor.
+    * @param blockSize maximum block size.
++   * @param supportedVersions CryptoProtocolVersions supported by the client
+    * 
+    * @return the status of the created file, it could be null if the server
+    *           doesn't support returning the file status
+@@ -193,7 +194,7 @@ public LocatedBlocks getBlockLocations(String src,
+   public HdfsFileStatus create(String src, FsPermission masked,
+       String clientName, EnumSetWritable<CreateFlag> flag,
+       boolean createParent, short replication, long blockSize, 
+-      List<CipherSuite> cipherSuites)
++      CryptoProtocolVersion[] supportedVersions)
+       throws AccessControlException, AlreadyBeingCreatedException,
+       DSQuotaExceededException, FileAlreadyExistsException,
+       FileNotFoundException, NSQuotaExceededException,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
+index 58e9eba..f1441b5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/EncryptionZone.java
+@@ -22,6 +22,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ 
+ /**
+  * A simple class for representing an encryption zone. Presently an encryption
+@@ -35,13 +36,15 @@
+   private final long id;
+   private final String path;
+   private final CipherSuite suite;
++  private final CryptoProtocolVersion version;
+   private final String keyName;
+ 
+-  public EncryptionZone(long id, String path,
+-      CipherSuite suite, String keyName) {
++  public EncryptionZone(long id, String path, CipherSuite suite,
++      CryptoProtocolVersion version, String keyName) {
+     this.id = id;
+     this.path = path;
+     this.suite = suite;
++    this.version = version;
+     this.keyName = keyName;
+   }
+ 
+@@ -57,15 +60,20 @@ public CipherSuite getSuite() {
+     return suite;
+   }
+ 
++  public CryptoProtocolVersion getVersion() { return version; }
++
+   public String getKeyName() {
+     return keyName;
+   }
+ 
+   @Override
+   public int hashCode() {
+-    return new HashCodeBuilder(13, 31).
+-      append(id).append(path).
+-      append(suite).append(keyName).
++    return new HashCodeBuilder(13, 31)
++        .append(id)
++        .append(path)
++        .append(suite)
++        .append(version)
++        .append(keyName).
+       toHashCode();
+   }
+ 
+@@ -86,6 +94,7 @@ public boolean equals(Object obj) {
+       append(id, rhs.id).
+       append(path, rhs.path).
+       append(suite, rhs.suite).
++      append(version, rhs.version).
+       append(keyName, rhs.keyName).
+       isEquals();
+   }
+@@ -95,6 +104,7 @@ public String toString() {
+     return "EncryptionZone [id=" + id +
+         ", path=" + path +
+         ", suite=" + suite +
++        ", version=" + version +
+         ", keyName=" + keyName + "]";
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
+index 7fcee1a..f940cb2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolServerSideTranslatorPB.java
+@@ -388,8 +388,9 @@ public CreateResponseProto create(RpcController controller,
+       HdfsFileStatus result = server.create(req.getSrc(),
+           PBHelper.convert(req.getMasked()), req.getClientName(),
+           PBHelper.convertCreateFlag(req.getCreateFlag()), req.getCreateParent(),
+-          (short) req.getReplication(), req.getBlockSize(), 
+-          PBHelper.convertCipherSuiteProtos(req.getCipherSuitesList()));
++          (short) req.getReplication(), req.getBlockSize(),
++          PBHelper.convertCryptoProtocolVersions(
++              req.getCryptoProtocolVersionList()));
+ 
+       if (result != null) {
+         return CreateResponseProto.newBuilder().setFs(PBHelper.convert(result))
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
+index 17e4439..cfff06c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolTranslatorPB.java
+@@ -28,6 +28,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedEntries;
+ import org.apache.hadoop.fs.CacheFlag;
+ import org.apache.hadoop.fs.ContentSummary;
+@@ -266,7 +267,7 @@ public FsServerDefaults getServerDefaults() throws IOException {
+   public HdfsFileStatus create(String src, FsPermission masked,
+       String clientName, EnumSetWritable<CreateFlag> flag,
+       boolean createParent, short replication, long blockSize, 
+-      List<CipherSuite> cipherSuites)
++      CryptoProtocolVersion[] supportedVersions)
+       throws AccessControlException, AlreadyBeingCreatedException,
+       DSQuotaExceededException, FileAlreadyExistsException,
+       FileNotFoundException, NSQuotaExceededException,
+@@ -280,9 +281,7 @@ public HdfsFileStatus create(String src, FsPermission masked,
+         .setCreateParent(createParent)
+         .setReplication(replication)
+         .setBlockSize(blockSize);
+-    if (cipherSuites != null) {
+-      builder.addAllCipherSuites(PBHelper.convertCipherSuites(cipherSuites));
+-    }
++    builder.addAllCryptoProtocolVersion(PBHelper.convert(supportedVersions));
+     CreateRequestProto req = builder.build();
+     try {
+       CreateResponseProto res = rpcProxy.create(null, req);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index dab2466..44d41ee 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -20,6 +20,8 @@
+ import static com.google.common.base.Preconditions.checkNotNull;
+ import static org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos
+     .EncryptionZoneProto;
++import static org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.CipherSuiteProto;
++import static org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.CryptoProtocolVersionProto;
+ 
+ import java.io.EOFException;
+ import java.io.IOException;
+@@ -57,6 +59,7 @@
+ import org.apache.hadoop.crypto.CipherSuite;
+ import org.apache.hadoop.hdfs.protocol.ClientProtocol;
+ import org.apache.hadoop.hdfs.protocol.CorruptFileBlocks;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.hdfs.protocol.DatanodeID;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo.AdminStates;
+@@ -2305,15 +2308,17 @@ public static ListXAttrsResponseProto convertListXAttrsResponse(
+   public static EncryptionZoneProto convert(EncryptionZone zone) {
+     return EncryptionZoneProto.newBuilder()
+         .setId(zone.getId())
+-        .setKeyName(zone.getKeyName())
+         .setPath(zone.getPath())
+         .setSuite(convert(zone.getSuite()))
++        .setCryptoProtocolVersion(convert(zone.getVersion()))
++        .setKeyName(zone.getKeyName())
+         .build();
+   }
+ 
+   public static EncryptionZone convert(EncryptionZoneProto proto) {
+-      return new EncryptionZone(proto.getId(), proto.getPath(),
+-              convert(proto.getSuite()), proto.getKeyName());
++    return new EncryptionZone(proto.getId(), proto.getPath(),
++        convert(proto.getSuite()), convert(proto.getCryptoProtocolVersion()),
++        proto.getKeyName());
+   }
+ 
+   public static ShortCircuitShmSlotProto convert(SlotId slotId) {
+@@ -2583,18 +2588,18 @@ public static GetEditsFromTxidResponseProto convertEditsResponse(EventsList el)
+         builder.build()).build();
+   }
+ 
+-  public static HdfsProtos.CipherSuite convert(CipherSuite suite) {
++  public static CipherSuiteProto convert(CipherSuite suite) {
+     switch (suite) {
+     case UNKNOWN:
+-      return HdfsProtos.CipherSuite.UNKNOWN;
++      return CipherSuiteProto.UNKNOWN;
+     case AES_CTR_NOPADDING:
+-      return HdfsProtos.CipherSuite.AES_CTR_NOPADDING;
++      return CipherSuiteProto.AES_CTR_NOPADDING;
+     default:
+       return null;
+     }
+   }
+ 
+-  public static CipherSuite convert(HdfsProtos.CipherSuite proto) {
++  public static CipherSuite convert(CipherSuiteProto proto) {
+     switch (proto) {
+     case AES_CTR_NOPADDING:
+       return CipherSuite.AES_CTR_NOPADDING;
+@@ -2606,26 +2611,49 @@ public static CipherSuite convert(HdfsProtos.CipherSuite proto) {
+     }
+   }
+ 
+-  public static List<HdfsProtos.CipherSuite> convertCipherSuites
+-      (List<CipherSuite> suites) {
+-    if (suites == null) {
+-      return null;
+-    }
+-    List<HdfsProtos.CipherSuite> protos =
+-        Lists.newArrayListWithCapacity(suites.size());
+-    for (CipherSuite suite : suites) {
+-      protos.add(convert(suite));
++  public static List<CryptoProtocolVersionProto> convert(
++      CryptoProtocolVersion[] versions) {
++    List<CryptoProtocolVersionProto> protos =
++        Lists.newArrayListWithCapacity(versions.length);
++    for (CryptoProtocolVersion v: versions) {
++      protos.add(convert(v));
+     }
+     return protos;
+   }
+ 
+-  public static List<CipherSuite> convertCipherSuiteProtos(
+-      List<HdfsProtos.CipherSuite> protos) {
+-    List<CipherSuite> suites = Lists.newArrayListWithCapacity(protos.size());
+-    for (HdfsProtos.CipherSuite proto : protos) {
+-      suites.add(convert(proto));
++  public static CryptoProtocolVersion[] convertCryptoProtocolVersions(
++      List<CryptoProtocolVersionProto> protos) {
++    List<CryptoProtocolVersion> versions =
++        Lists.newArrayListWithCapacity(protos.size());
++    for (CryptoProtocolVersionProto p: protos) {
++      versions.add(convert(p));
++    }
++    return versions.toArray(new CryptoProtocolVersion[] {});
++  }
++
++  public static CryptoProtocolVersion convert(CryptoProtocolVersionProto
++      proto) {
++    switch(proto) {
++    case ENCRYPTION_ZONES:
++      return CryptoProtocolVersion.ENCRYPTION_ZONES;
++    default:
++      // Set to UNKNOWN and stash the unknown enum value
++      CryptoProtocolVersion version = CryptoProtocolVersion.UNKNOWN;
++      version.setUnknownValue(proto.getNumber());
++      return version;
++    }
++  }
++
++  public static CryptoProtocolVersionProto convert(CryptoProtocolVersion
++      version) {
++    switch(version) {
++    case UNKNOWN:
++      return CryptoProtocolVersionProto.UNKNOWN_PROTOCOL_VERSION;
++    case ENCRYPTION_ZONES:
++      return CryptoProtocolVersionProto.ENCRYPTION_ZONES;
++    default:
++      return null;
+     }
+-    return suites;
+   }
+ 
+   public static HdfsProtos.FileEncryptionInfoProto convert(
+@@ -2635,6 +2663,7 @@ public static CipherSuite convert(HdfsProtos.CipherSuite proto) {
+     }
+     return HdfsProtos.FileEncryptionInfoProto.newBuilder()
+         .setSuite(convert(info.getCipherSuite()))
++        .setCryptoProtocolVersion(convert(info.getCryptoProtocolVersion()))
+         .setKey(getByteString(info.getEncryptedDataEncryptionKey()))
+         .setIv(getByteString(info.getIV()))
+         .setEzKeyVersionName(info.getEzKeyVersionName())
+@@ -2655,12 +2684,13 @@ public static CipherSuite convert(HdfsProtos.CipherSuite proto) {
+   }
+ 
+   public static HdfsProtos.ZoneEncryptionInfoProto convert(
+-      CipherSuite suite, String keyName) {
+-    if (suite == null || keyName == null) {
++      CipherSuite suite, CryptoProtocolVersion version, String keyName) {
++    if (suite == null || version == null || keyName == null) {
+       return null;
+     }
+     return HdfsProtos.ZoneEncryptionInfoProto.newBuilder()
+         .setSuite(convert(suite))
++        .setCryptoProtocolVersion(convert(version))
+         .setKeyName(keyName)
+         .build();
+   }
+@@ -2671,23 +2701,27 @@ public static FileEncryptionInfo convert(
+       return null;
+     }
+     CipherSuite suite = convert(proto.getSuite());
++    CryptoProtocolVersion version = convert(proto.getCryptoProtocolVersion());
+     byte[] key = proto.getKey().toByteArray();
+     byte[] iv = proto.getIv().toByteArray();
+     String ezKeyVersionName = proto.getEzKeyVersionName();
+     String keyName = proto.getKeyName();
+-    return new FileEncryptionInfo(suite, key, iv, keyName, ezKeyVersionName);
++    return new FileEncryptionInfo(suite, version, key, iv, keyName,
++        ezKeyVersionName);
+   }
+ 
+   public static FileEncryptionInfo convert(
+       HdfsProtos.PerFileEncryptionInfoProto fileProto,
+-      CipherSuite suite, String keyName) {
+-    if (fileProto == null || suite == null || keyName == null) {
++      CipherSuite suite, CryptoProtocolVersion version, String keyName) {
++    if (fileProto == null || suite == null || version == null ||
++        keyName == null) {
+       return null;
+     }
+     byte[] key = fileProto.getKey().toByteArray();
+     byte[] iv = fileProto.getIv().toByteArray();
+     String ezKeyVersionName = fileProto.getEzKeyVersionName();
+-    return new FileEncryptionInfo(suite, key, iv, keyName, ezKeyVersionName);
++    return new FileEncryptionInfo(suite, version, key, iv, keyName,
++        ezKeyVersionName);
+   }
+ 
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+index e22f8b9..0e83583 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EncryptionZoneManager.java
+@@ -27,6 +27,7 @@
+ import com.google.common.collect.Lists;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.UnresolvedLinkException;
+ import org.apache.hadoop.fs.XAttr;
+ import org.apache.hadoop.fs.XAttrSetFlag;
+@@ -57,7 +58,8 @@
+       .class);
+ 
+   public static final EncryptionZone NULL_EZ =
+-      new EncryptionZone(-1, "", CipherSuite.UNKNOWN, "");
++      new EncryptionZone(-1, "", CipherSuite.UNKNOWN,
++          CryptoProtocolVersion.UNKNOWN, "");
+ 
+   /**
+    * EncryptionZoneInt is the internal representation of an encryption zone. The
+@@ -67,11 +69,16 @@
+   private static class EncryptionZoneInt {
+     private final long inodeId;
+     private final CipherSuite suite;
++    private final CryptoProtocolVersion version;
+     private final String keyName;
+ 
+-    EncryptionZoneInt(long inodeId, CipherSuite suite, String keyName) {
++    EncryptionZoneInt(long inodeId, CipherSuite suite,
++        CryptoProtocolVersion version, String keyName) {
++      Preconditions.checkArgument(suite != CipherSuite.UNKNOWN);
++      Preconditions.checkArgument(version != CryptoProtocolVersion.UNKNOWN);
+       this.inodeId = inodeId;
+       this.suite = suite;
++      this.version = version;
+       this.keyName = keyName;
+     }
+ 
+@@ -83,6 +90,8 @@ CipherSuite getSuite() {
+       return suite;
+     }
+ 
++    CryptoProtocolVersion getVersion() { return version; }
++
+     String getKeyName() {
+       return keyName;
+     }
+@@ -118,9 +127,10 @@ public EncryptionZoneManager(FSDirectory dir, Configuration conf) {
+    * @param inodeId of the encryption zone
+    * @param keyName encryption zone key name
+    */
+-  void addEncryptionZone(Long inodeId, CipherSuite suite, String keyName) {
++  void addEncryptionZone(Long inodeId, CipherSuite suite,
++      CryptoProtocolVersion version, String keyName) {
+     assert dir.hasWriteLock();
+-    unprotectedAddEncryptionZone(inodeId, suite, keyName);
++    unprotectedAddEncryptionZone(inodeId, suite, version, keyName);
+   }
+ 
+   /**
+@@ -132,9 +142,9 @@ void addEncryptionZone(Long inodeId, CipherSuite suite, String keyName) {
+    * @param keyName encryption zone key name
+    */
+   void unprotectedAddEncryptionZone(Long inodeId,
+-      CipherSuite suite, String keyName) {
++      CipherSuite suite, CryptoProtocolVersion version, String keyName) {
+     final EncryptionZoneInt ez = new EncryptionZoneInt(
+-        inodeId, suite, keyName);
++        inodeId, suite, version, keyName);
+     encryptionZones.put(inodeId, ez);
+   }
+ 
+@@ -219,7 +229,7 @@ EncryptionZone getEZINodeForPath(INodesInPath iip) {
+       return NULL_EZ;
+     } else {
+       return new EncryptionZone(ezi.getINodeId(), getFullPathName(ezi),
+-          ezi.getSuite(), ezi.getKeyName());
++          ezi.getSuite(), ezi.getVersion(), ezi.getKeyName());
+     }
+   }
+ 
+@@ -275,7 +285,8 @@ void checkMoveValidity(INodesInPath srcIIP, INodesInPath dstIIP, String src)
+    * <p/>
+    * Called while holding the FSDirectory lock.
+    */
+-  XAttr createEncryptionZone(String src, CipherSuite suite, String keyName)
++  XAttr createEncryptionZone(String src, CipherSuite suite,
++      CryptoProtocolVersion version, String keyName)
+       throws IOException {
+     assert dir.hasWriteLock();
+     if (dir.isNonEmptyDirectory(src)) {
+@@ -296,7 +307,7 @@ XAttr createEncryptionZone(String src, CipherSuite suite, String keyName)
+     }
+ 
+     final HdfsProtos.ZoneEncryptionInfoProto proto =
+-        PBHelper.convert(suite, keyName);
++        PBHelper.convert(suite, version, keyName);
+     final XAttr ezXAttr = XAttrHelper
+         .buildXAttr(CRYPTO_XATTR_ENCRYPTION_ZONE, proto.toByteArray());
+ 
+@@ -341,7 +352,7 @@ XAttr createEncryptionZone(String src, CipherSuite suite, String keyName)
+       }
+       // Add the EZ to the result list
+       zones.add(new EncryptionZone(ezi.getINodeId(), pathName,
+-          ezi.getSuite(), ezi.getKeyName()));
++          ezi.getSuite(), ezi.getVersion(), ezi.getKeyName()));
+       count++;
+       if (count >= numResponses) {
+         break;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index ba62a2f..a1efc2f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -38,6 +38,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.ContentSummary;
+ import org.apache.hadoop.fs.FileAlreadyExistsException;
+ import org.apache.hadoop.fs.FileEncryptionInfo;
+@@ -2117,6 +2118,7 @@ public final void addToInodeMap(INode inode) {
+                         xattr.getValue());
+                 ezManager.unprotectedAddEncryptionZone(inode.getId(),
+                     PBHelper.convert(ezProto.getSuite()),
++                    PBHelper.convert(ezProto.getCryptoProtocolVersion()),
+                     ezProto.getKeyName());
+               } catch (InvalidProtocolBufferException e) {
+                 NameNode.LOG.warn("Error parsing protocol buffer of " +
+@@ -2706,11 +2708,12 @@ String getKeyName(INodesInPath iip) {
+     }
+   }
+ 
+-  XAttr createEncryptionZone(String src, CipherSuite suite, String keyName)
++  XAttr createEncryptionZone(String src, CipherSuite suite,
++      CryptoProtocolVersion version, String keyName)
+     throws IOException {
+     writeLock();
+     try {
+-      return ezManager.createEncryptionZone(src, suite, keyName);
++      return ezManager.createEncryptionZone(src, suite, version, keyName);
+     } finally {
+       writeUnlock();
+     }
+@@ -2794,8 +2797,9 @@ FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId,
+         }
+       }
+ 
+-      CipherSuite suite = encryptionZone.getSuite();
+-      String keyName = encryptionZone.getKeyName();
++      final CryptoProtocolVersion version = encryptionZone.getVersion();
++      final CipherSuite suite = encryptionZone.getSuite();
++      final String keyName = encryptionZone.getKeyName();
+ 
+       XAttr fileXAttr = unprotectedGetXAttrByName(inode, snapshotId,
+           CRYPTO_XATTR_FILE_ENCRYPTION_INFO);
+@@ -2811,7 +2815,7 @@ FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId,
+         HdfsProtos.PerFileEncryptionInfoProto fileProto =
+             HdfsProtos.PerFileEncryptionInfoProto.parseFrom(
+                 fileXAttr.getValue());
+-        return PBHelper.convert(fileProto, suite, keyName);
++        return PBHelper.convert(fileProto, suite, version, keyName);
+       } catch (InvalidProtocolBufferException e) {
+         throw new IOException("Could not parse file encryption info for " +
+             "inode " + inode, e);
+@@ -2854,6 +2858,7 @@ INode unprotectedSetXAttrs(final String src, final List<XAttr> xAttrs,
+             HdfsProtos.ZoneEncryptionInfoProto.parseFrom(xattr.getValue());
+         ezManager.addEncryptionZone(inode.getId(),
+             PBHelper.convert(ezProto.getSuite()),
++            PBHelper.convert(ezProto.getCryptoProtocolVersion()),
+             ezProto.getKeyName());
+       }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 80e11e7..5b62d04 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -138,6 +138,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.CryptoCodec;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+@@ -172,8 +173,8 @@
+ import org.apache.hadoop.hdfs.HAUtil;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.StorageType;
++import org.apache.hadoop.hdfs.UnknownCryptoProtocolVersionException;
+ import org.apache.hadoop.hdfs.XAttrHelper;
+-import org.apache.hadoop.hdfs.UnknownCipherSuiteException;
+ import org.apache.hadoop.hdfs.protocol.AclException;
+ import org.apache.hadoop.hdfs.protocol.AlreadyBeingCreatedException;
+ import org.apache.hadoop.hdfs.protocol.Block;
+@@ -2311,46 +2312,41 @@ private void verifyParentDir(String src) throws FileNotFoundException,
+ 
+   /**
+    * If the file is within an encryption zone, select the appropriate 
+-   * CipherSuite from the list provided by the client. Since the client may 
+-   * be newer, need to handle unknown CipherSuites.
++   * CryptoProtocolVersion from the list provided by the client. Since the
++   * client may be newer, we need to handle unknown versions.
+    *
+-   * @param srcIIP path of the file
+-   * @param cipherSuites client-provided list of supported CipherSuites, 
+-   *                     in desired order.
+-   * @return chosen CipherSuite, or null if file is not in an EncryptionZone
++   * @param zone EncryptionZone of the file
++   * @param supportedVersions List of supported protocol versions
++   * @return chosen protocol version
+    * @throws IOException
+    */
+-  private CipherSuite chooseCipherSuite(INodesInPath srcIIP, List<CipherSuite>
+-      cipherSuites)
+-      throws UnknownCipherSuiteException, UnresolvedLinkException,
++  private CryptoProtocolVersion chooseProtocolVersion(EncryptionZone zone,
++      CryptoProtocolVersion[] supportedVersions)
++      throws UnknownCryptoProtocolVersionException, UnresolvedLinkException,
+         SnapshotAccessControlException {
+-    // Not in an EZ
+-    if (!dir.isInAnEZ(srcIIP)) {
+-      return null;
+-    }
+-    CipherSuite chosen = null;
+-    for (CipherSuite c : cipherSuites) {
+-      if (c.equals(CipherSuite.UNKNOWN)) {
++    Preconditions.checkNotNull(zone);
++    Preconditions.checkNotNull(supportedVersions);
++    // Right now, we only support a single protocol version,
++    // so simply look for it in the list of provided options
++    final CryptoProtocolVersion required = zone.getVersion();
++
++    for (CryptoProtocolVersion c : supportedVersions) {
++      if (c.equals(CryptoProtocolVersion.UNKNOWN)) {
+         if (LOG.isDebugEnabled()) {
+-          LOG.debug("Ignoring unknown CipherSuite provided by client: "
+-              + c.getUnknownValue());
++          LOG.debug("Ignoring unknown CryptoProtocolVersion provided by " +
++              "client: " + c.getUnknownValue());
+         }
+         continue;
+       }
+-      for (CipherSuite supported : CipherSuite.values()) {
+-        if (supported.equals(c)) {
+-          chosen = c;
+-          break;
+-        }
++      if (c.equals(required)) {
++        return c;
+       }
+     }
+-    if (chosen == null) {
+-      throw new UnknownCipherSuiteException(
+-          "No cipher suites provided by the client are supported."
+-              + " Client provided: " + Arrays.toString(cipherSuites.toArray())
+-              + " NameNode supports: " + Arrays.toString(CipherSuite.values()));
+-    }
+-    return chosen;
++    throw new UnknownCryptoProtocolVersionException(
++        "No crypto protocol versions provided by the client are supported."
++            + " Client provided: " + Arrays.toString(supportedVersions)
++            + " NameNode supports: " + Arrays.toString(CryptoProtocolVersion
++            .values()));
+   }
+ 
+   /**
+@@ -2386,7 +2382,7 @@ private EncryptedKeyVersion generateEncryptedDataEncryptionKey(String
+   HdfsFileStatus startFile(String src, PermissionStatus permissions,
+       String holder, String clientMachine, EnumSet<CreateFlag> flag,
+       boolean createParent, short replication, long blockSize, 
+-      List<CipherSuite> cipherSuites)
++      CryptoProtocolVersion[] supportedVersions)
+       throws AccessControlException, SafeModeException,
+       FileAlreadyExistsException, UnresolvedLinkException,
+       FileNotFoundException, ParentNotDirectoryException, IOException {
+@@ -2399,7 +2395,7 @@ HdfsFileStatus startFile(String src, PermissionStatus permissions,
+     
+     try {
+       status = startFileInt(src, permissions, holder, clientMachine, flag,
+-          createParent, replication, blockSize, cipherSuites,
++          createParent, replication, blockSize, supportedVersions,
+           cacheEntry != null);
+     } catch (AccessControlException e) {
+       logAuditEvent(false, "create", src);
+@@ -2413,7 +2409,8 @@ HdfsFileStatus startFile(String src, PermissionStatus permissions,
+   private HdfsFileStatus startFileInt(final String srcArg,
+       PermissionStatus permissions, String holder, String clientMachine,
+       EnumSet<CreateFlag> flag, boolean createParent, short replication,
+-      long blockSize, List<CipherSuite> cipherSuites, boolean logRetryCache)
++      long blockSize, CryptoProtocolVersion[] supportedVersions,
++      boolean logRetryCache)
+       throws AccessControlException, SafeModeException,
+       FileAlreadyExistsException, UnresolvedLinkException,
+       FileNotFoundException, ParentNotDirectoryException, IOException {
+@@ -2427,9 +2424,9 @@ private HdfsFileStatus startFileInt(final String srcArg,
+               + ", replication=" + replication
+               + ", createFlag=" + flag.toString()
+               + ", blockSize=" + blockSize);
+-      builder.append(", cipherSuites=");
+-      if (cipherSuites != null) {
+-        builder.append(Arrays.toString(cipherSuites.toArray()));
++      builder.append(", supportedVersions=");
++      if (supportedVersions != null) {
++        builder.append(Arrays.toString(supportedVersions));
+       } else {
+         builder.append("null");
+       }
+@@ -2467,6 +2464,7 @@ private HdfsFileStatus startFileInt(final String srcArg,
+      * special RetryStartFileException to ask the DFSClient to try the create
+      * again later.
+      */
++    CryptoProtocolVersion protocolVersion = null;
+     CipherSuite suite = null;
+     String ezKeyName = null;
+     readLock();
+@@ -2475,13 +2473,16 @@ private HdfsFileStatus startFileInt(final String srcArg,
+       INodesInPath iip = dir.getINodesInPath4Write(src);
+       // Nothing to do if the path is not within an EZ
+       if (dir.isInAnEZ(iip)) {
+-        suite = chooseCipherSuite(iip, cipherSuites);
+-        if (suite != null) {
+-          Preconditions.checkArgument(!suite.equals(CipherSuite.UNKNOWN),
+-              "Chose an UNKNOWN CipherSuite!");
+-        }
++        EncryptionZone zone = dir.getEZForPath(iip);
++        protocolVersion = chooseProtocolVersion(zone, supportedVersions);
++        suite = zone.getSuite();
+         ezKeyName = dir.getKeyName(iip);
+-        Preconditions.checkState(ezKeyName != null);
++
++        Preconditions.checkNotNull(protocolVersion);
++        Preconditions.checkNotNull(suite);
++        Preconditions.checkArgument(!suite.equals(CipherSuite.UNKNOWN),
++            "Chose an UNKNOWN CipherSuite!");
++        Preconditions.checkNotNull(ezKeyName);
+       }
+     } finally {
+       readUnlock();
+@@ -2507,7 +2508,7 @@ private HdfsFileStatus startFileInt(final String srcArg,
+       src = resolvePath(src, pathComponents);
+       toRemoveBlocks = startFileInternal(pc, src, permissions, holder, 
+           clientMachine, create, overwrite, createParent, replication, 
+-          blockSize, suite, edek, logRetryCache);
++          blockSize, suite, protocolVersion, edek, logRetryCache);
+       stat = dir.getFileInfo(src, false,
+           FSDirectory.isReservedRawName(srcArg));
+     } catch (StandbyException se) {
+@@ -2543,7 +2544,8 @@ private BlocksMapUpdateInfo startFileInternal(FSPermissionChecker pc,
+       String src, PermissionStatus permissions, String holder, 
+       String clientMachine, boolean create, boolean overwrite, 
+       boolean createParent, short replication, long blockSize, 
+-      CipherSuite suite, EncryptedKeyVersion edek, boolean logRetryEntry)
++      CipherSuite suite, CryptoProtocolVersion version,
++      EncryptedKeyVersion edek, boolean logRetryEntry)
+       throws FileAlreadyExistsException, AccessControlException,
+       UnresolvedLinkException, FileNotFoundException,
+       ParentNotDirectoryException, RetryStartFileException, IOException {
+@@ -2568,7 +2570,7 @@ private BlocksMapUpdateInfo startFileInternal(FSPermissionChecker pc,
+       if (!ezKeyName.equals(edek.getEncryptionKeyName())) {
+         throw new RetryStartFileException();
+       }
+-      feInfo = new FileEncryptionInfo(suite,
++      feInfo = new FileEncryptionInfo(suite, version,
+           edek.getEncryptedKeyVersion().getMaterial(),
+           edek.getEncryptedKeyIv(),
+           ezKeyName, edek.getEncryptionKeyVersionName());
+@@ -8634,7 +8636,11 @@ private void createEncryptionZoneInt(final String srcArg, String cipher,
+       src = resolvePath(src, pathComponents);
+ 
+       final CipherSuite suite = CipherSuite.convert(cipher);
+-      final XAttr ezXAttr = dir.createEncryptionZone(src, suite, keyName);
++      // For now this is hardcoded, as we only support one method.
++      final CryptoProtocolVersion version =
++          CryptoProtocolVersion.ENCRYPTION_ZONES;
++      final XAttr ezXAttr = dir.createEncryptionZone(src, suite,
++          version, keyName);
+       List<XAttr> xAttrs = Lists.newArrayListWithCapacity(1);
+       xAttrs.add(ezXAttr);
+       getEditLog().logSetXAttrs(src, xAttrs, logRetryCache);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index 25cf27f..a3b865d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -38,7 +38,7 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.hadoop.HadoopIllegalArgumentException;
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedEntries;
+ import org.apache.hadoop.fs.CacheFlag;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+@@ -536,7 +536,7 @@ public FsServerDefaults getServerDefaults() throws IOException {
+   public HdfsFileStatus create(String src, FsPermission masked,
+       String clientName, EnumSetWritable<CreateFlag> flag,
+       boolean createParent, short replication, long blockSize, 
+-      List<CipherSuite> cipherSuites)
++      CryptoProtocolVersion[] supportedVersions)
+       throws IOException {
+     String clientMachine = getClientMachine();
+     if (stateChangeLog.isDebugEnabled()) {
+@@ -550,7 +550,7 @@ public HdfsFileStatus create(String src, FsPermission masked,
+     HdfsFileStatus fileStatus = namesystem.startFile(src, new PermissionStatus(
+         getRemoteUser().getShortUserName(), null, masked),
+         clientName, clientMachine, flag.get(), createParent, replication,
+-        blockSize, cipherSuites);
++        blockSize, supportedVersions);
+     metrics.incrFilesCreated();
+     metrics.incrCreateFileOps();
+     return fileStatus;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto
+index f1673ff..103145c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto
+@@ -75,7 +75,7 @@ message CreateRequestProto {
+   required bool createParent = 5;
+   required uint32 replication = 6; // Short: Only 16 bits used
+   required uint64 blockSize = 7;
+-  repeated CipherSuite cipherSuites = 8;
++  repeated CryptoProtocolVersionProto cryptoProtocolVersion = 8;
+ }
+ 
+ message CreateResponseProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+index c4b7009..bb291ea 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/encryption.proto
+@@ -48,8 +48,9 @@ message ListEncryptionZonesRequestProto {
+ message EncryptionZoneProto {
+   required int64 id = 1;
+   required string path = 2;
+-  required CipherSuite suite = 3;
+-  required string keyName = 4;
++  required CipherSuiteProto suite = 3;
++  required CryptoProtocolVersionProto cryptoProtocolVersion = 4;
++  required string keyName = 5;
+ }
+ 
+ message ListEncryptionZonesResponseProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
+index 99bf646..5c61b73 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
+@@ -203,20 +203,29 @@ message DataEncryptionKeyProto {
+ /**
+  * Cipher suite.
+  */
+-enum CipherSuite {
++enum CipherSuiteProto {
+     UNKNOWN = 1;
+     AES_CTR_NOPADDING = 2;
+ }
+ 
+ /**
++ * Crypto protocol version used to access encrypted files.
++ */
++enum CryptoProtocolVersionProto {
++    UNKNOWN_PROTOCOL_VERSION = 1;
++    ENCRYPTION_ZONES = 2;
++}
++
++/**
+  * Encryption information for a file.
+  */
+ message FileEncryptionInfoProto {
+-  required CipherSuite suite = 1;
+-  required bytes key = 2;
+-  required bytes iv = 3;
+-  required string keyName = 4;
+-  required string ezKeyVersionName = 5;
++  required CipherSuiteProto suite = 1;
++  required CryptoProtocolVersionProto cryptoProtocolVersion = 2;
++  required bytes key = 3;
++  required bytes iv = 4;
++  required string keyName = 5;
++  required string ezKeyVersionName = 6;
+ }
+ 
+ /**
+@@ -234,8 +243,9 @@ message PerFileEncryptionInfoProto {
+  * zone
+  */
+ message ZoneEncryptionInfoProto {
+-  required CipherSuite suite = 1;
+-  required string keyName = 2;
++  required CipherSuiteProto suite = 1;
++  required CryptoProtocolVersionProto cryptoProtocolVersion = 2;
++  required string keyName = 3;
+ }
+ 
+ /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSClientRetries.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSClientRetries.java
+index d4af3d9..a3a7651 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSClientRetries.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSClientRetries.java
+@@ -53,6 +53,7 @@
+ import org.apache.commons.logging.impl.Log4JLogger;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.fs.CreateFlag;
+ import org.apache.hadoop.fs.FSDataInputStream;
+@@ -264,7 +265,7 @@ public Object answer(InvocationOnMock invocation)
+         .when(mockNN)
+         .create(anyString(), (FsPermission) anyObject(), anyString(),
+             (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
+-            anyShort(), anyLong(), (List<CipherSuite>) anyList());
++            anyShort(), anyLong(), (CryptoProtocolVersion[]) anyObject());
+ 
+     final DFSClient client = new DFSClient(null, mockNN, conf, null);
+     OutputStream os = client.create("testfile", true);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index cfec464..ff55cdb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -40,10 +40,13 @@
+ import com.google.common.collect.Lists;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+ import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.crypto.key.KeyProviderFactory;
++import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
++import org.apache.hadoop.fs.CreateFlag;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+ import org.apache.hadoop.fs.FSTestWrapper;
+ import org.apache.hadoop.fs.FileContext;
+@@ -57,7 +60,9 @@
+ import org.apache.hadoop.fs.RemoteIterator;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.client.HdfsAdmin;
++import org.apache.hadoop.hdfs.protocol.ClientProtocol;
+ import org.apache.hadoop.hdfs.protocol.EncryptionZone;
++import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+ import org.apache.hadoop.hdfs.server.namenode.EncryptionFaultInjector;
+@@ -68,6 +73,7 @@
+ import org.apache.hadoop.hdfs.tools.offlineImageViewer.PBImageXmlWriter;
+ import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+ import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
++import org.apache.hadoop.io.EnumSetWritable;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -83,6 +89,11 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.mockito.Mockito;
++
++import static org.mockito.Matchers.anyBoolean;
++import static org.mockito.Matchers.anyLong;
++import static org.mockito.Matchers.anyObject;
++import static org.mockito.Matchers.anyShort;
+ import static org.mockito.Mockito.withSettings;
+ import static org.mockito.Mockito.any;
+ import static org.mockito.Mockito.anyString;
+@@ -628,7 +639,7 @@ private void appendOneByte(FileSystem fs, Path p) throws IOException {
+   }
+ 
+   @Test(timeout = 60000)
+-  public void testCipherSuiteNegotiation() throws Exception {
++  public void testVersionAndSuiteNegotiation() throws Exception {
+     final HdfsAdmin dfsAdmin =
+         new HdfsAdmin(FileSystem.getDefaultUri(conf), conf);
+     final Path zone = new Path("/zone");
+@@ -637,43 +648,44 @@ public void testCipherSuiteNegotiation() throws Exception {
+     // Create a file in an EZ, which should succeed
+     DFSTestUtil
+         .createFile(fs, new Path(zone, "success1"), 0, (short) 1, 0xFEED);
+-    // Pass no cipherSuites, fail
+-    fs.getClient().cipherSuites = Lists.newArrayListWithCapacity(0);
++    // Pass no supported versions, fail
++    DFSOutputStream.SUPPORTED_CRYPTO_VERSIONS = new CryptoProtocolVersion[] {};
+     try {
+       DFSTestUtil.createFile(fs, new Path(zone, "fail"), 0, (short) 1, 0xFEED);
+-      fail("Created a file without specifying a CipherSuite!");
+-    } catch (UnknownCipherSuiteException e) {
+-      assertExceptionContains("No cipher suites", e);
++      fail("Created a file without specifying a crypto protocol version");
++    } catch (UnknownCryptoProtocolVersionException e) {
++      assertExceptionContains("No crypto protocol versions", e);
+     }
+-    // Pass some unknown cipherSuites, fail
+-    fs.getClient().cipherSuites = Lists.newArrayListWithCapacity(3);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
++    // Pass some unknown versions, fail
++    DFSOutputStream.SUPPORTED_CRYPTO_VERSIONS = new CryptoProtocolVersion[]
++        { CryptoProtocolVersion.UNKNOWN, CryptoProtocolVersion.UNKNOWN };
+     try {
+       DFSTestUtil.createFile(fs, new Path(zone, "fail"), 0, (short) 1, 0xFEED);
+-      fail("Created a file without specifying a CipherSuite!");
+-    } catch (UnknownCipherSuiteException e) {
+-      assertExceptionContains("No cipher suites", e);
++      fail("Created a file without specifying a known crypto protocol version");
++    } catch (UnknownCryptoProtocolVersionException e) {
++      assertExceptionContains("No crypto protocol versions", e);
+     }
+     // Pass some unknown and a good cipherSuites, success
+-    fs.getClient().cipherSuites = Lists.newArrayListWithCapacity(3);
+-    fs.getClient().cipherSuites.add(CipherSuite.AES_CTR_NOPADDING);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
++    DFSOutputStream.SUPPORTED_CRYPTO_VERSIONS =
++        new CryptoProtocolVersion[] {
++            CryptoProtocolVersion.UNKNOWN,
++            CryptoProtocolVersion.UNKNOWN,
++            CryptoProtocolVersion.ENCRYPTION_ZONES };
+     DFSTestUtil
+         .createFile(fs, new Path(zone, "success2"), 0, (short) 1, 0xFEED);
+-    fs.getClient().cipherSuites = Lists.newArrayListWithCapacity(3);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
+-    fs.getClient().cipherSuites.add(CipherSuite.UNKNOWN);
+-    fs.getClient().cipherSuites.add(CipherSuite.AES_CTR_NOPADDING);
++    DFSOutputStream.SUPPORTED_CRYPTO_VERSIONS =
++        new CryptoProtocolVersion[] {
++            CryptoProtocolVersion.ENCRYPTION_ZONES,
++            CryptoProtocolVersion.UNKNOWN,
++            CryptoProtocolVersion.UNKNOWN} ;
+     DFSTestUtil
+         .createFile(fs, new Path(zone, "success3"), 4096, (short) 1, 0xFEED);
+     // Check KeyProvider state
+     // Flushing the KP on the NN, since it caches, and init a test one
+     cluster.getNamesystem().getProvider().flush();
+     KeyProvider provider = KeyProviderFactory
+-        .get(new URI(conf.get(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI)), conf);
++        .get(new URI(conf.get(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI)),
++            conf);
+     List<String> keys = provider.getKeys();
+     assertEquals("Expected NN to have created one key per zone", 1,
+         keys.size());
+@@ -691,6 +703,65 @@ public void testCipherSuiteNegotiation() throws Exception {
+               "/success" + i));
+       assertEquals(feInfo.getCipherSuite(), CipherSuite.AES_CTR_NOPADDING);
+     }
++
++    DFSClient old = fs.dfs;
++    try {
++      testCipherSuiteNegotiation(fs, conf);
++    } finally {
++      fs.dfs = old;
++    }
++  }
++
++  @SuppressWarnings("unchecked")
++  private static void mockCreate(ClientProtocol mcp,
++      CipherSuite suite, CryptoProtocolVersion version) throws Exception {
++    Mockito.doReturn(
++        new HdfsFileStatus(0, false, 1, 1024, 0, 0, new FsPermission(
++            (short) 777), "owner", "group", new byte[0], new byte[0],
++            1010, 0, new FileEncryptionInfo(suite,
++            version, new byte[suite.getAlgorithmBlockSize()],
++            new byte[suite.getAlgorithmBlockSize()],
++            "fakeKey", "fakeVersion")))
++        .when(mcp)
++        .create(anyString(), (FsPermission) anyObject(), anyString(),
++            (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
++            anyShort(), anyLong(), (CryptoProtocolVersion[]) anyObject());
++  }
++
++  // This test only uses mocks. Called from the end of an existing test to
++  // avoid an extra mini cluster.
++  private static void testCipherSuiteNegotiation(DistributedFileSystem fs,
++      Configuration conf) throws Exception {
++    // Set up mock ClientProtocol to test client-side CipherSuite negotiation
++    final ClientProtocol mcp = Mockito.mock(ClientProtocol.class);
++
++    // Try with an empty conf
++    final Configuration noCodecConf = new Configuration(conf);
++    final CipherSuite suite = CipherSuite.AES_CTR_NOPADDING;
++    final String confKey = CommonConfigurationKeysPublic
++        .HADOOP_SECURITY_CRYPTO_CODEC_CLASSES_KEY_PREFIX + suite
++        .getConfigSuffix();
++    noCodecConf.set(confKey, "");
++    fs.dfs = new DFSClient(null, mcp, noCodecConf, null);
++    mockCreate(mcp, suite, CryptoProtocolVersion.ENCRYPTION_ZONES);
++    try {
++      fs.create(new Path("/mock"));
++      fail("Created with no configured codecs!");
++    } catch (UnknownCipherSuiteException e) {
++      assertExceptionContains("No configuration found for the cipher", e);
++    }
++
++    // Try create with an UNKNOWN CipherSuite
++    fs.dfs = new DFSClient(null, mcp, conf, null);
++    CipherSuite unknown = CipherSuite.UNKNOWN;
++    unknown.setUnknownValue(989);
++    mockCreate(mcp, unknown, CryptoProtocolVersion.ENCRYPTION_ZONES);
++    try {
++      fs.create(new Path("/mock"));
++      fail("Created with unknown cipher!");
++    } catch (IOException e) {
++      assertExceptionContains("unknown CipherSuite with ID 989", e);
++    }
+   }
+ 
+   @Test(timeout = 120000)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLease.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLease.java
+index 4360052..eddd18c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLease.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLease.java
+@@ -36,6 +36,7 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.CipherSuite;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.CreateFlag;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+ import org.apache.hadoop.fs.FileSystem;
+@@ -350,7 +351,7 @@ public void testFactory() throws Exception {
+         .when(mcp)
+         .create(anyString(), (FsPermission) anyObject(), anyString(),
+             (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
+-            anyShort(), anyLong(), (List<CipherSuite>) anyList());
++            anyShort(), anyLong(), (CryptoProtocolVersion[]) anyObject());
+ 
+     final Configuration conf = new Configuration();
+     final DFSClient c1 = createDFSClientAs(ugi[0], conf);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
+index 785877a..b8ad4be 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
+@@ -39,6 +39,7 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.fs.CacheFlag;
+ import org.apache.hadoop.fs.CreateFlag;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+@@ -394,7 +395,8 @@ void invoke() throws Exception {
+       this.status = client.getNamenode().create(fileName,
+           FsPermission.getFileDefault(), client.getClientName(),
+           new EnumSetWritable<CreateFlag>(createFlag), false, DataNodes,
+-          BlockSize, null);
++          BlockSize,
++          new CryptoProtocolVersion[] {CryptoProtocolVersion.ENCRYPTION_ZONES});
+     }
+ 
+     @Override
+-- 
+1.7.9.5
+

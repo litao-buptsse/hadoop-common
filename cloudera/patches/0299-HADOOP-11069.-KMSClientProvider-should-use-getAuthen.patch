@@ -1,0 +1,67 @@
+From f2a79048510e3195977ab003dd56e526013ec5cc Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Fri, 5 Sep 2014 10:04:07 -0700
+Subject: [PATCH 299/813] HADOOP-11069. KMSClientProvider should use
+ getAuthenticationMethod() to determine if in
+ proxyuser mode or not. (tucu)
+
+(cherry picked from commit 8bf2a0de69547ac50b6e8c36ff7f13b028525641)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/kms/KMSClientProvider.java   |    6 +++---
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |    6 +++---
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+index df7313c..40b84cb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/kms/KMSClientProvider.java
+@@ -384,9 +384,9 @@ private HttpURLConnection createConnection(final URL url, String method)
+       // if current UGI is different from UGI at constructor time, behave as
+       // proxyuser
+       UserGroupInformation currentUgi = UserGroupInformation.getCurrentUser();
+-      final String doAsUser =
+-          (loginUgi.getShortUserName().equals(currentUgi.getShortUserName()))
+-          ? null : currentUgi.getShortUserName();
++      final String doAsUser = (currentUgi.getAuthenticationMethod() ==
++          UserGroupInformation.AuthenticationMethod.PROXY)
++                              ? currentUgi.getShortUserName() : null;
+ 
+       // creating the HTTP connection using the current UGI at constructor time
+       conn = loginUgi.doAs(new PrivilegedExceptionAction<HttpURLConnection>() {
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index f381fa0..b921c84 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -1157,7 +1157,7 @@ public Void call() throws Exception {
+         final URI uri = createKMSUri(getKMSUrl());
+ 
+         // proxyuser client using kerberos credentials
+-        UserGroupInformation clientUgi = UserGroupInformation.
++        final UserGroupInformation clientUgi = UserGroupInformation.
+             loginUserFromKeytabAndReturnUGI("client", keytab.getAbsolutePath());
+         clientUgi.doAs(new PrivilegedExceptionAction<Void>() {
+           @Override
+@@ -1167,7 +1167,7 @@ public Void run() throws Exception {
+ 
+             // authorized proxyuser
+             UserGroupInformation fooUgi =
+-                UserGroupInformation.createRemoteUser("foo");
++                UserGroupInformation.createProxyUser("foo", clientUgi);
+             fooUgi.doAs(new PrivilegedExceptionAction<Void>() {
+               @Override
+               public Void run() throws Exception {
+@@ -1179,7 +1179,7 @@ public Void run() throws Exception {
+ 
+             // unauthorized proxyuser
+             UserGroupInformation foo1Ugi =
+-                UserGroupInformation.createRemoteUser("foo1");
++                UserGroupInformation.createProxyUser("foo1", clientUgi);
+             foo1Ugi.doAs(new PrivilegedExceptionAction<Void>() {
+               @Override
+               public Void run() throws Exception {
+-- 
+1.7.9.5
+

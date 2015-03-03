@@ -1,0 +1,126 @@
+From 033be34f9237d84a071c0419f8a596ae9735e30c Mon Sep 17 00:00:00 2001
+From: junping_du <junping_du@apache.org>
+Date: Mon, 22 Sep 2014 22:45:06 -0700
+Subject: [PATCH 522/813] YARN-2584. TestContainerManagerSecurity fails on
+ trunk. (Contributed by Jian He)
+
+(cherry picked from commit a9a55db0650b5e6b7d88afb883b88aba7a13cd44)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/nodemanager/NodeStatusUpdaterImpl.java  |    2 +-
+ .../yarn/server/TestContainerManagerSecurity.java  |   28 +++++++++++++-------
+ 2 files changed, 20 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeStatusUpdaterImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeStatusUpdaterImpl.java
+index b9feacb..b4dcf1f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeStatusUpdaterImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeStatusUpdaterImpl.java
+@@ -422,7 +422,7 @@ public void addCompletedContainer(ContainerId containerId) {
+   @VisibleForTesting
+   @Private
+   public void removeCompletedContainersFromContext(
+-      List<ContainerId>containerIds) throws IOException {
++      List<ContainerId> containerIds) throws IOException {
+     Set<ContainerId> removedContainers = new HashSet<ContainerId>();
+ 
+     // If the AM has pulled the completedContainer it can be removed
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestContainerManagerSecurity.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestContainerManagerSecurity.java
+index 9bb44ca..3f82d72 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestContainerManagerSecurity.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestContainerManagerSecurity.java
+@@ -27,10 +27,8 @@
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+-import java.util.List;
+ import java.util.LinkedList;
+-import com.google.common.io.ByteArrayDataInput;
+-import com.google.common.io.ByteStreams;
++import java.util.List;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -52,6 +50,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
++import org.apache.hadoop.yarn.api.records.ContainerState;
+ import org.apache.hadoop.yarn.api.records.NodeId;
+ import org.apache.hadoop.yarn.api.records.Priority;
+ import org.apache.hadoop.yarn.api.records.Resource;
+@@ -80,6 +79,9 @@
+ import org.junit.runners.Parameterized;
+ import org.junit.runners.Parameterized.Parameters;
+ 
++import com.google.common.io.ByteArrayDataInput;
++import com.google.common.io.ByteStreams;
++
+ @RunWith(Parameterized.class)
+ public class TestContainerManagerSecurity extends KerberosSecurityTestcase {
+ 
+@@ -137,7 +139,7 @@ public TestContainerManagerSecurity(Configuration conf) {
+     this.conf = conf;
+   }
+   
+-  @Test (timeout = 1000000)
++  @Test (timeout = 120000)
+   public void testContainerManager() throws Exception {
+     try {
+       yarnCluster = new MiniYARNCluster(TestContainerManagerSecurity.class
+@@ -162,7 +164,7 @@ public void testContainerManager() throws Exception {
+     }
+   }
+ 
+-  @Test (timeout = 500000)
++  @Test (timeout = 120000)
+   public void testContainerManagerWithEpoch() throws Exception {
+     try {
+       yarnCluster = new MiniYARNCluster(TestContainerManagerSecurity.class
+@@ -311,7 +313,7 @@ private void testNMTokens(Configuration conf) throws Exception {
+     // trying to stop the container. It should not throw any exception.
+     testStopContainer(rpc, validAppAttemptId, validNode, validContainerId,
+         validNMToken, false);
+-    
++
+     // Rolling over master key twice so that we can check whether older keys
+     // are used for authentication.
+     rollNMTokenMasterKey(nmTokenSecretManagerRM, nmTokenSecretManagerNM);
+@@ -326,7 +328,7 @@ private void testNMTokens(Configuration conf) throws Exception {
+     sb.append(" was recently stopped on node manager");
+     Assert.assertTrue(testGetContainer(rpc, validAppAttemptId, validNode,
+         validContainerId, validNMToken, true).contains(sb.toString()));
+-    
++
+     // Now lets remove the container from nm-memory
+     nm.getNodeStatusUpdater().clearFinishedContainersFromCache();
+     
+@@ -355,14 +357,22 @@ private void testNMTokens(Configuration conf) throws Exception {
+   private void waitForContainerToFinishOnNM(ContainerId containerId) {
+     Context nmContet = yarnCluster.getNodeManager(0).getNMContext();
+     int interval = 4 * 60; // Max time for container token to expire.
++    Assert.assertNotNull(nmContet.getContainers().containsKey(containerId));
+     while ((interval-- > 0)
+-        && nmContet.getContainers().containsKey(containerId)) {
++        && !nmContet.getContainers().get(containerId)
++          .cloneAndGetContainerStatus().getState()
++          .equals(ContainerState.COMPLETE)) {
+       try {
++        LOG.info("Waiting for " + containerId + " to complete.");
+         Thread.sleep(1000);
+       } catch (InterruptedException e) {
+       }
+     }
+-    Assert.assertFalse(nmContet.getContainers().containsKey(containerId));
++    // Normally, Containers will be removed from NM context after they are
++    // explicitly acked by RM. Now, manually remove it for testing.
++    yarnCluster.getNodeManager(0).getNodeStatusUpdater()
++      .addCompletedContainer(containerId);
++    nmContet.getContainers().remove(containerId);
+   }
+ 
+   protected void waitForNMToReceiveNMTokenKey(
+-- 
+1.7.9.5
+

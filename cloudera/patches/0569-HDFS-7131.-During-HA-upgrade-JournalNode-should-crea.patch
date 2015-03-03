@@ -1,0 +1,239 @@
+From 9535003886d121e1b73cfa56f19a796e30a586ea Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing@hortonworks.com>
+Date: Thu, 25 Sep 2014 17:15:33 -0700
+Subject: [PATCH 569/813] HDFS-7131. During HA upgrade, JournalNode should
+ create a new committedTxnId file in the current
+ directory. Contributed by Jing Zhao.
+
+(cherry picked from commit e9c37de485f8d4dcb04afb0d4cb887cc09d317c9)
+---
+ .../hadoop/hdfs/qjournal/server/Journal.java       |   23 ++++++---
+ .../hadoop/hdfs/qjournal/server/JournalNode.java   |    6 ++-
+ .../server/namenode/ha/TestDFSUpgradeWithHA.java   |   50 +++++++++++++++++---
+ 3 files changed, 65 insertions(+), 14 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
+index 49b7b6e..0eccb23 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
+@@ -996,7 +996,7 @@ synchronized void discardSegments(long startTxId) throws IOException {
+   public synchronized void doPreUpgrade() throws IOException {
+     // Do not hold file lock on committedTxnId, because the containing
+     // directory will be renamed.  It will be reopened lazily on next access.
+-    committedTxnId.close();
++    IOUtils.cleanup(LOG, committedTxnId);
+     storage.getJournalManager().doPreUpgrade();
+   }
+ 
+@@ -1021,14 +1021,25 @@ public synchronized void doUpgrade(StorageInfo sInfo) throws IOException {
+         new File(previousDir, LAST_PROMISED_FILENAME), 0);
+     PersistentLongFile prevLastWriterEpoch = new PersistentLongFile(
+         new File(previousDir, LAST_WRITER_EPOCH), 0);
+-    
++    BestEffortLongFile prevCommittedTxnId = new BestEffortLongFile(
++        new File(previousDir, COMMITTED_TXID_FILENAME),
++        HdfsConstants.INVALID_TXID);
++
+     lastPromisedEpoch = new PersistentLongFile(
+         new File(currentDir, LAST_PROMISED_FILENAME), 0);
+     lastWriterEpoch = new PersistentLongFile(
+         new File(currentDir, LAST_WRITER_EPOCH), 0);
+-    
+-    lastPromisedEpoch.set(prevLastPromisedEpoch.get());
+-    lastWriterEpoch.set(prevLastWriterEpoch.get());
++    committedTxnId = new BestEffortLongFile(
++        new File(currentDir, COMMITTED_TXID_FILENAME),
++        HdfsConstants.INVALID_TXID);
++
++    try {
++      lastPromisedEpoch.set(prevLastPromisedEpoch.get());
++      lastWriterEpoch.set(prevLastWriterEpoch.get());
++      committedTxnId.set(prevCommittedTxnId.get());
++    } finally {
++      IOUtils.cleanup(LOG, prevCommittedTxnId);
++    }
+   }
+ 
+   public synchronized void doFinalize() throws IOException {
+@@ -1049,7 +1060,7 @@ public Boolean canRollBack(StorageInfo storage, StorageInfo prevStorage,
+   public synchronized void doRollback() throws IOException {
+     // Do not hold file lock on committedTxnId, because the containing
+     // directory will be renamed.  It will be reopened lazily on next access.
+-    committedTxnId.close();
++    IOUtils.cleanup(LOG, committedTxnId);
+     storage.getJournalManager().doRollback();
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
+index ca70ed8..091613c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
+@@ -26,6 +26,7 @@
+ 
+ import javax.management.ObjectName;
+ 
++import com.google.common.annotations.VisibleForTesting;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -92,8 +93,9 @@ synchronized Journal getOrCreateJournal(String jid, StartupOption startOpt)
+     
+     return journal;
+   }
+-  
+-  Journal getOrCreateJournal(String jid) throws IOException {
++
++  @VisibleForTesting
++  public Journal getOrCreateJournal(String jid) throws IOException {
+     return getOrCreateJournal(jid, StartupOption.REGULAR);
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDFSUpgradeWithHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDFSUpgradeWithHA.java
+index c3a8674..c749431 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDFSUpgradeWithHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDFSUpgradeWithHA.java
+@@ -38,19 +38,23 @@
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.qjournal.MiniQJMHACluster;
+ import org.apache.hadoop.hdfs.qjournal.MiniQJMHACluster.Builder;
+ import org.apache.hadoop.hdfs.qjournal.server.Journal;
++import org.apache.hadoop.hdfs.qjournal.server.JournalNode;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.hdfs.tools.DFSAdmin;
++import org.apache.hadoop.hdfs.util.BestEffortLongFile;
+ import org.apache.hadoop.hdfs.util.PersistentLongFile;
+ import org.apache.hadoop.test.GenericTestUtils;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+ import com.google.common.base.Joiner;
++import org.mockito.internal.util.reflection.Whitebox;
+ 
+ /**
+  * Tests for upgrading with HA enabled.
+@@ -294,6 +298,16 @@ public void testNfsUpgrade() throws IOException, URISyntaxException {
+     }
+   }
+ 
++  private long getCommittedTxnIdValue(MiniQJMHACluster qjCluster)
++      throws IOException {
++    Journal journal1 = qjCluster.getJournalCluster().getJournalNode(0)
++        .getOrCreateJournal(MiniQJMHACluster.NAMESERVICE);
++    BestEffortLongFile committedTxnId = (BestEffortLongFile) Whitebox
++        .getInternalState(journal1, "committedTxnId");
++    return committedTxnId != null ? committedTxnId.get() :
++        HdfsConstants.INVALID_TXID;
++  }
++
+   /**
+    * Make sure that an HA NN can successfully upgrade when configured using
+    * JournalNodes.
+@@ -320,7 +334,10 @@ public void testUpgradeWithJournalNodes() throws IOException,
+       cluster.transitionToActive(0);
+       fs = HATestUtil.configureFailoverFs(cluster, conf);
+       assertTrue(fs.mkdirs(new Path("/foo1")));
+-      
++
++      // get the value of the committedTxnId in journal nodes
++      final long cidBeforeUpgrade = getCommittedTxnIdValue(qjCluster);
++
+       // Do the upgrade. Shut down NN1 and then restart NN0 with the upgrade
+       // flag.
+       cluster.shutdownNameNode(1);
+@@ -330,6 +347,8 @@ public void testUpgradeWithJournalNodes() throws IOException,
+       checkNnPreviousDirExistence(cluster, 0, true);
+       checkNnPreviousDirExistence(cluster, 1, false);
+       checkJnPreviousDirExistence(qjCluster, true);
++
++      assertTrue(cidBeforeUpgrade <= getCommittedTxnIdValue(qjCluster));
+       
+       // NN0 should come up in the active state when given the -upgrade option,
+       // so no need to transition it to active.
+@@ -342,6 +361,8 @@ public void testUpgradeWithJournalNodes() throws IOException,
+       // Make sure we can still do FS ops after upgrading.
+       cluster.transitionToActive(0);
+       assertTrue(fs.mkdirs(new Path("/foo3")));
++
++      assertTrue(getCommittedTxnIdValue(qjCluster) > cidBeforeUpgrade);
+       
+       // Now bootstrap the standby with the upgraded info.
+       int rc = BootstrapStandby.run(
+@@ -388,15 +409,18 @@ public void testFinalizeWithJournalNodes() throws IOException,
+       cluster.transitionToActive(0);
+       fs = HATestUtil.configureFailoverFs(cluster, conf);
+       assertTrue(fs.mkdirs(new Path("/foo1")));
++
++      final long cidBeforeUpgrade = getCommittedTxnIdValue(qjCluster);
+       
+       // Do the upgrade. Shut down NN1 and then restart NN0 with the upgrade
+       // flag.
+       cluster.shutdownNameNode(1);
+       cluster.getNameNodeInfos()[0].setStartOpt(StartupOption.UPGRADE);
+       cluster.restartNameNode(0, false);
++      assertTrue(cidBeforeUpgrade <= getCommittedTxnIdValue(qjCluster));
+       
+       assertTrue(fs.mkdirs(new Path("/foo2")));
+-      
++
+       checkNnPreviousDirExistence(cluster, 0, true);
+       checkNnPreviousDirExistence(cluster, 1, false);
+       checkJnPreviousDirExistence(qjCluster, true);
+@@ -408,9 +432,13 @@ public void testFinalizeWithJournalNodes() throws IOException,
+       assertEquals(0, rc);
+       
+       cluster.restartNameNode(1);
+-      
++
++      final long cidDuringUpgrade = getCommittedTxnIdValue(qjCluster);
++      assertTrue(cidDuringUpgrade > cidBeforeUpgrade);
++
+       runFinalizeCommand(cluster);
+-      
++
++      assertEquals(cidDuringUpgrade, getCommittedTxnIdValue(qjCluster));
+       checkClusterPreviousDirExistence(cluster, false);
+       checkJnPreviousDirExistence(qjCluster, false);
+       assertCTimesEqual(cluster);
+@@ -614,7 +642,9 @@ public void testRollbackWithJournalNodes() throws IOException,
+       cluster.transitionToActive(0);
+       fs = HATestUtil.configureFailoverFs(cluster, conf);
+       assertTrue(fs.mkdirs(new Path("/foo1")));
+-      
++
++      final long cidBeforeUpgrade = getCommittedTxnIdValue(qjCluster);
++
+       // Do the upgrade. Shut down NN1 and then restart NN0 with the upgrade
+       // flag.
+       cluster.shutdownNameNode(1);
+@@ -628,7 +658,10 @@ public void testRollbackWithJournalNodes() throws IOException,
+       // NN0 should come up in the active state when given the -upgrade option,
+       // so no need to transition it to active.
+       assertTrue(fs.mkdirs(new Path("/foo2")));
+-      
++
++      final long cidDuringUpgrade = getCommittedTxnIdValue(qjCluster);
++      assertTrue(cidDuringUpgrade > cidBeforeUpgrade);
++
+       // Now bootstrap the standby with the upgraded info.
+       int rc = BootstrapStandby.run(
+           new String[]{"-force"},
+@@ -649,6 +682,11 @@ public void testRollbackWithJournalNodes() throws IOException,
+       conf.setStrings(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, Joiner.on(",").join(nn1NameDirs));
+       NameNode.doRollback(conf, false);
+ 
++      final long cidAfterRollback = getCommittedTxnIdValue(qjCluster);
++      assertTrue(cidBeforeUpgrade < cidAfterRollback);
++      // make sure the committedTxnId has been reset correctly after rollback
++      assertTrue(cidDuringUpgrade > cidAfterRollback);
++
+       // The rollback operation should have rolled back the first NN's local
+       // dirs, and the shared dir, but not the other NN's dirs. Those have to be
+       // done by bootstrapping the standby.
+-- 
+1.7.9.5
+

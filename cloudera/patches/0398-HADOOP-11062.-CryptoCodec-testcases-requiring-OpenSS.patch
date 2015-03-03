@@ -1,0 +1,114 @@
+From 744ee4c89fe2829c4c4e2f5d8101a497eb4ab8f0 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Tue, 16 Sep 2014 23:36:10 -0700
+Subject: [PATCH 398/813] HADOOP-11062. CryptoCodec testcases requiring
+ OpenSSL should be run only if -Pnative is used.
+ (asuresh via tucu)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/pom.xml
+
+(cherry picked from commit 1c847fdd61414f7f564de2cc477621edac8164b5)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/pom.xml
+---
+ hadoop-common-project/hadoop-common/pom.xml        |    3 +++
+ .../org/apache/hadoop/crypto/TestCryptoCodec.java  |   18 ++++++++++++++++--
+ hadoop-hdfs-project/hadoop-hdfs/pom.xml            |    8 ++++++++
+ 3 files changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/pom.xml b/hadoop-common-project/hadoop-common/pom.xml
+index 8a42ace..ac9802f 100644
+--- a/hadoop-common-project/hadoop-common/pom.xml
++++ b/hadoop-common-project/hadoop-common/pom.xml
+@@ -388,6 +388,7 @@
+           <systemPropertyVariables>
+             <startKdc>${startKdc}</startKdc>
+             <kdc.resource.dir>${kdc.resource.dir}</kdc.resource.dir>
++            <runningWithNative>${runningWithNative}</runningWithNative>
+           </systemPropertyVariables>
+         </configuration>
+       </plugin>
+@@ -526,6 +527,7 @@
+         <openssl.lib></openssl.lib>
+         <openssl.include></openssl.include>
+         <require.openssl>false</require.openssl>
++        <runningWithNative>true</runningWithNative>
+       </properties>
+       <build>
+         <plugins>
+@@ -645,6 +647,7 @@
+         <openssl.lib></openssl.lib>
+         <openssl.include></openssl.include>
+         <require.openssl>false</require.openssl>
++        <runningWithNative>true</runningWithNative>
+         <bundle.openssl.in.bin>true</bundle.openssl.in.bin>
+       </properties>
+       <build>
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/TestCryptoCodec.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/TestCryptoCodec.java
+index d8aa353..ce33269 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/TestCryptoCodec.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/TestCryptoCodec.java
+@@ -59,7 +59,14 @@
+   
+   @Test(timeout=120000)
+   public void testJceAesCtrCryptoCodec() throws Exception {
+-    Assume.assumeTrue(NativeCodeLoader.buildSupportsOpenssl());
++    if (!"true".equalsIgnoreCase(System.getProperty("runningWithNative"))) {
++      LOG.warn("Skipping since test was not run with -Pnative flag");
++      Assume.assumeTrue(false);
++    }
++    if (!NativeCodeLoader.buildSupportsOpenssl()) {
++      LOG.warn("Skipping test since openSSL library not loaded");
++      Assume.assumeTrue(false);
++    }
+     Assert.assertEquals(null, OpensslCipher.getLoadingFailureReason());
+     cryptoCodecTest(conf, seed, 0, jceCodecClass, jceCodecClass);
+     cryptoCodecTest(conf, seed, count, jceCodecClass, jceCodecClass);
+@@ -68,7 +75,14 @@ public void testJceAesCtrCryptoCodec() throws Exception {
+   
+   @Test(timeout=120000)
+   public void testOpensslAesCtrCryptoCodec() throws Exception {
+-    Assume.assumeTrue(NativeCodeLoader.buildSupportsOpenssl());
++    if (!"true".equalsIgnoreCase(System.getProperty("runningWithNative"))) {
++      LOG.warn("Skipping since test was not run with -Pnative flag");
++      Assume.assumeTrue(false);
++    }
++    if (!NativeCodeLoader.buildSupportsOpenssl()) {
++      LOG.warn("Skipping test since openSSL library not loaded");
++      Assume.assumeTrue(false);
++    }
+     Assert.assertEquals(null, OpensslCipher.getLoadingFailureReason());
+     cryptoCodecTest(conf, seed, 0, opensslCodecClass, opensslCodecClass);
+     cryptoCodecTest(conf, seed, count, opensslCodecClass, opensslCodecClass);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/pom.xml b/hadoop-hdfs-project/hadoop-hdfs/pom.xml
+index d0f9d4d..fd2b0c6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/pom.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/pom.xml
+@@ -206,6 +206,11 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         <groupId>org.apache.maven.plugins</groupId>
+         <artifactId>maven-surefire-plugin</artifactId>
+         <configuration>
++          <systemPropertyVariables>
++            <startKdc>${startKdc}</startKdc>
++            <kdc.resource.dir>${kdc.resource.dir}</kdc.resource.dir>
++            <runningWithNative>${runningWithNative}</runningWithNative>
++          </systemPropertyVariables>
+           <properties>
+             <property>
+               <name>listener</name>
+@@ -529,6 +534,9 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
+       <activation>
+         <activeByDefault>false</activeByDefault>
+       </activation>
++      <properties>
++        <runningWithNative>true</runningWithNative>
++      </properties>
+       <build>
+         <plugins>
+           <plugin>
+-- 
+1.7.9.5
+

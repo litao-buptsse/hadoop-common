@@ -1,0 +1,29 @@
+From 283ed271312fddc022399dcb8d79e80d44379454 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Mon, 13 Oct 2014 10:27:36 -0700
+Subject: [PATCH 658/813] HDFS-7236. Fix
+ TestOpenFilesWithSnapshot#testOpenFilesWithMultipleSnapshots.
+ Contributed by Yongjun Zhang. (cherry picked from
+ commit 715f222a80c906c16cb678d36c3dc9ca794e7064)
+ (cherry picked from commit
+ 77d64dc239b1112c8e5b104f034ad26ce062107b)
+
+---
+ .../snapshot/TestOpenFilesWithSnapshot.java        |    1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestOpenFilesWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestOpenFilesWithSnapshot.java
+index 97121f6..62041e8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestOpenFilesWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestOpenFilesWithSnapshot.java
+@@ -175,6 +175,7 @@ private void doTestMultipleSnapshots(boolean saveNamespace)
+     fs.createSnapshot(path, "s2");
+     fs.delete(new Path("/test/test"), true);
+     fs.deleteSnapshot(path, "s2");
++    cluster.triggerBlockReports();
+     if (saveNamespace) {
+       NameNode nameNode = cluster.getNameNode();
+       NameNodeAdapter.enterSafeMode(nameNode, false);
+-- 
+1.7.9.5
+

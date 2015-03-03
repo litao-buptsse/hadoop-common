@@ -1,0 +1,94 @@
+From 50e1bf577ebddea37d9c392914f8a9d5991e9b49 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Tue, 15 Jul 2014 18:17:35 +0000
+Subject: [PATCH 169/813] HDFS-5809. BlockPoolSliceScanner and high speed hdfs
+ appending make datanode to drop into infinite loop
+ (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1610791 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d7f256a7cad46e6147e84b10fdf9cd18bb6e3851)
+(cherry picked from commit 26633fd39dee0ec18c643d43ccfe358549ef2772)
+---
+ .../server/datanode/BlockPoolSliceScanner.java     |   25 ++++++++------------
+ .../hdfs/server/datanode/DataNodeTestUtils.java    |    3 ++-
+ 2 files changed, 12 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
+index 5310c3d..1039b4f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
+@@ -310,18 +310,11 @@ void deleteBlocks(Block[] blocks) {
+     }
+   }
+   
+-  private synchronized void updateScanStatus(Block block, 
++  private synchronized void updateScanStatus(BlockScanInfo info,
+                                              ScanType type,
+                                              boolean scanOk) {
+-    BlockScanInfo info = blockMap.get(block);
+-    
+-    if ( info != null ) {
+-      delBlockInfo(info);
+-    } else {
+-      // It might already be removed. Thats ok, it will be caught next time.
+-      info = new BlockScanInfo(block);
+-    }
+-    
++    delBlockInfo(info);
++
+     long now = Time.monotonicNow();
+     info.lastScanType = type;
+     info.lastScanTime = now;
+@@ -334,8 +327,8 @@ private synchronized void updateScanStatus(Block block,
+     }
+     
+     if (verificationLog != null) {
+-      verificationLog.append(now, block.getGenerationStamp(),
+-          block.getBlockId());
++      verificationLog.append(now, info.getGenerationStamp(),
++          info.getBlockId());
+     }
+   }
+   
+@@ -434,11 +427,13 @@ void verifyBlock(ExtendedBlock block) {
+           totalTransientErrors++;
+         }
+         
+-        updateScanStatus(block.getLocalBlock(), ScanType.VERIFICATION_SCAN, true);
++        updateScanStatus((BlockScanInfo)block.getLocalBlock(),
++            ScanType.VERIFICATION_SCAN, true);
+ 
+         return;
+       } catch (IOException e) {
+-        updateScanStatus(block.getLocalBlock(), ScanType.VERIFICATION_SCAN, false);
++        updateScanStatus((BlockScanInfo)block.getLocalBlock(),
++            ScanType.VERIFICATION_SCAN, false);
+ 
+         // If the block does not exists anymore, then its not an error
+         if (!dataset.contains(block)) {
+@@ -497,7 +492,7 @@ private synchronized boolean isFirstBlockProcessed() {
+   
+   // Picks one block and verifies it
+   private void verifyFirstBlock() {
+-    Block block = null;
++    BlockScanInfo block = null;
+     synchronized (this) {
+       if (!blockInfoSet.isEmpty()) {
+         block = blockInfoSet.first();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/DataNodeTestUtils.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/DataNodeTestUtils.java
+index 2cf8f6d..f50afd4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/DataNodeTestUtils.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/DataNodeTestUtils.java
+@@ -116,7 +116,8 @@ public static InterDatanodeProtocol createInterDatanodeProtocolProxy(
+   
+   public static void runBlockScannerForBlock(DataNode dn, ExtendedBlock b) {
+     BlockPoolSliceScanner bpScanner = getBlockPoolScanner(dn, b);
+-    bpScanner.verifyBlock(b);
++    bpScanner.verifyBlock(new ExtendedBlock(b.getBlockPoolId(),
++        new BlockPoolSliceScanner.BlockScanInfo(b.getLocalBlock())));
+   }
+ 
+   private static BlockPoolSliceScanner getBlockPoolScanner(DataNode dn,
+-- 
+1.7.9.5
+

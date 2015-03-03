@@ -1,0 +1,33 @@
+From fb40a213681cd502afe52bbc3d5719f8187dc4c3 Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Mon, 29 Sep 2014 18:11:16 +0000
+Subject: [PATCH 566/813] MAPREDUCE-6094.
+ TestMRCJCFileInputFormat.testAddInputPath() fails
+ on trunk. Contributed by Akira AJISAKA
+
+(cherry picked from commit 23fbfe36c31674907a26c8ecc6fd47888dfcc1ea)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../lib/input/TestMRCJCFileInputFormat.java        |    3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestMRCJCFileInputFormat.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestMRCJCFileInputFormat.java
+index aeba171..b806630 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestMRCJCFileInputFormat.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/lib/input/TestMRCJCFileInputFormat.java
+@@ -47,9 +47,8 @@
+   @Test
+   public void testAddInputPath() throws IOException {
+     final Configuration conf = new Configuration();
+-    conf.set("fs.defaultFS", "s3://abc:xyz@hostname/");
++    conf.set("fs.defaultFS", "file:///abc/");
+     final Job j = Job.getInstance(conf);
+-    j.getConfiguration().set("fs.defaultFS", "s3://abc:xyz@hostname/");
+ 
+     //setup default fs
+     final FileSystem defaultfs = FileSystem.get(conf);
+-- 
+1.7.9.5
+

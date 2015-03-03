@@ -1,0 +1,30 @@
+From 847697d9658df6547cfdbe4355fdf43bff40123a Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Thu, 30 Oct 2014 10:37:24 -0700
+Subject: [PATCH 781/813] HADOOP-11250. fix endmacro of
+ set_find_shared_library_without_version in
+ CMakeLists (Yi Liu via Colin P. McCabe)
+
+(cherry picked from commit e488f0d93bf22d25aaaac7a6a88fc300f9aa6d5a)
+(cherry picked from commit e107ea5177776bbe14178859a53740f72a46b64b)
+(cherry picked from commit e831b65ca7a87a3deebdf60fb0ff122521851c2e)
+---
+ .../hadoop-common/src/CMakeLists.txt               |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/CMakeLists.txt b/hadoop-common-project/hadoop-common/src/CMakeLists.txt
+index af375f6..b8ac460 100644
+--- a/hadoop-common-project/hadoop-common/src/CMakeLists.txt
++++ b/hadoop-common-project/hadoop-common/src/CMakeLists.txt
+@@ -94,7 +94,7 @@ macro(set_find_shared_library_without_version)
+         # Most UNIX variants use .so
+         SET(CMAKE_FIND_LIBRARY_SUFFIXES ".so")
+     ENDIF()
+-endmacro(set_find_shared_library_version LVERS)
++endmacro(set_find_shared_library_without_version)
+ 
+ if (NOT GENERATED_JAVAH)
+     # Must identify where the generated headers have been placed
+-- 
+1.7.9.5
+

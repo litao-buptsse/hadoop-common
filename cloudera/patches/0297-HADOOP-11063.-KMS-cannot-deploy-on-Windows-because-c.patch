@@ -1,0 +1,31 @@
+From 44f52eeeb9e2fb3d7a140784e70163a9bd42dc6d Mon Sep 17 00:00:00 2001
+From: cnauroth <cnauroth@apache.org>
+Date: Thu, 4 Sep 2014 11:47:18 -0700
+Subject: [PATCH 297/813] HADOOP-11063. KMS cannot deploy on Windows, because
+ class names are too long. Contributed by Chris
+ Nauroth.
+
+(cherry picked from commit b44b2ee4adb78723c221a7da8fd35ed011d0905c)
+(cherry picked from commit c035365338d1d6ca32f3912f5ebb70f8d1304f1a)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ hadoop-common-project/hadoop-kms/pom.xml |    1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/hadoop-common-project/hadoop-kms/pom.xml b/hadoop-common-project/hadoop-kms/pom.xml
+index f14e1ab..b14c4a5 100644
+--- a/hadoop-common-project/hadoop-kms/pom.xml
++++ b/hadoop-common-project/hadoop-kms/pom.xml
+@@ -244,6 +244,7 @@
+               <goal>war</goal>
+             </goals>
+             <configuration>
++              <archiveClasses>true</archiveClasses>
+               <warName>kms</warName>
+               <webappDirectory>${project.build.directory}/kms
+               </webappDirectory>
+-- 
+1.7.9.5
+

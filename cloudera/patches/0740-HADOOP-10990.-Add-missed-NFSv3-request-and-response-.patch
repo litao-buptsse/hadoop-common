@@ -1,0 +1,347 @@
+From 74401f9e38b5183fe4212986f8d9b0f82ec07f75 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Tue, 2 Sep 2014 11:27:28 -0700
+Subject: [PATCH 740/813] HADOOP-10990. Add missed NFSv3 request and response
+ classes. Contributed by Brandon Li
+
+(cherry picked from commit bad5f38d47f5e93c21641931ac92595c71b05bd7)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../apache/hadoop/nfs/nfs3/Nfs3FileAttributes.java |   14 ++-
+ .../hadoop/nfs/nfs3/request/LINK3Request.java      |   61 ++++++++++++++
+ .../hadoop/nfs/nfs3/request/MKNOD3Request.java     |   89 ++++++++++++++++++++
+ .../hadoop/nfs/nfs3/response/LINK3Response.java    |   54 ++++++++++++
+ .../hadoop/nfs/nfs3/response/MKNOD3Response.java   |   68 +++++++++++++++
+ 5 files changed, 284 insertions(+), 2 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LINK3Request.java
+ create mode 100644 hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKNOD3Request.java
+ create mode 100644 hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java
+ create mode 100644 hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3FileAttributes.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3FileAttributes.java
+index 9936b8d..47126d6 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3FileAttributes.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3FileAttributes.java
+@@ -53,9 +53,19 @@
+    * For Hadoop, currently this field is always zero.
+    */
+   public static class Specdata3 {
+-    final static int specdata1 = 0;
+-    final static int specdata2 = 0;
++    final int specdata1;
++    final int specdata2;
+ 
++    public Specdata3() {
++      specdata1 = 0;
++      specdata2 = 0;
++    }
++    
++    public Specdata3(int specdata1, int specdata2) {
++      this.specdata1 = specdata1;
++      this.specdata2 = specdata2;
++    }
++    
+     public int getSpecdata1() {
+       return specdata1;
+     }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LINK3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LINK3Request.java
+new file mode 100644
+index 0000000..2e959f5
+--- /dev/null
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/LINK3Request.java
+@@ -0,0 +1,61 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.nfs.nfs3.request;
++
++import java.io.IOException;
++
++import org.apache.hadoop.nfs.nfs3.FileHandle;
++import org.apache.hadoop.oncrpc.XDR;
++
++/**
++ * LINK3 Request
++ */
++public class LINK3Request extends RequestWithHandle {
++  private final FileHandle fromDirHandle;
++  private final String fromName;
++
++  public LINK3Request(FileHandle handle, FileHandle fromDirHandle,
++      String fromName) {
++    super(handle);
++    this.fromDirHandle = fromDirHandle;
++    this.fromName = fromName;
++  }
++
++  public static LINK3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    FileHandle fromDirHandle = readHandle(xdr);
++    String fromName = xdr.readString();
++    return new LINK3Request(handle, fromDirHandle, fromName);
++  }
++
++  public FileHandle getFromDirHandle() {
++    return fromDirHandle;
++  }
++
++  public String getFromName() {
++    return fromName;
++  }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    fromDirHandle.serialize(xdr);
++    xdr.writeInt(fromName.length());
++    xdr.writeFixedOpaque(fromName.getBytes(), fromName.length());
++  }
++}
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKNOD3Request.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKNOD3Request.java
+new file mode 100644
+index 0000000..4a13f87
+--- /dev/null
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/request/MKNOD3Request.java
+@@ -0,0 +1,89 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.nfs.nfs3.request;
++
++import java.io.IOException;
++
++import org.apache.hadoop.nfs.NfsFileType;
++import org.apache.hadoop.nfs.nfs3.FileHandle;
++import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes.Specdata3;
++import org.apache.hadoop.oncrpc.XDR;
++
++/**
++ * MKNOD3 Request
++ */
++public class MKNOD3Request extends RequestWithHandle {
++  private final String name;
++  private int type;
++  private SetAttr3 objAttr = null;
++  private Specdata3 spec = null;
++
++  public MKNOD3Request(FileHandle handle, String name, int type,
++      SetAttr3 objAttr, Specdata3 spec) {
++    super(handle);
++    this.name = name;
++    this.type = type;
++    this.objAttr = objAttr;
++    this.spec = spec;
++  }
++
++  public static MKNOD3Request deserialize(XDR xdr) throws IOException {
++    FileHandle handle = readHandle(xdr);
++    String name = xdr.readString();
++    int type = xdr.readInt();
++    SetAttr3 objAttr =  new SetAttr3();
++    Specdata3 spec = null;
++    if (type == NfsFileType.NFSCHR.toValue()
++        || type == NfsFileType.NFSBLK.toValue()) {
++      objAttr.deserialize(xdr);
++      spec = new Specdata3(xdr.readInt(), xdr.readInt());
++    } else if (type == NfsFileType.NFSSOCK.toValue()
++        || type == NfsFileType.NFSFIFO.toValue()) {
++      objAttr.deserialize(xdr);
++    }
++    return new MKNOD3Request(handle, name, type, objAttr, spec);
++  }
++
++  public String getName() {
++    return name;
++  }
++
++  public int getType() {
++    return type;
++  }
++
++  public SetAttr3 getObjAttr() {
++    return objAttr;
++  }
++
++  public Specdata3 getSpec() {
++    return spec;
++  }
++
++  @Override
++  public void serialize(XDR xdr) {
++    handle.serialize(xdr);
++    xdr.writeInt(name.length());
++    xdr.writeFixedOpaque(name.getBytes(), name.length());
++    objAttr.serialize(xdr);
++    if (spec != null) {
++      xdr.writeInt(spec.getSpecdata1());
++      xdr.writeInt(spec.getSpecdata2());
++    }
++  }
++}
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java
+new file mode 100644
+index 0000000..834ee3c
+--- /dev/null
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/LINK3Response.java
+@@ -0,0 +1,54 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.nfs.nfs3.response;
++
++import org.apache.hadoop.oncrpc.XDR;
++import org.apache.hadoop.oncrpc.security.Verifier;
++
++public class LINK3Response extends NFS3Response {
++  private final WccData fromDirWcc;
++  private final WccData linkDirWcc;
++  
++  public LINK3Response(int status) {
++    this(status, new WccData(null, null), new WccData(null, null));
++  }
++  
++  public LINK3Response(int status, WccData fromDirWcc,
++       WccData linkDirWcc) {
++    super(status);
++    this.fromDirWcc = fromDirWcc;
++    this.linkDirWcc = linkDirWcc;
++  }
++
++  public WccData getFromDirWcc() {
++    return fromDirWcc;
++  }
++
++  public WccData getLinkDirWcc() {
++    return linkDirWcc;
++  }
++
++  @Override
++  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
++    super.writeHeaderAndResponse(out, xid, verifier);
++    fromDirWcc.serialize(out);
++    linkDirWcc.serialize(out);
++    
++    return out;
++  }
++}
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java
+new file mode 100644
+index 0000000..292094e
+--- /dev/null
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/MKNOD3Response.java
+@@ -0,0 +1,68 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.nfs.nfs3.response;
++
++import org.apache.hadoop.nfs.nfs3.FileHandle;
++import org.apache.hadoop.nfs.nfs3.Nfs3FileAttributes;
++import org.apache.hadoop.nfs.nfs3.Nfs3Status;
++import org.apache.hadoop.oncrpc.XDR;
++import org.apache.hadoop.oncrpc.security.Verifier;
++
++public class MKNOD3Response extends NFS3Response {
++  private final FileHandle objFileHandle;
++  private final Nfs3FileAttributes objPostOpAttr;
++  private final WccData dirWcc;
++  
++  public MKNOD3Response(int status) {
++    this(status, null, null, new WccData(null, null));
++  }
++  
++  public MKNOD3Response(int status, FileHandle handle,
++      Nfs3FileAttributes attrs, WccData dirWcc) {
++    super(status);
++    this.objFileHandle = handle;
++    this.objPostOpAttr = attrs;
++    this.dirWcc = dirWcc;
++  }
++  
++  public FileHandle getObjFileHandle() {
++    return objFileHandle;
++  }
++
++  public Nfs3FileAttributes getObjPostOpAttr() {
++    return objPostOpAttr;
++  }
++
++  public WccData getDirWcc() {
++    return dirWcc;
++  }
++
++  @Override
++  public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
++    super.writeHeaderAndResponse(out, xid, verifier);
++    if (this.getStatus() == Nfs3Status.NFS3_OK) {
++      out.writeBoolean(true);
++      objFileHandle.serialize(out);
++      out.writeBoolean(true);
++      objPostOpAttr.serialize(out);
++    }
++    dirWcc.serialize(out);
++    
++    return out;
++  }
++}
+-- 
+1.7.9.5
+

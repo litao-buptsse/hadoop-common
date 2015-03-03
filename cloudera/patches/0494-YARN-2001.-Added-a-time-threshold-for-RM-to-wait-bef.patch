@@ -1,0 +1,320 @@
+From 9ac550d7c8a7f8942eb8d7623e1ebc25bd6fcaab Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Thu, 18 Sep 2014 11:03:12 -0700
+Subject: [PATCH 494/813] YARN-2001. Added a time threshold for RM to wait
+ before starting container allocations after
+ restart/failover. Contributed by Jian He.
+
+(cherry picked from commit 485c96e3cb9b0b05d6e490b4773506da83ebc61d)
+(cherry picked from commit d24ef142b7e460bba22c21fc08011a21b15e638c)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    5 ++
+ .../src/main/resources/yarn-default.xml            |   10 ++++
+ .../yarn/server/resourcemanager/RMContext.java     |    4 +-
+ .../yarn/server/resourcemanager/RMContextImpl.java |   43 ++++++++++++++-
+ .../server/resourcemanager/ResourceManager.java    |   12 +++++
+ .../scheduler/capacity/CapacityScheduler.java      |    4 ++
+ .../scheduler/fair/FairScheduler.java              |    5 ++
+ .../scheduler/fifo/FifoScheduler.java              |    6 +++
+ .../TestWorkPreservingRMRestart.java               |   56 ++++++++++++++++++++
+ 9 files changed, 142 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index 2094e67..72bcb0b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -340,6 +340,11 @@
+   public static final boolean DEFAULT_RM_WORK_PRESERVING_RECOVERY_ENABLED =
+       false;
+ 
++  public static final String RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS =
++      RM_PREFIX + "work-preserving-recovery.scheduling-wait-ms";
++  public static final long DEFAULT_RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS =
++      10000;
++
+   /** Zookeeper interaction configs */
+   public static final String RM_ZK_PREFIX = RM_PREFIX + "zk-";
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+index 91cc125..6e13aef 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+@@ -298,6 +298,16 @@
+   </property>
+ 
+   <property>
++    <description>Set the amount of time RM waits before allocating new
++    containers on work-preserving-recovery. Such wait period gives RM a chance
++    to settle down resyncing with NMs in the cluster on recovery, before assigning
++    new containers to applications.
++    </description>
++    <name>yarn.resourcemanager.work-preserving-recovery.scheduling-wait-ms</name>
++    <value>10000</value>
++  </property>
++
++  <property>
+     <description>The class to use as the persistent store.
+ 
+       If org.apache.hadoop.yarn.server.resourcemanager.recovery.ZKRMStateStore
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContext.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContext.java
+index af6ef13..52e1d10 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContext.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContext.java
+@@ -103,4 +103,6 @@ void setRMApplicationHistoryWriter(
+   boolean isWorkPreservingRecoveryEnabled();
+   
+   long getEpoch();
+-}
+\ No newline at end of file
++
++  boolean isSchedulerReadyForAllocatingContainers();
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContextImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContextImpl.java
+index d0bb7c9..9134b64 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContextImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMContextImpl.java
+@@ -21,6 +21,9 @@
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.ConcurrentMap;
+ 
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.ha.HAServiceProtocol;
+ import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
+ import org.apache.hadoop.yarn.LocalConfigurationProvider;
+@@ -43,6 +46,8 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.RMDelegationTokenSecretManager;
++import org.apache.hadoop.yarn.util.Clock;
++import org.apache.hadoop.yarn.util.SystemClock;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
+@@ -83,6 +88,13 @@
+   private RMApplicationHistoryWriter rmApplicationHistoryWriter;
+   private ConfigurationProvider configurationProvider;
+   private long epoch;
++  private Clock systemClock = new SystemClock();
++  private long schedulerRecoveryStartTime = 0;
++  private long schedulerRecoveryWaitTime = 0;
++  private boolean printLog = true;
++  private boolean isSchedulerReady = false;
++
++  private static final Log LOG = LogFactory.getLog(RMContextImpl.class);
+ 
+   /**
+    * Default constructor. To be used in conjunction with setter methods for
+@@ -366,7 +378,34 @@ public long getEpoch() {
+     return this.epoch;
+   }
+ 
+- void setEpoch(long epoch) {
++  void setEpoch(long epoch) {
+     this.epoch = epoch;
+   }
+-}
+\ No newline at end of file
++
++  public void setSchedulerRecoveryStartAndWaitTime(long waitTime) {
++    this.schedulerRecoveryStartTime = systemClock.getTime();
++    this.schedulerRecoveryWaitTime = waitTime;
++  }
++
++  public boolean isSchedulerReadyForAllocatingContainers() {
++    if (isSchedulerReady) {
++      return isSchedulerReady;
++    }
++    isSchedulerReady = (systemClock.getTime() - schedulerRecoveryStartTime)
++        > schedulerRecoveryWaitTime;
++    if (!isSchedulerReady && printLog) {
++      LOG.info("Skip allocating containers. Scheduler is waiting for recovery.");
++      printLog = false;
++    }
++    if (isSchedulerReady) {
++      LOG.info("Scheduler recovery is done. Start allocating new containers.");
++    }
++    return isSchedulerReady;
++  }
++
++  @Private
++  @VisibleForTesting
++  public void setSystemClock(Clock clock) {
++    this.systemClock = clock;
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 90441d6..500918f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -1094,6 +1094,8 @@ public void recover(RMState state) throws Exception {
+ 
+     // recover applications
+     rmAppManager.recover(state);
++
++    setSchedulerRecoveryStartAndWaitTime(state, conf);
+   }
+ 
+   public static void main(String argv[]) {
+@@ -1138,6 +1140,16 @@ private void resetDispatcher() {
+     rmContext.setDispatcher(rmDispatcher);
+   }
+ 
++  private void setSchedulerRecoveryStartAndWaitTime(RMState state,
++      Configuration conf) {
++    if (!state.getApplicationState().isEmpty()) {
++      long waitTime =
++          conf.getLong(YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS,
++            YarnConfiguration.DEFAULT_RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS);
++      rmContext.setSchedulerRecoveryStartAndWaitTime(waitTime);
++    }
++  }
++
+   /**
+    * Retrieve RM bind address from configuration
+    * 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 6592498..10089de 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -800,6 +800,10 @@ private synchronized void updateNodeAndQueueResource(RMNode nm,
+   }
+ 
+   private synchronized void allocateContainersToNode(FiCaSchedulerNode node) {
++    if (rmContext.isWorkPreservingRecoveryEnabled()
++        && !rmContext.isSchedulerReadyForAllocatingContainers()) {
++      return;
++    }
+ 
+     // Assign new containers...
+     // 1. Check for reserved applications
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 3920d7b..5c0fd21 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -1013,6 +1013,11 @@ public int compare(NodeId n1, NodeId n2) {
+   }
+   
+   private synchronized void attemptScheduling(FSSchedulerNode node) {
++    if (rmContext.isWorkPreservingRecoveryEnabled()
++        && !rmContext.isSchedulerReadyForAllocatingContainers()) {
++      return;
++    }
++
+     // Assign new containers...
+     // 1. Check for reserved applications
+     // 2. Schedule if there are no reservations
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index 7613c3f..e3eca86 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -695,6 +695,12 @@ private synchronized void nodeUpdate(RMNode rmNode) {
+           completedContainer, RMContainerEventType.FINISHED);
+     }
+ 
++
++    if (rmContext.isWorkPreservingRecoveryEnabled()
++        && !rmContext.isSchedulerReadyForAllocatingContainers()) {
++      return;
++    }
++
+     if (Resources.greaterThanOrEqual(resourceCalculator, clusterResource,
+             node.getAvailableResource(),minimumAllocation)) {
+       LOG.debug("Node heartbeat " + rmNode.getNodeID() + 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+index df3d7bc..c3c6680 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+@@ -37,10 +37,12 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.api.records.ContainerState;
+ import org.apache.hadoop.yarn.api.records.ContainerStatus;
+ import org.apache.hadoop.yarn.api.records.Resource;
++import org.apache.hadoop.yarn.api.records.ResourceRequest;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
+@@ -62,6 +64,8 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
++import org.apache.hadoop.yarn.util.ControlledClock;
++import org.apache.hadoop.yarn.util.SystemClock;
+ import org.apache.hadoop.yarn.util.resource.DominantResourceCalculator;
+ import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
+ import org.apache.hadoop.yarn.util.resource.Resources;
+@@ -479,6 +483,7 @@ private void checkParentQueue(ParentQueue parentQueue, int numContainers,
+   @Test(timeout = 20000)
+   public void testAMfailedBetweenRMRestart() throws Exception {
+     MemoryRMStateStore memStore = new MemoryRMStateStore();
++    conf.setLong(YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS, 0);
+     memStore.init(conf);
+     rm1 = new MockRM(conf, memStore);
+     rm1.start();
+@@ -732,4 +737,55 @@ public static void waitForNumContainersToRecover(int num, MockRM rm,
+       Thread.sleep(200);
+     }
+   }
++
++  @Test (timeout = 20000)
++  public void testNewContainersNotAllocatedDuringSchedulerRecovery()
++      throws Exception {
++    conf.setLong(
++      YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS, 4000);
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++    rm1 = new MockRM(conf, memStore);
++    rm1.start();
++    MockNM nm1 =
++        new MockNM("127.0.0.1:1234", 8192, rm1.getResourceTrackerService());
++    nm1.registerNode();
++    RMApp app1 = rm1.submitApp(200);
++    MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
++
++    // Restart RM
++    rm2 = new MockRM(conf, memStore);
++    rm2.start();
++    nm1.setResourceTrackerService(rm2.getResourceTrackerService());
++    nm1.registerNode();
++    ControlledClock clock = new ControlledClock(new SystemClock());
++    long startTime = System.currentTimeMillis();
++    ((RMContextImpl)rm2.getRMContext()).setSystemClock(clock);
++    am1.setAMRMProtocol(rm2.getApplicationMasterService(), rm2.getRMContext());
++    am1.registerAppAttempt(true);
++    rm2.waitForState(app1.getApplicationId(), RMAppState.RUNNING);
++
++    // AM request for new containers
++    am1.allocate("127.0.0.1", 1000, 1, new ArrayList<ContainerId>());
++
++    List<Container> containers = new ArrayList<Container>();
++    clock.setTime(startTime + 2000);
++    nm1.nodeHeartbeat(true);
++
++    // sleep some time as allocation happens asynchronously.
++    Thread.sleep(3000);
++    containers.addAll(am1.allocate(new ArrayList<ResourceRequest>(),
++      new ArrayList<ContainerId>()).getAllocatedContainers());
++    // container is not allocated during scheduling recovery.
++    Assert.assertTrue(containers.isEmpty());
++
++    clock.setTime(startTime + 8000);
++    nm1.nodeHeartbeat(true);
++    // Container is created after recovery is done.
++    while (containers.isEmpty()) {
++      containers.addAll(am1.allocate(new ArrayList<ResourceRequest>(),
++        new ArrayList<ContainerId>()).getAllocatedContainers());
++      Thread.sleep(500);
++    }
++  }
+ }
+-- 
+1.7.9.5
+

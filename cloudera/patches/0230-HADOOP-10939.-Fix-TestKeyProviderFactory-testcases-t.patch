@@ -1,0 +1,75 @@
+From c5a7577fe9bc71bd95aa537c560ae251a09cf3e5 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:52 +0000
+Subject: [PATCH 230/813] HADOOP-10939. Fix TestKeyProviderFactory testcases
+ to use default 128 bit length keys. Contributed by
+ Arun Suresh.
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619547 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 5b72db99c7dbc9958add195ce92f893f7e6dd56d)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/TestKeyProviderFactory.java  |   14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+index 438fb60..49d1736 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+@@ -91,9 +91,9 @@ public void testUriErrors() throws Exception {
+   static void checkSpecificProvider(Configuration conf,
+                                    String ourUrl) throws Exception {
+     KeyProvider provider = KeyProviderFactory.getProviders(conf).get(0);
+-    byte[] key1 = new byte[32];
+-    byte[] key2 = new byte[32];
+-    byte[] key3 = new byte[32];
++    byte[] key1 = new byte[16];
++    byte[] key2 = new byte[16];
++    byte[] key3 = new byte[16];
+     for(int i =0; i < key1.length; ++i) {
+       key1[i] = (byte) i;
+       key2[i] = (byte) (i * 2);
+@@ -137,7 +137,7 @@ static void checkSpecificProvider(Configuration conf,
+           KeyProvider.options(conf).setBitLength(8));
+       assertTrue("should throw", false);
+     } catch (IOException e) {
+-      assertEquals("Wrong key length. Required 8, but got 256", e.getMessage());
++      assertEquals("Wrong key length. Required 8, but got 128", e.getMessage());
+     }
+     provider.createKey("key4", new byte[]{1},
+         KeyProvider.options(conf).setBitLength(8));
+@@ -153,7 +153,7 @@ static void checkSpecificProvider(Configuration conf,
+       provider.rollNewVersion("key4", key1);
+       assertTrue("should throw", false);
+     } catch (IOException e) {
+-      assertEquals("Wrong key length. Required 8, but got 256", e.getMessage());
++      assertEquals("Wrong key length. Required 8, but got 128", e.getMessage());
+     }
+     try {
+       provider.rollNewVersion("no-such-key", key1);
+@@ -219,7 +219,7 @@ public void testJksProvider() throws Exception {
+   public void checkPermissionRetention(Configuration conf, String ourUrl, Path path) throws Exception {
+     KeyProvider provider = KeyProviderFactory.getProviders(conf).get(0);
+     // let's add a new key and flush and check that permissions are still set to 777
+-    byte[] key = new byte[32];
++    byte[] key = new byte[16];
+     for(int i =0; i < key.length; ++i) {
+       key[i] = (byte) i;
+     }
+@@ -252,7 +252,7 @@ public void testJksProviderPasswordViaConfig() throws Exception {
+       conf.set(JavaKeyStoreProvider.KEYSTORE_PASSWORD_FILE_KEY,
+           "javakeystoreprovider.password");
+       KeyProvider provider = KeyProviderFactory.getProviders(conf).get(0);
+-      provider.createKey("key3", new byte[32], KeyProvider.options(conf));
++      provider.createKey("key3", new byte[16], KeyProvider.options(conf));
+       provider.flush();
+     } catch (Exception ex) {
+       Assert.fail("could not create keystore with password file");
+-- 
+1.7.9.5
+

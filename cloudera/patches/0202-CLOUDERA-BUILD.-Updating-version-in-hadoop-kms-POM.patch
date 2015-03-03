@@ -1,0 +1,31 @@
+From 6db5ac903dffe7bc6ecdf368385e10138fd03fb8 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@cloudera.com>
+Date: Wed, 3 Sep 2014 10:51:54 -0700
+Subject: [PATCH 202/813] CLOUDERA-BUILD. Updating version in hadoop-kms POM
+
+---
+ hadoop-common-project/hadoop-kms/pom.xml |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/pom.xml b/hadoop-common-project/hadoop-kms/pom.xml
+index edfd760..f14e1ab 100644
+--- a/hadoop-common-project/hadoop-kms/pom.xml
++++ b/hadoop-common-project/hadoop-kms/pom.xml
+@@ -22,12 +22,12 @@
+   <parent>
+     <groupId>org.apache.hadoop</groupId>
+     <artifactId>hadoop-project</artifactId>
+-    <version>2.6.0-SNAPSHOT</version>
++    <version>2.5.0-cdh5.2.0-SNAPSHOT</version>
+     <relativePath>../../hadoop-project</relativePath>
+   </parent>
+   <groupId>org.apache.hadoop</groupId>
+   <artifactId>hadoop-kms</artifactId>
+-  <version>2.6.0-SNAPSHOT</version>
++  <version>2.5.0-cdh5.2.0-SNAPSHOT</version>
+   <packaging>war</packaging>
+ 
+   <name>Apache Hadoop KMS</name>
+-- 
+1.7.9.5
+

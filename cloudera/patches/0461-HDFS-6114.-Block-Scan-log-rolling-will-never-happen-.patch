@@ -1,0 +1,158 @@
+From 1ec6ba49b3d9916872ef49aef4dade74c3001980 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Wed, 23 Jul 2014 20:59:39 +0000
+Subject: [PATCH 461/813] HDFS-6114. Block Scan log rolling will never happen
+ if blocks written continuously leading to huge size
+ of dncp_block_verification.log.curr (vinayakumarb
+ via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1612943 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../server/datanode/BlockPoolSliceScanner.java     |   54 +++++++++++++++-----
+ 1 file changed, 42 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
+index 1039b4f..bbb67fc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
+@@ -84,6 +84,10 @@
+   
+   private final SortedSet<BlockScanInfo> blockInfoSet
+       = new TreeSet<BlockScanInfo>(BlockScanInfo.LAST_SCAN_TIME_COMPARATOR);
++
++  private final SortedSet<BlockScanInfo> newBlockInfoSet =
++      new TreeSet<BlockScanInfo>(BlockScanInfo.LAST_SCAN_TIME_COMPARATOR);
++
+   private final GSet<Block, BlockScanInfo> blockMap
+       = new LightWeightGSet<Block, BlockScanInfo>(
+           LightWeightGSet.computeCapacity(0.5, "BlockMap"));
+@@ -195,7 +199,7 @@ public LinkedElement getNext() {
+       BlockScanInfo info = new BlockScanInfo( block );
+       info.lastScanTime = scanTime--; 
+       //still keep 'info.lastScanType' to NONE.
+-      addBlockInfo(info);
++      addBlockInfo(info, false);
+     }
+ 
+     RollingLogs rollingLogs = null;
+@@ -221,25 +225,42 @@ private void updateBytesToScan(long len, long lastScanTime) {
+     // Should we change throttler bandwidth every time bytesLeft changes?
+     // not really required.
+   }
+-  
+-  private synchronized void addBlockInfo(BlockScanInfo info) {
+-    boolean added = blockInfoSet.add(info);
++
++  /**
++   * Add the BlockScanInfo to sorted set of blockScanInfo
++   * @param info BlockScanInfo to be added
++   * @param isNewBlock true if the block is the new Block, false if
++   *          BlockScanInfo is being updated with new scanTime
++   */
++  private synchronized void addBlockInfo(BlockScanInfo info,
++      boolean isNewBlock) {
++    boolean added = false;
++    if (isNewBlock) {
++      // check whether the block already present
++      boolean exists = blockInfoSet.contains(info);
++      added = !exists && newBlockInfoSet.add(info);
++    } else {
++      added = blockInfoSet.add(info);
++    }
+     blockMap.put(info);
+     
+     if (added) {
+       updateBytesToScan(info.getNumBytes(), info.lastScanTime);
+     }
+   }
+-  
++
+   private synchronized void delBlockInfo(BlockScanInfo info) {
+     boolean exists = blockInfoSet.remove(info);
++    if (!exists){
++      exists = newBlockInfoSet.remove(info);
++    }
+     blockMap.remove(info);
+ 
+     if (exists) {
+       updateBytesToScan(-info.getNumBytes(), info.lastScanTime);
+     }
+   }
+-  
++
+   /** Update blockMap by the given LogEntry */
+   private synchronized void updateBlockInfo(LogEntry e) {
+     BlockScanInfo info = blockMap.get(new Block(e.blockId, 0, e.genStamp));
+@@ -249,7 +270,7 @@ private synchronized void updateBlockInfo(LogEntry e) {
+       delBlockInfo(info);
+       info.lastScanTime = e.verificationTime;
+       info.lastScanType = ScanType.VERIFICATION_SCAN;
+-      addBlockInfo(info);
++      addBlockInfo(info, false);
+     }
+   }
+ 
+@@ -275,14 +296,14 @@ synchronized void addBlock(ExtendedBlock block) {
+     info = new BlockScanInfo(block.getLocalBlock());    
+     info.lastScanTime = getNewBlockScanTime();
+     
+-    addBlockInfo(info);
++    addBlockInfo(info, true);
+     adjustThrottler();
+   }
+   
+   /** Deletes the block from internal structures */
+   synchronized void deleteBlock(Block block) {
+     BlockScanInfo info = blockMap.get(block);
+-    if ( info != null ) {
++    if (info != null) {
+       delBlockInfo(info);
+     }
+   }
+@@ -319,7 +340,7 @@ private synchronized void updateScanStatus(BlockScanInfo info,
+     info.lastScanType = type;
+     info.lastScanTime = now;
+     info.lastScanOk = scanOk;
+-    addBlockInfo(info);
++    addBlockInfo(info, false);
+         
+     // Don't update meta data if the verification failed.
+     if (!scanOk) {
+@@ -578,7 +599,7 @@ private boolean assignInitialVerificationTimes() {
+           delBlockInfo(info);        
+           info.lastScanTime = lastScanTime;
+           lastScanTime += verifyInterval;
+-          addBlockInfo(info);
++          addBlockInfo(info, false);
+         }
+       }
+     }
+@@ -674,12 +695,21 @@ private void scan() {
+       throw e;
+     } finally {
+       rollVerificationLogs();
++      rollNewBlocksInfo();
+       if (LOG.isDebugEnabled()) {
+         LOG.debug("Done scanning block pool: " + blockPoolId);
+       }
+     }
+   }
+-  
++
++  // add new blocks to scan in next iteration
++  private synchronized void rollNewBlocksInfo() {
++    for (BlockScanInfo newBlock : newBlockInfoSet) {
++      blockInfoSet.add(newBlock);
++    }
++    newBlockInfoSet.clear();
++  }
++
+   private synchronized void rollVerificationLogs() {
+     if (verificationLog != null) {
+       try {
+-- 
+1.7.9.5
+

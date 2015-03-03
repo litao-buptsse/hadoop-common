@@ -1,0 +1,95 @@
+From 8bc013fdd6e6ead91bb5b569b2c064fdea0bffba Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Wed, 23 Jul 2014 21:37:55 +0000
+Subject: [PATCH 433/813] HDFS-6455. Merging change r1612947 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1612949 13f79535-47bb-0310-9956-ffa450edef68
+
+(cherry picked from 4a8ac2184144e387e194e398b7577e4c30019cfb)
+---
+ .../java/org/apache/hadoop/nfs/NfsExports.java     |    7 ++++++-
+ .../hadoop/hdfs/nfs/mount/RpcProgramMountd.java    |   19 +++++++++++++++----
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    5 ++++-
+ 3 files changed, 25 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java
+index 9628686..b617ae5 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/NfsExports.java
+@@ -53,7 +53,12 @@ public static synchronized NfsExports getInstance(Configuration conf) {
+       long expirationPeriodNano = conf.getLong(
+           Nfs3Constant.NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_KEY,
+           Nfs3Constant.NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_DEFAULT) * 1000 * 1000;
+-      exports = new NfsExports(cacheSize, expirationPeriodNano, matchHosts);
++      try {
++        exports = new NfsExports(cacheSize, expirationPeriodNano, matchHosts);
++      } catch (IllegalArgumentException e) {
++        LOG.error("Invalid NFS Exports provided: ", e);
++        return exports;
++      }
+     }
+     return exports;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+index 9fbab24..2814cb0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+@@ -104,6 +104,10 @@ public XDR nullOp(XDR out, int xid, InetAddress client) {
+ 
+   @Override
+   public XDR mnt(XDR xdr, XDR out, int xid, InetAddress client) {
++    if (hostsMatcher == null) {
++      return MountResponse.writeMNTResponse(Nfs3Status.NFS3ERR_ACCES, out, xid,
++          null);
++    }
+     AccessPrivilege accessPrivilege = hostsMatcher.getAccessPrivilege(client);
+     if (accessPrivilege == AccessPrivilege.NONE) {
+       return MountResponse.writeMNTResponse(Nfs3Status.NFS3ERR_ACCES, out, xid,
+@@ -208,16 +212,23 @@ public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+     } else if (mntproc == MNTPROC.UMNTALL) {
+       umntall(out, xid, client);
+     } else if (mntproc == MNTPROC.EXPORT) {
+-      // Currently only support one NFS export 
++      // Currently only support one NFS export
+       List<NfsExports> hostsMatchers = new ArrayList<NfsExports>();
+-      hostsMatchers.add(hostsMatcher);
+-      out = MountResponse.writeExportList(out, xid, exports, hostsMatchers);
++      if (hostsMatcher != null) {
++        hostsMatchers.add(hostsMatcher);
++        out = MountResponse.writeExportList(out, xid, exports, hostsMatchers);
++      } else {
++        // This means there are no valid exports provided.
++        RpcAcceptedReply.getInstance(xid,
++          RpcAcceptedReply.AcceptState.PROC_UNAVAIL, new VerifierNone()).write(
++          out);
++      }
+     } else {
+       // Invalid procedure
+       RpcAcceptedReply.getInstance(xid,
+           RpcAcceptedReply.AcceptState.PROC_UNAVAIL, new VerifierNone()).write(
+           out);
+-    }  
++    }
+     ChannelBuffer buf = ChannelBuffers.wrappedBuffer(out.asReadOnlyWrap().buffer());
+     RpcResponse rsp = new RpcResponse(buf, info.remoteAddress());
+     RpcUtil.sendRpcResponse(ctx, rsp);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index f254f50..1650b14 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -2123,8 +2123,11 @@ private boolean checkAccessPrivilege(SocketAddress remoteAddress,
+     if (!doPortMonitoring(remoteAddress)) {
+       return false;
+     }
+-    
++
+     // Check export table
++    if (exports == null) {
++        return false;
++    }
+     InetAddress client = ((InetSocketAddress) remoteAddress).getAddress();
+     AccessPrivilege access = exports.getAccessPrivilege(client);
+     if (access == AccessPrivilege.NONE) {
+-- 
+1.7.9.5
+

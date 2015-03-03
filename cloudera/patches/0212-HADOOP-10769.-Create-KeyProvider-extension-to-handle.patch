@@ -1,0 +1,210 @@
+From e397743a58bf6006bdadd9aba608b2db2f9ee2c9 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:15 +0000
+Subject: [PATCH 212/813] HADOOP-10769. Create KeyProvider extension to handle
+ delegation tokens. Contributed by Arun Suresh.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619528 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 258bd6d7cf0153fe864c034ee0359224a8c77c5e)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../key/KeyProviderDelegationTokenExtension.java   |  111 ++++++++++++++++++++
+ .../TestKeyProviderDelegationTokenExtension.java   |   66 ++++++++++++
+ 2 files changed, 177 insertions(+)
+ create mode 100644 hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java
+new file mode 100644
+index 0000000..ccaa8d4
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderDelegationTokenExtension.java
+@@ -0,0 +1,111 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.crypto.key;
++
++import org.apache.hadoop.security.Credentials;
++import org.apache.hadoop.security.token.Token;
++
++/**
++ * A KeyProvider extension with the ability to add a renewer's Delegation
++ * Tokens to the provided Credentials.
++ */
++public class KeyProviderDelegationTokenExtension extends
++    KeyProviderExtension
++    <KeyProviderDelegationTokenExtension.DelegationTokenExtension> {
++
++  private static DelegationTokenExtension DEFAULT_EXTENSION =
++      new DefaultDelegationTokenExtension();
++
++  /**
++   * DelegationTokenExtension is a type of Extension that exposes methods to
++   * needed to work with Delegation Tokens.
++   */
++  public interface DelegationTokenExtension extends
++    KeyProviderExtension.Extension {
++
++    /**
++     * The implementer of this class will take a renewer and add all
++     * delegation tokens associated with the renewer to the
++     * <code>Credentials</code> object if it is not already present,
++     * @param renewer the user allowed to renew the delegation tokens
++     * @param credentials cache in which to add new delegation tokens
++     * @return list of new delegation tokens
++     */
++    public Token<?>[] addDelegationTokens(final String renewer,
++        Credentials credentials);
++  }
++
++  /**
++   * Default implementation of {@link DelegationTokenExtension} that
++   * implements the method as a no-op.
++   */
++  private static class DefaultDelegationTokenExtension implements
++    DelegationTokenExtension {
++
++    @Override
++    public Token<?>[] addDelegationTokens(String renewer,
++        Credentials credentials) {
++      return null;
++    }
++
++  }
++
++  private KeyProviderDelegationTokenExtension(KeyProvider keyProvider,
++      DelegationTokenExtension extensions) {
++    super(keyProvider, extensions);
++  }
++
++  /**
++   * Passes the renewer and Credentials object to the underlying
++   * {@link DelegationTokenExtension}
++   * @param renewer the user allowed to renew the delegation tokens
++   * @param credentials cache in which to add new delegation tokens
++   * @return list of new delegation tokens
++   */
++  public Token<?>[] addDelegationTokens(final String renewer,
++      Credentials credentials) {
++    return getExtension().addDelegationTokens(renewer, credentials);
++  }
++
++  /**
++   * Creates a <code>KeyProviderDelegationTokenExtension</code> using a given
++   * {@link KeyProvider}.
++   * <p/>
++   * If the given <code>KeyProvider</code> implements the
++   * {@link DelegationTokenExtension} interface the <code>KeyProvider</code>
++   * itself will provide the extension functionality, otherwise a default
++   * extension implementation will be used.
++   *
++   * @param keyProvider <code>KeyProvider</code> to use to create the
++   * <code>KeyProviderDelegationTokenExtension</code> extension.
++   * @return a <code>KeyProviderDelegationTokenExtension</code> instance
++   * using the given <code>KeyProvider</code>.
++   */
++  public static KeyProviderDelegationTokenExtension
++      createKeyProviderDelegationTokenExtension(KeyProvider keyProvider) {
++
++    DelegationTokenExtension delTokExtension =
++        (keyProvider instanceof DelegationTokenExtension) ?
++            (DelegationTokenExtension) keyProvider :
++            DEFAULT_EXTENSION;
++    return new KeyProviderDelegationTokenExtension(
++        keyProvider, delTokExtension);
++
++  }
++
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java
+new file mode 100644
+index 0000000..1505f4b
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderDelegationTokenExtension.java
+@@ -0,0 +1,66 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.crypto.key;
++
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import java.net.URI;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.key.KeyProviderDelegationTokenExtension.DelegationTokenExtension;
++import org.apache.hadoop.io.Text;
++import org.apache.hadoop.security.Credentials;
++import org.apache.hadoop.security.token.Token;
++import org.junit.Assert;
++import org.junit.Test;
++
++public class TestKeyProviderDelegationTokenExtension {
++
++  public static abstract class MockKeyProvider extends
++      KeyProvider implements DelegationTokenExtension {
++  }
++
++  @Test
++  public void testCreateExtension() throws Exception {
++    Configuration conf = new Configuration();
++    Credentials credentials = new Credentials();
++    KeyProvider kp =
++        new UserProvider.Factory().createProvider(new URI("user:///"), conf);
++    KeyProviderDelegationTokenExtension kpDTE1 =
++        KeyProviderDelegationTokenExtension
++        .createKeyProviderDelegationTokenExtension(kp);
++    Assert.assertNotNull(kpDTE1);
++    // Default implementation should be a no-op and return null
++    Assert.assertNull(kpDTE1.addDelegationTokens("user", credentials));
++
++    MockKeyProvider mock = mock(MockKeyProvider.class);
++    when(mock.addDelegationTokens("renewer", credentials)).thenReturn(
++        new Token<?>[] { new Token(null, null, new Text("kind"), new Text(
++            "service")) });
++    KeyProviderDelegationTokenExtension kpDTE2 =
++        KeyProviderDelegationTokenExtension
++        .createKeyProviderDelegationTokenExtension(mock);
++    Token<?>[] tokens =
++        kpDTE2.addDelegationTokens("renewer", credentials);
++    Assert.assertNotNull(tokens);
++    Assert.assertEquals("kind", tokens[0].getKind().toString());
++
++  }
++
++}
+-- 
+1.7.9.5
+

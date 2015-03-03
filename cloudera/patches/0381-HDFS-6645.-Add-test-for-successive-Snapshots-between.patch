@@ -1,0 +1,105 @@
+From 1184eb4a59386637f07f463420d1a16643b5bff1 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Thu, 10 Jul 2014 05:01:41 +0000
+Subject: [PATCH 381/813] HDFS-6645. Add test for successive Snapshots between
+ XAttr modifications. Contributed by Stephen Chu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1609388 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 36492f084b3b965b386630ce5bf8f913e8627beb)
+---
+ .../namenode/snapshot/TestXAttrWithSnapshot.java   |   64 +++++++++++++++++++-
+ 1 file changed, 62 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestXAttrWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestXAttrWithSnapshot.java
+index 35b687a..28277c5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestXAttrWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestXAttrWithSnapshot.java
+@@ -57,8 +57,8 @@
+   private static Configuration conf;
+   private static DistributedFileSystem hdfs;
+   private static int pathCount = 0;
+-  private static Path path, snapshotPath;
+-  private static String snapshotName;
++  private static Path path, snapshotPath, snapshotPath2, snapshotPath3;
++  private static String snapshotName, snapshotName2, snapshotName3;
+   private final int SUCCESS = 0;
+   // XAttrs
+   private static final String name1 = "user.a1";
+@@ -90,7 +90,11 @@ public void setUp() {
+     ++pathCount;
+     path = new Path("/p" + pathCount);
+     snapshotName = "snapshot" + pathCount;
++    snapshotName2 = snapshotName + "-2";
++    snapshotName3 = snapshotName + "-3";
+     snapshotPath = new Path(path, new Path(".snapshot", snapshotName));
++    snapshotPath2 = new Path(path, new Path(".snapshot", snapshotName2));
++    snapshotPath3 = new Path(path, new Path(".snapshot", snapshotName3));
+   }
+ 
+   /**
+@@ -261,6 +265,62 @@ private static void doSnapshotRootRemovalAssertions(Path path,
+   }
+ 
+   /**
++   * Test successive snapshots in between modifications of XAttrs.
++   * Also verify that snapshot XAttrs are not altered when a
++   * snapshot is deleted.
++   */
++  @Test
++  public void testSuccessiveSnapshotXAttrChanges() throws Exception {
++    // First snapshot
++    FileSystem.mkdirs(hdfs, path, FsPermission.createImmutable((short) 0700));
++    hdfs.setXAttr(path, name1, value1);
++    SnapshotTestHelper.createSnapshot(hdfs, path, snapshotName);
++    Map<String, byte[]> xattrs = hdfs.getXAttrs(snapshotPath);
++    Assert.assertEquals(1, xattrs.size());
++    Assert.assertArrayEquals(value1, xattrs.get(name1));
++
++    // Second snapshot
++    hdfs.setXAttr(path, name1, newValue1);
++    hdfs.setXAttr(path, name2, value2);
++    SnapshotTestHelper.createSnapshot(hdfs, path, snapshotName2);
++    xattrs = hdfs.getXAttrs(snapshotPath2);
++    Assert.assertEquals(2, xattrs.size());
++    Assert.assertArrayEquals(newValue1, xattrs.get(name1));
++    Assert.assertArrayEquals(value2, xattrs.get(name2));
++
++    // Third snapshot
++    hdfs.setXAttr(path, name1, value1);
++    hdfs.removeXAttr(path, name2);
++    SnapshotTestHelper.createSnapshot(hdfs, path, snapshotName3);
++    xattrs = hdfs.getXAttrs(snapshotPath3);
++    Assert.assertEquals(1, xattrs.size());
++    Assert.assertArrayEquals(value1, xattrs.get(name1));
++
++    // Check that the first and second snapshots'
++    // XAttrs have stayed constant
++    xattrs = hdfs.getXAttrs(snapshotPath);
++    Assert.assertEquals(1, xattrs.size());
++    Assert.assertArrayEquals(value1, xattrs.get(name1));
++    xattrs = hdfs.getXAttrs(snapshotPath2);
++    Assert.assertEquals(2, xattrs.size());
++    Assert.assertArrayEquals(newValue1, xattrs.get(name1));
++    Assert.assertArrayEquals(value2, xattrs.get(name2));
++
++    // Remove the second snapshot and verify the first and
++    // third snapshots' XAttrs have stayed constant
++    hdfs.deleteSnapshot(path, snapshotName2);
++    xattrs = hdfs.getXAttrs(snapshotPath);
++    Assert.assertEquals(1, xattrs.size());
++    Assert.assertArrayEquals(value1, xattrs.get(name1));
++    xattrs = hdfs.getXAttrs(snapshotPath3);
++    Assert.assertEquals(1, xattrs.size());
++    Assert.assertArrayEquals(value1, xattrs.get(name1));
++
++    hdfs.deleteSnapshot(path, snapshotName);
++    hdfs.deleteSnapshot(path, snapshotName3);
++  }
++
++  /**
+    * Assert exception of setting xattr on read-only snapshot.
+    */
+   @Test
+-- 
+1.7.9.5
+

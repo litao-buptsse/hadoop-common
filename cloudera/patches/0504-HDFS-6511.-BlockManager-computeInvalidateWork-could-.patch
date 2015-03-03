@@ -1,0 +1,37 @@
+From b2b1c33b7ef9d6df8c71162216415dde9a86bcdb Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 3 Jul 2014 20:11:18 +0000
+Subject: [PATCH 504/813] HDFS-6511. BlockManager#computeInvalidateWork()
+ could do nothing. Contributed by Juan Yu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1607736 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e6e54171346fe20e8820e0e32d79c8661cbae7ca)
+(cherry picked from commit 22ac2c87ad75671a058f07cc5e4a3ed1e2410035)
+---
+ .../hdfs/server/blockmanagement/BlockManager.java  |   10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+index 3e12ce8..deb9f4e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+@@ -1241,8 +1241,14 @@ int computeInvalidateWork(int nodesToProcess) {
+     nodesToProcess = Math.min(nodes.size(), nodesToProcess);
+ 
+     int blockCnt = 0;
+-    for(int nodeCnt = 0; nodeCnt < nodesToProcess; nodeCnt++ ) {
+-      blockCnt += invalidateWorkForOneNode(nodes.get(nodeCnt));
++    for (DatanodeInfo dnInfo : nodes) {
++      int blocks = invalidateWorkForOneNode(dnInfo);
++      if (blocks > 0) {
++        blockCnt += blocks;
++        if (--nodesToProcess == 0) {
++          break;
++        }
++      }
+     }
+     return blockCnt;
+   }
+-- 
+1.7.9.5
+

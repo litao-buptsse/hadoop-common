@@ -1,0 +1,84 @@
+From eb55b77ff17fc7d0c3d4aaaf80c5907598c3fa1e Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:40 +0000
+Subject: [PATCH 197/813] HADOOP-10244. TestKeyShell improperly tests the
+ results of delete (Larry McCay via omalley)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619514 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 4706e736dca8eb1f5de5544c1ed7dff5f048a286)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/crypto/key/TestKeyShell.java |   14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
+index 9859286..fc32e4d 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyShell.java
+@@ -41,7 +41,7 @@ public void setup() throws Exception {
+ 
+   @Test
+   public void testKeySuccessfulKeyLifecycle() throws Exception {
+-    outContent.flush();
++    outContent.reset();
+     String[] args1 = {"create", "key1", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     int rc = 0;
+@@ -52,14 +52,14 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+     assertTrue(outContent.toString().contains("key1 has been successfully " +
+ 		"created."));
+ 
+-    outContent.flush();
++    outContent.reset();
+     String[] args2 = {"list", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     rc = ks.run(args2);
+     assertEquals(0, rc);
+     assertTrue(outContent.toString().contains("key1"));
+ 
+-    outContent.flush();
++    outContent.reset();
+     String[] args3 = {"roll", "key1", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     rc = ks.run(args3);
+@@ -67,7 +67,7 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+     assertTrue(outContent.toString().contains("key1 has been successfully " +
+ 		"rolled."));
+ 
+-    outContent.flush();
++    outContent.reset();
+     String[] args4 = {"delete", "key1", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     rc = ks.run(args4);
+@@ -75,12 +75,12 @@ public void testKeySuccessfulKeyLifecycle() throws Exception {
+     assertTrue(outContent.toString().contains("key1 has been successfully " +
+ 		"deleted."));
+ 
+-    outContent.flush();
++    outContent.reset();
+     String[] args5 = {"list", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     rc = ks.run(args5);
+     assertEquals(0, rc);
+-    assertTrue(outContent.toString().contains("key1"));
++    assertFalse(outContent.toString(), outContent.toString().contains("key1"));
+   }
+ 
+   @Test
+@@ -165,7 +165,7 @@ public void testFullCipher() throws Exception {
+     assertTrue(outContent.toString().contains("key1 has been successfully " +
+ 		"created."));
+ 
+-    outContent.flush();
++    outContent.reset();
+     String[] args2 = {"delete", "key1", "--provider",
+         "jceks://file" + tmpDir + "/keystore.jceks"};
+     rc = ks.run(args2);
+-- 
+1.7.9.5
+

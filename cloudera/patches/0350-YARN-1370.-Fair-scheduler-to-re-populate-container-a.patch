@@ -1,0 +1,66 @@
+From 53fcef74f67d554bc76230a9d9533a2960935888 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 13 Aug 2014 01:45:07 +0000
+Subject: [PATCH 350/813] YARN-1370. Fair scheduler to re-populate container
+ allocation state. (Anubhav Dhoot via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1617647 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e6799af4d37250cb015c244435cd2196deb490b1)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../scheduler/fair/FairScheduler.java              |    2 ++
+ .../TestWorkPreservingRMRestart.java               |    9 +++++++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 277f6e2..e89970e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -1138,6 +1138,8 @@ public void handle(SchedulerEvent event) {
+       }
+       NodeAddedSchedulerEvent nodeAddedEvent = (NodeAddedSchedulerEvent)event;
+       addNode(nodeAddedEvent.getAddedRMNode());
++      recoverContainersOnNode(nodeAddedEvent.getContainerReports(),
++          nodeAddedEvent.getAddedRMNode());
+       break;
+     case NODE_REMOVED:
+       if (!(event instanceof NodeRemovedSchedulerEvent)) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+index 59b11ef..0d73f3d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+@@ -57,6 +57,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.LeafQueue;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoScheduler;
+ import org.apache.hadoop.yarn.util.resource.DominantResourceCalculator;
+ import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
+@@ -107,7 +108,7 @@ public void tearDown() {
+   @Parameterized.Parameters
+   public static Collection<Object[]> getTestParameters() {
+     return Arrays.asList(new Object[][] { { CapacityScheduler.class },
+-        { FifoScheduler.class } });
++        { FifoScheduler.class }, {FairScheduler.class } });
+   }
+ 
+   public TestWorkPreservingRMRestart(Class<?> schedulerClass) {
+@@ -224,7 +225,11 @@ public void testSchedulerRecovery() throws Exception {
+     assertTrue(schedulerAttempt.getLiveContainers().contains(
+       scheduler.getRMContainer(runningContainer.getContainerId())));
+     assertEquals(schedulerAttempt.getCurrentConsumption(), usedResources);
+-    assertEquals(availableResources, schedulerAttempt.getHeadroom());
++
++    // Until YARN-1959 is resolved
++    if (scheduler.getClass() != FairScheduler.class) {
++      assertEquals(availableResources, schedulerAttempt.getHeadroom());
++    }
+ 
+     // *********** check appSchedulingInfo state ***********
+     assertEquals((1 << 22) + 1, schedulerAttempt.getNewContainerId());
+-- 
+1.7.9.5
+

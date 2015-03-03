@@ -1,0 +1,31 @@
+From 614c8d22e9fada962c168a156f69d6185215f414 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Tue, 21 Oct 2014 21:49:17 -0700
+Subject: [PATCH 727/813] YARN-2721. Suppress NodeExist exception thrown by
+ ZKRMStateStore when it retries creating znode.
+ Contributed by Jian He.
+
+(cherry picked from commit 7e3b5e6f5cb4945b4fab27e8a83d04280df50e17)
+(cherry picked from commit 4b9de2cdfe4f9b4861fb67e0c0c72a4029fc7476)
+---
+ .../resourcemanager/recovery/ZKRMStateStore.java   |    4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 2c4d92b..3bf7623 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -1094,6 +1094,10 @@ T runWithRetries() throws Exception {
+             throw new StoreFencedException();
+           }
+         } catch (KeeperException ke) {
++          if (ke.code() == Code.NODEEXISTS) {
++            LOG.info("znode already exists!");
++            return null;
++          }
+           LOG.info("Exception while executing a ZK operation.", ke);
+           if (shouldRetry(ke.code()) && ++retry < numRetries) {
+             LOG.info("Retrying operation on ZK. Retry no. " + retry);
+-- 
+1.7.9.5
+

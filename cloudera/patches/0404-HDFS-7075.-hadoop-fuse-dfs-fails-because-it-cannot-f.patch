@@ -1,0 +1,29 @@
+From de528769f2d436567bcb305e92b177a27fa1bf71 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Wed, 17 Sep 2014 14:27:32 -0700
+Subject: [PATCH 404/813] HDFS-7075. hadoop-fuse-dfs fails because it cannot
+ find JavaKeyStoreProvider$Factory. (cmccabe)
+
+(cherry picked from commit f23024852502441fc259012664e444e5e51c604a)
+(cherry picked from commit 0ad613c369bb7ee7f23c2294799483b9eff58b30)
+---
+ .../hadoop/crypto/key/KeyProviderFactory.java      |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
+index cb63dcd..fd91284 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderFactory.java
+@@ -46,7 +46,8 @@ public abstract KeyProvider createProvider(URI providerName,
+                                              ) throws IOException;
+ 
+   private static final ServiceLoader<KeyProviderFactory> serviceLoader =
+-      ServiceLoader.load(KeyProviderFactory.class);
++      ServiceLoader.load(KeyProviderFactory.class,
++          KeyProviderFactory.class.getClassLoader());
+ 
+   // Iterate through the serviceLoader to avoid lazy loading.
+   // Lazy loading would require synchronization in concurrent use cases.
+-- 
+1.7.9.5
+

@@ -1,0 +1,46 @@
+From 01618ec10a9553a5404f0961344b36b245772514 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Thu, 21 Aug 2014 18:03:55 +0000
+Subject: [PATCH 436/813] HDFS-6890. Merging change r1619500 from trunk
+
+(cherry picked from d887700240caaea9c7ca1026860754611cba8ccc)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619501 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 3ef92402..0c7aebe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -1643,6 +1643,7 @@ READDIRPLUS3Response readdirplus(XDR xdr, SecurityHandler securityHandler,
+     DirectoryListing dlisting = null;
+     Nfs3FileAttributes postOpDirAttr = null;
+     long dotdotFileId = 0;
++    HdfsFileStatus dotdotStatus = null;
+     try {
+       String dirFileIdPath = Nfs3Utils.getFileIdPath(handle);
+       dirStatus = dfsClient.getFileInfo(dirFileIdPath);
+@@ -1678,7 +1679,7 @@ READDIRPLUS3Response readdirplus(XDR xdr, SecurityHandler securityHandler,
+       if (cookie == 0) {
+         // Get dotdot fileId
+         String dotdotFileIdPath = dirFileIdPath + "/..";
+-        HdfsFileStatus dotdotStatus = dfsClient.getFileInfo(dotdotFileIdPath);
++        dotdotStatus = dfsClient.getFileInfo(dotdotFileIdPath);
+ 
+         if (dotdotStatus == null) {
+           // This should not happen
+@@ -1723,7 +1724,8 @@ READDIRPLUS3Response readdirplus(XDR xdr, SecurityHandler securityHandler,
+           postOpDirAttr.getFileId(), ".", 0, postOpDirAttr, new FileHandle(
+               postOpDirAttr.getFileId()));
+       entries[1] = new READDIRPLUS3Response.EntryPlus3(dotdotFileId, "..",
+-          dotdotFileId, postOpDirAttr, new FileHandle(dotdotFileId));
++          dotdotFileId, Nfs3Utils.getNfs3FileAttrFromFileStatus(dotdotStatus,
++              iug), new FileHandle(dotdotFileId));
+ 
+       for (int i = 2; i < n + 2; i++) {
+         long fileId = fstatus[i - 2].getFileId();
+-- 
+1.7.9.5
+

@@ -1,0 +1,142 @@
+From 7782b1e796541793f7bd55fe4394e7261e6bf2e2 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Wed, 23 Jul 2014 05:00:52 +0000
+Subject: [PATCH 176/813] YARN-2313. Livelock can occur in FairScheduler when
+ there are lots of running apps (Tsuyoshi Ozawa via
+ Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1612769 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 107786343281e5594e064e2088cbc5bb93e97f70)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../hadoop-yarn/dev-support/findbugs-exclude.xml   |    6 ++++++
+ .../scheduler/fair/FairScheduler.java              |   15 ++++++++++++---
+ .../scheduler/fair/FairSchedulerConfiguration.java |    9 +++++++++
+ .../fair/TestFairSchedulerPreemption.java          |    2 +-
+ .../src/site/apt/FairScheduler.apt.vm              |    6 ++++++
+ 5 files changed, 34 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml b/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+index 2da958a..781d7a3 100644
+--- a/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
++++ b/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+@@ -194,6 +194,12 @@
+     <Field name="scheduleAsynchronously" />
+     <Bug pattern="IS2_INCONSISTENT_SYNC" />
+   </Match>
++  <!-- Inconsistent sync warning - updateInterval is only initialized once and never changed -->
++  <Match>
++    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler" />
++    <Field name="updateInterval" />
++    <Bug pattern="IS2_INCONSISTENT_SYNC" />
++  </Match>
+   <!-- Inconsistent sync warning - numRetries is only initialized once and never changed -->
+   <Match>
+     <Class name="org.apache.hadoop.yarn.server.resourcemanager.recovery.ZKRMStateStore" />
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 23aab29..8d21ca7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -135,7 +135,7 @@
+   public static final Resource CONTAINER_RESERVED = Resources.createResource(-1);
+ 
+   // How often fair shares are re-calculated (ms)
+-  protected long UPDATE_INTERVAL = 500;
++  protected long updateInterval;
+   private final int UPDATE_DEBUG_FREQUENCY = 5;
+   private int updatesToSkipForDebug = UPDATE_DEBUG_FREQUENCY;
+ 
+@@ -244,13 +244,13 @@ public QueueManager getQueueManager() {
+ 
+   /**
+    * A runnable which calls {@link FairScheduler#update()} every
+-   * <code>UPDATE_INTERVAL</code> milliseconds.
++   * <code>updateInterval</code> milliseconds.
+    */
+   private class UpdateThread implements Runnable {
+     public void run() {
+       while (true) {
+         try {
+-          Thread.sleep(UPDATE_INTERVAL);
++          Thread.sleep(updateInterval);
+           update();
+           preemptTasksIfNecessary();
+         } catch (Exception e) {
+@@ -1214,6 +1214,15 @@ private synchronized void initScheduler(Configuration conf)
+     waitTimeBeforeKill = this.conf.getWaitTimeBeforeKill();
+     usePortForNodeName = this.conf.getUsePortForNodeName();
+ 
++    updateInterval = this.conf.getUpdateInterval();
++    if (updateInterval < 0) {
++      updateInterval = FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS;
++      LOG.warn(FairSchedulerConfiguration.UPDATE_INTERVAL_MS
++              + " is invalid, so using default value " +
++              + FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS
++              + " ms instead");
++    }
++
+     rootMetrics = FSQueueMetrics.forQueue("root", null, true, conf);
+     // This stores per-application scheduling information
+     this.applications =
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerConfiguration.java
+index 0fd242d..473c369 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerConfiguration.java
+@@ -123,6 +123,11 @@
+   protected static final String MAX_ASSIGN = CONF_PREFIX + "max.assign";
+   protected static final int DEFAULT_MAX_ASSIGN = -1;
+ 
++  /** The update interval for calculating resources in FairScheduler .*/
++  public static final String UPDATE_INTERVAL_MS =
++      CONF_PREFIX + "update-interval-ms";
++  public static final int DEFAULT_UPDATE_INTERVAL_MS = 500;
++
+   public FairSchedulerConfiguration() {
+     super();
+   }
+@@ -246,6 +251,10 @@ public static Resource parseResourceConfigValue(String val)
+           "Error reading resource config", ex);
+     }
+   }
++
++  public long getUpdateInterval() {
++    return getLong(UPDATE_INTERVAL_MS, DEFAULT_UPDATE_INTERVAL_MS);
++  }
+   
+   private static int findResource(String val, String units)
+     throws AllocationConfigurationException {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairSchedulerPreemption.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairSchedulerPreemption.java
+index 310104b..903c7af 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairSchedulerPreemption.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairSchedulerPreemption.java
+@@ -94,7 +94,7 @@ private void startResourceManager(float utilizationThreshold) {
+     scheduler = (FairScheduler)resourceManager.getResourceScheduler();
+ 
+     scheduler.setClock(clock);
+-    scheduler.UPDATE_INTERVAL = 60 * 1000;
++    scheduler.updateInterval = 60 * 1000;
+   }
+ 
+   private void registerNodeAndSubmitApp(
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+index b9cda2c..9bb8563 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+@@ -205,6 +205,12 @@ Properties that can be placed in yarn-site.xml
+       instead. Defaults to true. If a queue placement policy is given in the
+       allocations file, this property is ignored.
+ 
++ * <<<yarn.scheduler.fair.update-interval-ms>>>
++ 
++    * The interval at which to lock the scheduler and recalculate fair shares,
++      recalculate demand, and check whether anything is due for preemption.
++      Defaults to 500 ms. 
++
+ Allocation file format
+ 
+   The allocation file must be in XML format. The format contains five types of
+-- 
+1.7.9.5
+

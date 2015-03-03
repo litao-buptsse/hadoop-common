@@ -1,0 +1,42 @@
+From 87d3b52a6370b9e231fcb5d5a9c9aa15752ac7c6 Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Thu, 11 Sep 2014 21:31:09 -0700
+Subject: [PATCH 478/813] YARN-2541. Fixed ResourceManagerRest.apt.vm table
+ syntax error. Contributed by Jian He (cherry picked
+ from commit
+ 5633da2a018efcfac03cc1dd65af79bce2f1a11b) (cherry
+ picked from commit
+ f580586ab7572b16ba8ac5b47e90b96c8766f2cd)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
+---
+ .../src/site/apt/ResourceManagerRest.apt.vm        |   10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
+index 9609ba3..ed76cd1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/ResourceManagerRest.apt.vm
+@@ -1486,11 +1486,15 @@ _01_000001</amContainerLogs>
+ | amHostHttpAddress | string | The nodes http address of the application master |
+ *---------------+--------------+--------------------------------+
+ | allocatedMB | int | The sum of memory in MB allocated to the application's running containers |
+-*---------------------------------------------------------------+
++*---------------+--------------+--------------------------------+
+ | allocatedVCores | int | The sum of virtual cores allocated to the application's running containers |
+-+---------------------------------------------------------------+
++*---------------+--------------+--------------------------------+
+ | runningContainers | int | The number of containers currently running for the application |
+-+---------------------------------------------------------------+
++*---------------+--------------+--------------------------------+
++| memorySeconds | long | The amount of memory the application has allocated (megabyte-seconds) |
++*---------------+--------------+--------------------------------+
++| vcoreSeconds | long | The amount of CPU resources the application has allocated (virtual core-seconds) |
++*---------------+--------------+--------------------------------+
+ 
+ ** Response Examples
+ 
+-- 
+1.7.9.5
+

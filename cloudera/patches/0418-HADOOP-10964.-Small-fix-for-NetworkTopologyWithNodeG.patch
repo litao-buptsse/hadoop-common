@@ -1,0 +1,29 @@
+From e1d29e11aa9f1590add7741756d1ee2bc1b84b65 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 15 Aug 2014 05:52:28 +0000
+Subject: [PATCH 418/813] HADOOP-10964. Small fix for
+ NetworkTopologyWithNodeGroup#sortByDistance.
+ Contributed by Yi Liu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1618104 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a09f101b1bcfb33ef30480bd18e873fef7604169)
+---
+ .../hadoop/net/NetworkTopologyWithNodeGroup.java   |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopologyWithNodeGroup.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopologyWithNodeGroup.java
+index 86d290a..cc598c0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopologyWithNodeGroup.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopologyWithNodeGroup.java
+@@ -293,7 +293,7 @@ public void sortByDistance(Node reader, Node[] nodes, int activeLen,
+         return;
+       }
+     }
+-    super.sortByDistance(reader, nodes, nodes.length, seed,
++    super.sortByDistance(reader, nodes, activeLen, seed,
+         randomizeBlockLocationsPerBlock);
+   }
+ 
+-- 
+1.7.9.5
+

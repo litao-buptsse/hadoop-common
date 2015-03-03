@@ -1,0 +1,527 @@
+From 8e521c69463ebf9a578b5e9b79be3f948851612e Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Thu, 17 Jul 2014 00:14:56 +0000
+Subject: [PATCH 543/813] YARN-2219. Changed ResourceManager to avoid AMs and
+ NMs getting exceptions after RM recovery but before
+ scheduler learns about apps and app-attempts.
+ Contributed by Jian He.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1611222 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bda23181bf1931c37d2590e03da9acdc6688ad34)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+---
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |   26 ++++++++---------
+ .../rmapp/attempt/RMAppAttemptImpl.java            |    6 ++--
+ .../scheduler/capacity/CapacityScheduler.java      |   30 +++++++++++++-------
+ .../scheduler/event/AppAddedSchedulerEvent.java    |   10 +++++++
+ .../event/AppAttemptAddedSchedulerEvent.java       |   12 ++++----
+ .../scheduler/fair/FairScheduler.java              |   26 +++++++++++------
+ .../scheduler/fifo/FifoScheduler.java              |   30 +++++++++++++-------
+ .../server/resourcemanager/TestFifoScheduler.java  |    2 +-
+ .../TestWorkPreservingRMRestart.java               |   30 ++++++++++++++++++++
+ .../scheduler/fair/FairSchedulerTestBase.java      |    6 ++--
+ .../scheduler/fair/TestFairScheduler.java          |   12 ++++----
+ 11 files changed, 127 insertions(+), 63 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index fe11b0c..29d96a8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -232,12 +232,6 @@
+     .addTransition(RMAppState.ACCEPTED, RMAppState.ACCEPTED, 
+         RMAppEventType.APP_RUNNING_ON_NODE,
+         new AppRunningOnNodeTransition())
+-    // ACCECPTED state can once again receive APP_ACCEPTED event, because on
+-    // recovery the app returns ACCEPTED state and the app once again go
+-    // through the scheduler and triggers one more APP_ACCEPTED event at
+-    // ACCEPTED state.
+-    .addTransition(RMAppState.ACCEPTED, RMAppState.ACCEPTED,
+-        RMAppEventType.APP_ACCEPTED)
+ 
+      // Transitions from RUNNING state
+     .addTransition(RMAppState.RUNNING, RMAppState.RUNNING,
+@@ -834,8 +828,18 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+         return app.recoveredFinalState;
+       }
+ 
+-      // Notify scheduler about the app on recovery
+-      new AddApplicationToSchedulerTransition().transition(app, event);
++      // No existent attempts means the attempt associated with this app was not
++      // started or started but not yet saved.
++      if (app.attempts.isEmpty()) {
++        app.scheduler.handle(new AppAddedSchedulerEvent(app.applicationId,
++          app.submissionContext.getQueue(), app.user));
++        return RMAppState.SUBMITTED;
++      }
++
++      // Add application to scheduler synchronously to guarantee scheduler
++      // knows applications before AM or NM re-registers.
++      app.scheduler.handle(new AppAddedSchedulerEvent(app.applicationId,
++        app.submissionContext.getQueue(), app.user, true));
+ 
+       // recover attempts
+       app.recoverAppAttempts();
+@@ -850,12 +854,6 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+         return RMAppState.ACCEPTED;
+       }
+ 
+-      // No existent attempts means the attempt associated with this app was not
+-      // started or started but not yet saved.
+-      if (app.attempts.isEmpty()) {
+-        return RMAppState.SUBMITTED;
+-      }
+-
+       // YARN-1507 is saving the application state after the application is
+       // accepted. So after YARN-1507, an app is saved meaning it is accepted.
+       // Thus we return ACCECPTED state on recovery.
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index 99c0439..cc995cc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -1022,8 +1022,10 @@ public RMAppAttemptState transition(RMAppAttemptImpl appAttempt,
+           appAttempt.masterService
+               .registerAppAttempt(appAttempt.applicationAttemptId);
+ 
+-          appAttempt.eventHandler.handle(new AppAttemptAddedSchedulerEvent(
+-            appAttempt.getAppAttemptId(), false, false));
++          // Add attempt to scheduler synchronously to guarantee scheduler
++          // knows attempts before AM or NM re-registers.
++          appAttempt.scheduler.handle(new AppAttemptAddedSchedulerEvent(
++            appAttempt.getAppAttemptId(), false, true));
+         }
+ 
+         /*
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 21c7fa4..e9ab8eb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -516,7 +516,7 @@ synchronized CSQueue getQueue(String queueName) {
+   }
+ 
+   private synchronized void addApplication(ApplicationId applicationId,
+-      String queueName, String user) {
++      String queueName, String user, boolean isAppRecovering) {
+     // santiy checks.
+     CSQueue queue = getQueue(queueName);
+     if (queue == null) {
+@@ -548,14 +548,20 @@ private synchronized void addApplication(ApplicationId applicationId,
+     applications.put(applicationId, application);
+     LOG.info("Accepted application " + applicationId + " from user: " + user
+         + ", in queue: " + queueName);
+-    rmContext.getDispatcher().getEventHandler()
++    if (isAppRecovering) {
++      if (LOG.isDebugEnabled()) {
++        LOG.debug(applicationId + " is recovering. Skip notifying APP_ACCEPTED");
++      }
++    } else {
++      rmContext.getDispatcher().getEventHandler()
+         .handle(new RMAppEvent(applicationId, RMAppEventType.APP_ACCEPTED));
++    }
+   }
+ 
+   private synchronized void addApplicationAttempt(
+       ApplicationAttemptId applicationAttemptId,
+       boolean transferStateFromPreviousAttempt,
+-      boolean shouldNotifyAttemptAdded) {
++      boolean isAttemptRecovering) {
+     SchedulerApplication<FiCaSchedulerApp> application =
+         applications.get(applicationAttemptId.getApplicationId());
+     CSQueue queue = (CSQueue) application.getQueue();
+@@ -573,14 +579,15 @@ private synchronized void addApplicationAttempt(
+     LOG.info("Added Application Attempt " + applicationAttemptId
+         + " to scheduler from user " + application.getUser() + " in queue "
+         + queue.getQueueName());
+-    if (shouldNotifyAttemptAdded) {
+-      rmContext.getDispatcher().getEventHandler().handle(
+-          new RMAppAttemptEvent(applicationAttemptId,
+-              RMAppAttemptEventType.ATTEMPT_ADDED));
+-    } else {
++    if (isAttemptRecovering) {
+       if (LOG.isDebugEnabled()) {
+-        LOG.debug("Skipping notifying ATTEMPT_ADDED");
++        LOG.debug(applicationAttemptId
++            + " is recovering. Skipping notifying ATTEMPT_ADDED");
+       }
++    } else {
++      rmContext.getDispatcher().getEventHandler().handle(
++        new RMAppAttemptEvent(applicationAttemptId,
++            RMAppAttemptEventType.ATTEMPT_ADDED));
+     }
+   }
+ 
+@@ -889,7 +896,8 @@ public void handle(SchedulerEvent event) {
+     {
+       AppAddedSchedulerEvent appAddedEvent = (AppAddedSchedulerEvent) event;
+       addApplication(appAddedEvent.getApplicationId(),
+-        appAddedEvent.getQueue(), appAddedEvent.getUser());
++        appAddedEvent.getQueue(), appAddedEvent.getUser(),
++        appAddedEvent.getIsAppRecovering());
+     }
+     break;
+     case APP_REMOVED:
+@@ -905,7 +913,7 @@ public void handle(SchedulerEvent event) {
+           (AppAttemptAddedSchedulerEvent) event;
+       addApplicationAttempt(appAttemptAddedEvent.getApplicationAttemptId(),
+         appAttemptAddedEvent.getTransferStateFromPreviousAttempt(),
+-        appAttemptAddedEvent.getShouldNotifyAttemptAdded());
++        appAttemptAddedEvent.getIsAttemptRecovering());
+     }
+     break;
+     case APP_ATTEMPT_REMOVED:
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAddedSchedulerEvent.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAddedSchedulerEvent.java
+index d6fb36d..7e0b89e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAddedSchedulerEvent.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAddedSchedulerEvent.java
+@@ -25,13 +25,20 @@
+   private final ApplicationId applicationId;
+   private final String queue;
+   private final String user;
++  private final boolean isAppRecovering;
+ 
+   public AppAddedSchedulerEvent(
+       ApplicationId applicationId, String queue, String user) {
++    this(applicationId, queue, user, false);
++  }
++
++  public AppAddedSchedulerEvent(ApplicationId applicationId, String queue,
++      String user, boolean isAppRecovering) {
+     super(SchedulerEventType.APP_ADDED);
+     this.applicationId = applicationId;
+     this.queue = queue;
+     this.user = user;
++    this.isAppRecovering = isAppRecovering;
+   }
+ 
+   public ApplicationId getApplicationId() {
+@@ -46,4 +53,7 @@ public String getUser() {
+     return user;
+   }
+ 
++  public boolean getIsAppRecovering() {
++    return isAppRecovering;
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAttemptAddedSchedulerEvent.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAttemptAddedSchedulerEvent.java
+index 64d308a..6e66d2a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAttemptAddedSchedulerEvent.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/event/AppAttemptAddedSchedulerEvent.java
+@@ -24,22 +24,22 @@
+ 
+   private final ApplicationAttemptId applicationAttemptId;
+   private final boolean transferStateFromPreviousAttempt;
+-  private final boolean shouldNotifyAttemptAdded;
++  private final boolean isAttemptRecovering;
+ 
+   public AppAttemptAddedSchedulerEvent(
+       ApplicationAttemptId applicationAttemptId,
+       boolean transferStateFromPreviousAttempt) {
+-    this(applicationAttemptId, transferStateFromPreviousAttempt, true);
++    this(applicationAttemptId, transferStateFromPreviousAttempt, false);
+   }
+ 
+   public AppAttemptAddedSchedulerEvent(
+       ApplicationAttemptId applicationAttemptId,
+       boolean transferStateFromPreviousAttempt,
+-      boolean shouldNotifyAttemptAdded) {
++      boolean isAttemptRecovering) {
+     super(SchedulerEventType.APP_ATTEMPT_ADDED);
+     this.applicationAttemptId = applicationAttemptId;
+     this.transferStateFromPreviousAttempt = transferStateFromPreviousAttempt;
+-    this.shouldNotifyAttemptAdded = shouldNotifyAttemptAdded;
++    this.isAttemptRecovering = isAttemptRecovering;
+   }
+ 
+   public ApplicationAttemptId getApplicationAttemptId() {
+@@ -50,7 +50,7 @@ public boolean getTransferStateFromPreviousAttempt() {
+     return transferStateFromPreviousAttempt;
+   }
+ 
+-  public boolean getShouldNotifyAttemptAdded() {
+-    return shouldNotifyAttemptAdded;
++  public boolean getIsAttemptRecovering() {
++    return isAttemptRecovering;
+   }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index f1f987a..d633981 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -574,7 +574,7 @@ public FairSchedulerEventLog getEventLog() {
+    * configured limits, but the app will not be marked as runnable.
+    */
+   protected synchronized void addApplication(ApplicationId applicationId,
+-      String queueName, String user) {
++      String queueName, String user, boolean isAppRecovering) {
+     if (queueName == null || queueName.isEmpty()) {
+       String message = "Reject application " + applicationId +
+               " submitted by user " + user + " with an empty queue name.";
+@@ -611,8 +611,14 @@ protected synchronized void addApplication(ApplicationId applicationId,
+     LOG.info("Accepted application " + applicationId + " from user: " + user
+         + ", in queue: " + queueName + ", currently num of applications: "
+         + applications.size());
+-    rmContext.getDispatcher().getEventHandler()
++    if (isAppRecovering) {
++      if (LOG.isDebugEnabled()) {
++        LOG.debug(applicationId + " is recovering. Skip notifying APP_ACCEPTED");
++      }
++    } else {
++      rmContext.getDispatcher().getEventHandler()
+         .handle(new RMAppEvent(applicationId, RMAppEventType.APP_ACCEPTED));
++    }
+   }
+ 
+   /**
+@@ -651,13 +657,14 @@ protected synchronized void addApplicationAttempt(
+         + " to scheduler from user: " + user);
+ 
+     if (isAttemptRecovering) {
+-      rmContext.getDispatcher().getEventHandler().handle(
+-          new RMAppAttemptEvent(applicationAttemptId,
+-              RMAppAttemptEventType.ATTEMPT_ADDED));
+-    } else {
+       if (LOG.isDebugEnabled()) {
+-        LOG.debug("Skipping notifying ATTEMPT_ADDED");
++        LOG.debug(applicationAttemptId
++            + " is recovering. Skipping notifying ATTEMPT_ADDED");
+       }
++    } else {
++      rmContext.getDispatcher().getEventHandler().handle(
++        new RMAppAttemptEvent(applicationAttemptId,
++            RMAppAttemptEventType.ATTEMPT_ADDED));
+     }
+   }
+ 
+@@ -1130,7 +1137,8 @@ public void handle(SchedulerEvent event) {
+       }
+       AppAddedSchedulerEvent appAddedEvent = (AppAddedSchedulerEvent) event;
+       addApplication(appAddedEvent.getApplicationId(),
+-        appAddedEvent.getQueue(), appAddedEvent.getUser());
++        appAddedEvent.getQueue(), appAddedEvent.getUser(),
++        appAddedEvent.getIsAppRecovering());
+       break;
+     case APP_REMOVED:
+       if (!(event instanceof AppRemovedSchedulerEvent)) {
+@@ -1157,7 +1165,7 @@ public void handle(SchedulerEvent event) {
+           (AppAttemptAddedSchedulerEvent) event;
+       addApplicationAttempt(appAttemptAddedEvent.getApplicationAttemptId(),
+         appAttemptAddedEvent.getTransferStateFromPreviousAttempt(),
+-        appAttemptAddedEvent.getShouldNotifyAttemptAdded());
++        appAttemptAddedEvent.getIsAttemptRecovering());
+       break;
+     case APP_ATTEMPT_REMOVED:
+       if (!(event instanceof AppAttemptRemovedSchedulerEvent)) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index e3eca86..ea21c2b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -339,22 +339,28 @@ private FiCaSchedulerNode getNode(NodeId nodeId) {
+ 
+   @VisibleForTesting
+   public synchronized void addApplication(ApplicationId applicationId,
+-      String queue, String user) {
++      String queue, String user, boolean isAppRecovering) {
+     SchedulerApplication<FiCaSchedulerApp> application =
+         new SchedulerApplication<FiCaSchedulerApp>(DEFAULT_QUEUE, user);
+     applications.put(applicationId, application);
+     metrics.submitApp(user);
+     LOG.info("Accepted application " + applicationId + " from user: " + user
+         + ", currently num of applications: " + applications.size());
+-    rmContext.getDispatcher().getEventHandler()
++    if (isAppRecovering) {
++      if (LOG.isDebugEnabled()) {
++        LOG.debug(applicationId + " is recovering. Skip notifying APP_ACCEPTED");
++      }
++    } else {
++      rmContext.getDispatcher().getEventHandler()
+         .handle(new RMAppEvent(applicationId, RMAppEventType.APP_ACCEPTED));
++    }
+   }
+ 
+   @VisibleForTesting
+   public synchronized void
+       addApplicationAttempt(ApplicationAttemptId appAttemptId,
+           boolean transferStateFromPreviousAttempt,
+-          boolean shouldNotifyAttemptAdded) {
++          boolean isAttemptRecovering) {
+     SchedulerApplication<FiCaSchedulerApp> application =
+         applications.get(appAttemptId.getApplicationId());
+     String user = application.getUser();
+@@ -372,14 +378,15 @@ public synchronized void addApplication(ApplicationId applicationId,
+     metrics.submitAppAttempt(user);
+     LOG.info("Added Application Attempt " + appAttemptId
+         + " to scheduler from user " + application.getUser());
+-    if (shouldNotifyAttemptAdded) {
+-      rmContext.getDispatcher().getEventHandler().handle(
+-          new RMAppAttemptEvent(appAttemptId,
+-              RMAppAttemptEventType.ATTEMPT_ADDED));
+-    } else {
++    if (isAttemptRecovering) {
+       if (LOG.isDebugEnabled()) {
+-        LOG.debug("Skipping notifying ATTEMPT_ADDED");
++        LOG.debug(appAttemptId
++            + " is recovering. Skipping notifying ATTEMPT_ADDED");
+       }
++    } else {
++      rmContext.getDispatcher().getEventHandler().handle(
++        new RMAppAttemptEvent(appAttemptId,
++            RMAppAttemptEventType.ATTEMPT_ADDED));
+     }
+   }
+ 
+@@ -766,7 +773,8 @@ public void handle(SchedulerEvent event) {
+     {
+       AppAddedSchedulerEvent appAddedEvent = (AppAddedSchedulerEvent) event;
+       addApplication(appAddedEvent.getApplicationId(),
+-        appAddedEvent.getQueue(), appAddedEvent.getUser());
++        appAddedEvent.getQueue(), appAddedEvent.getUser(),
++        appAddedEvent.getIsAppRecovering());
+     }
+     break;
+     case APP_REMOVED:
+@@ -782,7 +790,7 @@ public void handle(SchedulerEvent event) {
+           (AppAttemptAddedSchedulerEvent) event;
+       addApplicationAttempt(appAttemptAddedEvent.getApplicationAttemptId(),
+         appAttemptAddedEvent.getTransferStateFromPreviousAttempt(),
+-        appAttemptAddedEvent.getShouldNotifyAttemptAdded());
++        appAttemptAddedEvent.getIsAttemptRecovering());
+     }
+     break;
+     case APP_ATTEMPT_REMOVED:
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java
+index dfbaf8c..594ea8e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestFifoScheduler.java
+@@ -234,7 +234,7 @@ public void testNodeUpdateBeforeAppAttemptInit() throws Exception {
+     scheduler.handle(new NodeAddedSchedulerEvent(node));
+ 
+     ApplicationId appId = ApplicationId.newInstance(0, 1);
+-    scheduler.addApplication(appId, "queue1", "user1");
++    scheduler.addApplication(appId, "queue1", "user1", true);
+ 
+     NodeUpdateSchedulerEvent updateEvent = new NodeUpdateSchedulerEvent(node);
+     try {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+index 3908b85..5f00f31 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestWorkPreservingRMRestart.java
+@@ -640,6 +640,36 @@ public void testAMContainerStatusWithRMRestart() throws Exception {
+         attempt0.getMasterContainer().getId()).isAMContainer());
+   }
+ 
++  @Test (timeout = 20000)
++  public void testRecoverSchedulerAppAndAttemptSynchronously() throws Exception {
++    // start RM
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++    rm1 = new MockRM(conf, memStore);
++    rm1.start();
++    MockNM nm1 =
++        new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
++    nm1.registerNode();
++
++    // create app and launch the AM
++    RMApp app0 = rm1.submitApp(200);
++    MockAM am0 = MockRM.launchAndRegisterAM(app0, rm1, nm1);
++
++    rm2 = new MockRM(conf, memStore);
++    rm2.start();
++    nm1.setResourceTrackerService(rm2.getResourceTrackerService());
++    // scheduler app/attempt is immediately available after RM is re-started.
++    Assert.assertNotNull(rm2.getResourceScheduler().getSchedulerAppInfo(
++      am0.getApplicationAttemptId()));
++
++    // getTransferredContainers should not throw NPE.
++    ((AbstractYarnScheduler) rm2.getResourceScheduler())
++      .getTransferredContainers(am0.getApplicationAttemptId());
++
++    List<NMContainerStatus> containers = createNMContainerStatusForApp(am0);
++    nm1.registerNode(containers, null);
++    waitForNumContainersToRecover(2, rm2, am0.getApplicationAttemptId());
++  }
+ 
+   // Test if RM on recovery receives the container release request from AM
+   // before it receives the container status reported by NM for recovery. this
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
+index d755b82..c4652eb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairSchedulerTestBase.java
+@@ -147,7 +147,7 @@ protected ApplicationAttemptId createSchedulingRequest(
+       int memory, int vcores, String queueId, String userId, int numContainers,
+       int priority) {
+     ApplicationAttemptId id = createAppAttemptId(this.APP_ID++, this.ATTEMPT_ID++);
+-    scheduler.addApplication(id.getApplicationId(), queueId, userId);
++    scheduler.addApplication(id.getApplicationId(), queueId, userId, true);
+     // This conditional is for testAclSubmitApplication where app is rejected
+     // and no app is added.
+     if (scheduler.getSchedulerApplications().containsKey(id.getApplicationId())) {
+@@ -180,7 +180,7 @@ protected ApplicationAttemptId createSchedulingRequest(String queueId,
+       String userId, List<ResourceRequest> ask) {
+     ApplicationAttemptId id = createAppAttemptId(this.APP_ID++,
+         this.ATTEMPT_ID++);
+-    scheduler.addApplication(id.getApplicationId(), queueId, userId);
++    scheduler.addApplication(id.getApplicationId(), queueId, userId, true);
+     // This conditional is for testAclSubmitApplication where app is rejected
+     // and no app is added.
+     if (scheduler.getSchedulerApplications().containsKey(id.getApplicationId())) {
+@@ -226,4 +226,4 @@ protected void createApplicationWithAMResource(ApplicationAttemptId attId,
+         new AppAttemptAddedSchedulerEvent(attId, false);
+     scheduler.handle(attempAddedEvent);
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index 638d914..8d0b6f6 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -1126,13 +1126,13 @@ public void testQueueDemandCalculation() throws Exception {
+     scheduler.reinitialize(conf, resourceManager.getRMContext());
+ 
+     ApplicationAttemptId id11 = createAppAttemptId(1, 1);
+-    scheduler.addApplication(id11.getApplicationId(), "root.queue1", "user1");
++    scheduler.addApplication(id11.getApplicationId(), "root.queue1", "user1", true);
+     scheduler.addApplicationAttempt(id11, false, true);
+     ApplicationAttemptId id21 = createAppAttemptId(2, 1);
+-    scheduler.addApplication(id21.getApplicationId(), "root.queue2", "user1");
++    scheduler.addApplication(id21.getApplicationId(), "root.queue2", "user1", true);
+     scheduler.addApplicationAttempt(id21, false, true);
+     ApplicationAttemptId id22 = createAppAttemptId(2, 2);
+-    scheduler.addApplication(id22.getApplicationId(), "root.queue2", "user1");
++    scheduler.addApplication(id22.getApplicationId(), "root.queue2", "user1", true);
+     scheduler.addApplicationAttempt(id22, false, true);
+ 
+     int minReqSize = 
+@@ -2156,7 +2156,7 @@ public void testMultipleNodesSingleRackRequest() throws Exception {
+     scheduler.handle(nodeEvent2);
+     
+     ApplicationAttemptId appId = createAppAttemptId(this.APP_ID++, this.ATTEMPT_ID++);
+-    scheduler.addApplication(appId.getApplicationId(), "queue1", "user1");
++    scheduler.addApplication(appId.getApplicationId(), "queue1", "user1", true);
+     scheduler.addApplicationAttempt(appId, false, true);
+     
+     // 1 request with 2 nodes on the same rack. another request with 1 node on
+@@ -2438,7 +2438,7 @@ public void testNotAllowSubmitApplication() throws Exception {
+ 
+     ApplicationAttemptId attId =
+         ApplicationAttemptId.newInstance(applicationId, this.ATTEMPT_ID++);
+-    scheduler.addApplication(attId.getApplicationId(), queue, user);
++    scheduler.addApplication(attId.getApplicationId(), queue, user, true);
+ 
+     numTries = 0;
+     while (application.getFinishTime() == 0 && numTries < MAX_TRIES) {
+@@ -3329,7 +3329,7 @@ public void testContinuousScheduling() throws Exception {
+     // send application request
+     ApplicationAttemptId appAttemptId =
+             createAppAttemptId(this.APP_ID++, this.ATTEMPT_ID++);
+-    scheduler.addApplication(appAttemptId.getApplicationId(), "queue11", "user11");
++    scheduler.addApplication(appAttemptId.getApplicationId(), "queue11", "user11", true);
+     scheduler.addApplicationAttempt(appAttemptId, false, false);
+     List<ResourceRequest> ask = new ArrayList<ResourceRequest>();
+     ResourceRequest request =
+-- 
+1.7.9.5
+

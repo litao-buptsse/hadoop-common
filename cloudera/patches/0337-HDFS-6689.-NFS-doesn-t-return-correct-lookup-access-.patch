@@ -1,0 +1,46 @@
+From 5c5ead69fc5ffa39a7653bd1189e7c49fe769634 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Wed, 16 Jul 2014 18:52:03 +0000
+Subject: [PATCH 337/813] HDFS-6689. NFS doesn't return correct lookup access
+ for direcories. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1611135 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e896de98f2dba9fbd58024b8da35c8b72a404724)
+---
+ .../org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java |    2 ++
+ .../apache/hadoop/hdfs/nfs/nfs3/TestNfs3Utils.java |    7 +++++++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java
+index 5c30f16..71b0185 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3Utils.java
+@@ -154,6 +154,8 @@ public static int getAccessRights(int mode, int type) {
+     if (isSet(mode, Nfs3Constant.ACCESS_MODE_EXECUTE)) {
+       if (type == NfsFileType.NFSREG.toValue()) {
+         rtn |= Nfs3Constant.ACCESS3_EXECUTE;
++      } else {
++        rtn |= Nfs3Constant.ACCESS3_LOOKUP;
+       }
+     }
+     return rtn;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestNfs3Utils.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestNfs3Utils.java
+index b5f0cd4..77646af 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestNfs3Utils.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestNfs3Utils.java
+@@ -68,5 +68,12 @@ public void testGetAccessRightsForUserGroup() throws IOException {
+       0, Nfs3Utils.getAccessRightsForUserGroup(3, 10, new int[] {5, 16, 4}, attr));
+     assertEquals("No access should be allowed for dir as mode is 700 even though AuxGID does match",
+       0, Nfs3Utils.getAccessRightsForUserGroup(3, 20, new int[] {5, 10}, attr));
++    
++    Mockito.when(attr.getUid()).thenReturn(2);
++    Mockito.when(attr.getGid()).thenReturn(10);
++    Mockito.when(attr.getMode()).thenReturn(457); // 711
++    Mockito.when(attr.getType()).thenReturn(NfsFileType.NFSDIR.toValue());
++    assertEquals("Access should be allowed for dir as mode is 711 and GID matches",
++        2 /* Lookup */, Nfs3Utils.getAccessRightsForUserGroup(3, 10, new int[] {5, 16, 11}, attr));
+   }
+ }
+-- 
+1.7.9.5
+

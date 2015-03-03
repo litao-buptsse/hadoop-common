@@ -1,0 +1,68 @@
+From ee8f2b3b3219258446c2f9982c8610e7e7216a62 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 11 Sep 2014 10:59:09 -0700
+Subject: [PATCH 340/813] HDFS-7045. Fix NameNode deadlock when opening file
+ under /.reserved path. Contributed by Yi Liu.
+
+(cherry picked from commit 1e684995d7ac20d1c27ca1c1bef37dd2ee00e630)
+(cherry picked from commit 6151c2bea7bcd9e458b09a5bf5b1798ed6c0def9)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    2 +-
+ .../test/java/org/apache/hadoop/hdfs/TestRead.java |   22 ++++++++++++++++++++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 5af4f0e..fffa0df 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -1824,8 +1824,8 @@ private LocatedBlocks getBlockLocationsUpdateTimes(final String srcArg,
+         checkOperation(OperationCategory.WRITE);
+         writeLock(); // writelock is needed to set accesstime
+       }
+-      src = resolvePath(src, pathComponents);
+       try {
++        src = resolvePath(src, pathComponents);
+         if (isReadOp) {
+           checkOperation(OperationCategory.READ);
+         } else {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRead.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRead.java
+index c8d5029..378d8bb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRead.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRead.java
+@@ -17,6 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs;
+ 
++import java.io.FileNotFoundException;
+ import java.io.IOException;
+ import java.nio.ByteBuffer;
+ 
+@@ -80,4 +81,25 @@ public void testEOFWithRemoteBlockReader() throws Exception {
+     testEOF(cluster, 10000);   
+     cluster.shutdown();
+   }
++
++  /**
++   * Regression test for HDFS-7045.
++   * If deadlock happen, the test will time out.
++   * @throws Exception
++   */
++  @Test(timeout=60000)
++  public void testReadReservedPath() throws Exception {
++    Configuration conf = new Configuration();
++    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).
++        numDataNodes(1).format(true).build();
++    try {
++      FileSystem fs = cluster.getFileSystem();
++      fs.open(new Path("/.reserved/.inodes/file"));
++      Assert.fail("Open a non existing file should fail.");
++    } catch (FileNotFoundException e) {
++      // Expected
++    } finally {
++      cluster.shutdown();
++    }
++  }
+ }
+-- 
+1.7.9.5
+

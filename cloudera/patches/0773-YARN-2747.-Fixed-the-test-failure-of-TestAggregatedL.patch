@@ -1,0 +1,64 @@
+From adefad98126fdd451d9b3c1fd84366a4bdbd9945 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Tue, 28 Oct 2014 22:43:40 -0700
+Subject: [PATCH 773/813] YARN-2747. Fixed the test failure of
+ TestAggregatedLogFormat when native I/O is enabled.
+ Contributed by Xuan Gong.
+
+(cherry picked from commit ec63a3ffbd9413e7434594682fdbbd36eef7413c)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+
+(cherry picked from commit 90879d0e80838ece5cc830fcd0470c343921f115)
+---
+ .../logaggregation/TestAggregatedLogFormat.java    |   12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java
+index 0fae77d..c40cc8b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/logaggregation/TestAggregatedLogFormat.java
+@@ -294,6 +294,8 @@ public void testContainerLogsFileAccess() throws IOException {
+     
+     // It is trying simulate a situation where first log file is owned by
+     // different user (probably symlink) and second one by the user itself.
++    // The first file should not be aggregated. Because this log file has the invalid
++    // user name.
+     when(logValue.getUser()).thenReturn(randomUser).thenReturn(
+         ugi.getShortUserName());
+     logWriter.append(logKey, logValue);
+@@ -318,6 +320,9 @@ public void testContainerLogsFileAccess() throws IOException {
+         expectedOwner = adminsGroupString;
+       }
+     }
++
++    // This file: stderr should not be aggregated.
++    // And we will not aggregate the log message.
+     String stdoutFile1 =
+         StringUtils.join(
+             File.separator,
+@@ -325,10 +330,8 @@ public void testContainerLogsFileAccess() throws IOException {
+                 workDir.getAbsolutePath(), "srcFiles",
+                 testContainerId1.getApplicationAttemptId().getApplicationId()
+                     .toString(), testContainerId1.toString(), stderr }));
+-    String message1 =
+-        "Owner '" + expectedOwner + "' for path " + stdoutFile1
+-        + " did not match expected owner '" + randomUser + "'";
+-    
++
++    // The file: stdout is expected to be aggregated.
+     String stdoutFile2 =
+         StringUtils.join(
+             File.separator,
+@@ -341,7 +344,6 @@ public void testContainerLogsFileAccess() throws IOException {
+             + stdoutFile2 + " did not match expected owner '"
+             + ugi.getShortUserName() + "'";
+     
+-    Assert.assertTrue(line.contains(message1));
+     Assert.assertFalse(line.contains(message2));
+     Assert.assertFalse(line.contains(data + testContainerId1.toString()
+         + stderr));
+-- 
+1.7.9.5
+

@@ -1,0 +1,553 @@
+From 7364f1b9b468122d5517bf76eb41534ea2ee6f34 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 30 Jul 2014 05:58:23 +0000
+Subject: [PATCH 263/813] HDFS-6778. The extended attributes javadoc should
+ simply refer to the user docs. Contributed by
+ Charles Lamb.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1614548 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1bd3b2bf9abf508462a831ae0272afc36578423d)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/fs/AbstractFileSystem.java   |   90 ++++---------------
+ .../java/org/apache/hadoop/fs/FileContext.java     |   91 ++++---------------
+ .../main/java/org/apache/hadoop/fs/FileSystem.java |   92 ++++----------------
+ .../hadoop/hdfs/protocol/ClientProtocol.java       |   52 ++++-------
+ 4 files changed, 61 insertions(+), 264 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java
+index b82ea7f..5b456b1 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java
+@@ -1040,21 +1040,10 @@ public AclStatus getAclStatus(Path path) throws IOException {
+ 
+   /**
+    * Set an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * A regular user can only set an xattr for the "user" namespace.
+-   * The super user can set an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to modify
+    * @param name xattr name.
+@@ -1069,21 +1058,10 @@ public void setXAttr(Path path, String name, byte[] value)
+ 
+   /**
+    * Set an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * A regular user can only set an xattr for the "user" namespace.
+-   * The super user can set an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to modify
+    * @param name xattr name.
+@@ -1099,18 +1077,10 @@ public void setXAttr(Path path, String name, byte[] value,
+ 
+   /**
+    * Get an xattr for a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * A regular user can only get an xattr for the "user" namespace.
+-   * The super user can get an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * An xattr will only be returned when the logged-in user has the correct permissions.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attribute
+    * @param name xattr name.
+@@ -1127,13 +1097,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * Only those xattrs for which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattrs for the "user" namespace.
+-   * The super user can only get xattrs for "user" and "trusted" namespaces.
+-   * The xattr of "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @return Map<String, byte[]> describing the XAttrs of the file or directory
+@@ -1149,13 +1113,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * Only those xattrs for which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattrs for the "user" namespace.
+-   * The super user can only get xattrs for "user" and "trusted" namespaces.
+-   * The xattr of "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @param names XAttr names.
+@@ -1173,14 +1131,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * Only the xattr names for which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattr names for the "user" namespace.
+-   * The super user can only get xattr names for the "user" and "trusted"
+-   * namespaces.
+-   * The xattr names in the "security" and "system" namespaces are only
+-   * used/exposed internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @return Map<String, byte[]> describing the XAttrs of the file or directory
+@@ -1194,21 +1145,10 @@ public void setXAttr(Path path, String name, byte[] value,
+ 
+   /**
+    * Remove an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * A regular user can only remove an xattr for the "user" namespace.
+-   * The super user can remove an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to remove extended attribute
+    * @param name xattr name
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
+index e71b412..f3f4b27 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
+@@ -2311,21 +2311,10 @@ public AclStatus next(final AbstractFileSystem fs, final Path p)
+ 
+   /**
+    * Set an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * A regular user can only set an xattr for the "user" namespace.
+-   * The super user can set an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to modify
+    * @param name xattr name.
+@@ -2340,21 +2329,10 @@ public void setXAttr(Path path, String name, byte[] value)
+ 
+   /**
+    * Set an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * A regular user can only set an xattr for the "user" namespace.
+-   * The super user can set an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to modify
+    * @param name xattr name.
+@@ -2377,19 +2355,10 @@ public Void next(final AbstractFileSystem fs, final Path p)
+ 
+   /**
+    * Get an xattr for a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * 
+-   * A regular user can only get an xattr for the "user" namespace.
+-   * The super user can get an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * An xattr will only be returned when the logged-in user has the correct permissions.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attribute
+    * @param name xattr name.
+@@ -2412,13 +2381,7 @@ public Void next(final AbstractFileSystem fs, final Path p)
+    * Only those xattrs for which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattrs for the "user" namespace.
+-   * The super user can only get xattrs for "user" and "trusted" namespaces.
+-   * The xattr of "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @return Map<String, byte[]> describing the XAttrs of the file or directory
+@@ -2440,13 +2403,7 @@ public Void next(final AbstractFileSystem fs, final Path p)
+    * Only those xattrs for which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattrs for the "user" namespace.
+-   * The super user can only get xattrs for "user" and "trusted" namespaces.
+-   * The xattr of "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @param names XAttr names.
+@@ -2467,21 +2424,10 @@ public Void next(final AbstractFileSystem fs, final Path p)
+ 
+   /**
+    * Remove an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * A regular user can only remove an xattr for the "user" namespace.
+-   * The super user can remove an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to remove extended attribute
+    * @param name xattr name
+@@ -2504,14 +2450,7 @@ public Void next(final AbstractFileSystem fs, final Path p)
+    * Only those xattr names which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattr names for the "user" namespace.
+-   * The super user can only get xattr names for "user" and "trusted"
+-   * namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only
+-   * used/exposed internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @return List<String> of the XAttr names of the file or directory
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java
+index d040ddf..c01b7f3 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileSystem.java
+@@ -2365,21 +2365,10 @@ public AclStatus getAclStatus(Path path) throws IOException {
+ 
+   /**
+    * Set an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * A regular user can only set an xattr for the "user" namespace.
+-   * The super user can set an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to modify
+    * @param name xattr name.
+@@ -2394,21 +2383,10 @@ public void setXAttr(Path path, String name, byte[] value)
+ 
+   /**
+    * Set an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * A regular user can only set an xattr for the "user" namespace.
+-   * The super user can set an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set if the logged-in user has the correct permissions.
+-   * If the xattr exists, it is replaced.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to modify
+    * @param name xattr name.
+@@ -2424,20 +2402,10 @@ public void setXAttr(Path path, String name, byte[] value,
+ 
+   /**
+    * Get an xattr name and value for a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * 
+-   * A regular user can only get an xattr for the "user" namespace.
+-   * The super user can get an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * An xattr will only be returned if the logged-in user has the
+-   * correct permissions.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attribute
+    * @param name xattr name.
+@@ -2454,13 +2422,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * Only those xattrs which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattrs for the "user" namespace.
+-   * The super user can only get xattrs for "user" and "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @return Map<String, byte[]> describing the XAttrs of the file or directory
+@@ -2476,13 +2438,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * Only those xattrs which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattrs for the "user" namespace.
+-   * The super user can only get xattrs for "user" and "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @param names XAttr names.
+@@ -2500,14 +2456,7 @@ public void setXAttr(Path path, String name, byte[] value,
+    * Only those xattr names which the logged-in user has permissions to view
+    * are returned.
+    * <p/>
+-   * A regular user can only get xattr names for the "user" namespace.
+-   * The super user can only get xattr names for "user" and "trusted"
+-   * namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only
+-   * used/exposed internally by/to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to get extended attributes
+    * @return List<String> of the XAttr names of the file or directory
+@@ -2520,21 +2469,10 @@ public void setXAttr(Path path, String name, byte[] value,
+ 
+   /**
+    * Remove an xattr of a file or directory.
+-   * The name must be prefixed with user/trusted/security/system and
+-   * followed by ".". For example, "user.attr".
+-   * <p/>
+-   * A regular user can only remove an xattr for the "user" namespace.
+-   * The super user can remove an xattr of either the "user" or "trusted" namespaces.
+-   * The xattrs of the "security" and "system" namespaces are only used/exposed 
+-   * internally by/to the FS impl.
+-   * <p/>
+-   * The access permissions of an xattr in the "user" namespace are
+-   * defined by the file and directory permission bits.
+-   * An xattr can only be set when the logged-in user has the correct permissions.
+-   * If the xattr exists, it will be replaced.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
+    *
+    * @param path Path to remove extended attribute
+    * @param name xattr name
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+index a2a52fe..74eca82 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+@@ -1267,17 +1267,11 @@ public void removeAclEntries(String src, List<AclEntry> aclSpec)
+   
+   /**
+    * Set xattr of a file or directory.
+-   * A regular user only can set xattr of "user" namespace.
+-   * A super user can set xattr of "user" and "trusted" namespace.
+-   * XAttr of "security" and "system" namespace is only used/exposed 
+-   * internally to the FS impl.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * For xattr of "user" namespace, its access permissions are 
+-   * defined by the file or directory permission bits.
+-   * XAttr will be set only when login user has correct permissions.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
++   *
+    * @param src file or directory
+    * @param xAttr <code>XAttr</code> to set
+    * @param flag set flag
+@@ -1288,18 +1282,13 @@ public void setXAttr(String src, XAttr xAttr, EnumSet<XAttrSetFlag> flag)
+       throws IOException;
+   
+   /**
+-   * Get xattrs of file or directory. Values in xAttrs parameter are ignored.
+-   * If xattrs is null or empty, equals getting all xattrs of the file or 
+-   * directory.
+-   * Only xattrs which login user has correct permissions will be returned. 
++   * Get xattrs of a file or directory. Values in xAttrs parameter are ignored.
++   * If xAttrs is null or empty, this is the same as getting all xattrs of the
++   * file or directory.  Only those xattrs for which the logged-in user has
++   * permissions to view are returned.
+    * <p/>
+-   * A regular user only can get xattr of "user" namespace.
+-   * A super user can get xattr of "user" and "trusted" namespace.
+-   * XAttr of "security" and "system" namespace is only used/exposed 
+-   * internally to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
++   *
+    * @param src file or directory
+    * @param xAttrs xAttrs to get
+    * @return List<XAttr> <code>XAttr</code> list 
+@@ -1314,13 +1303,8 @@ public void setXAttr(String src, XAttr xAttr, EnumSet<XAttrSetFlag> flag)
+    * Only the xattr names for which the logged in user has the permissions to
+    * access will be returned.
+    * <p/>
+-   * A regular user only can get xattr names from the "user" namespace.
+-   * A super user can get xattr names of the "user" and "trusted" namespace.
+-   * XAttr names of the "security" and "system" namespaces are only used/exposed
+-   * internally by the file system impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
++   *
+    * @param src file or directory
+    * @param xAttrs xAttrs to get
+    * @return List<XAttr> <code>XAttr</code> list
+@@ -1332,15 +1316,11 @@ public void setXAttr(String src, XAttr xAttr, EnumSet<XAttrSetFlag> flag)
+   
+   /**
+    * Remove xattr of a file or directory.Value in xAttr parameter is ignored.
+-   * Name must be prefixed with user/trusted/security/system.
++   * The name must be prefixed with the namespace followed by ".". For example,
++   * "user.attr".
+    * <p/>
+-   * A regular user only can remove xattr of "user" namespace.
+-   * A super user can remove xattr of "user" and "trusted" namespace.
+-   * XAttr of "security" and "system" namespace is only used/exposed 
+-   * internally to the FS impl.
+-   * <p/>
+-   * @see <a href="http://en.wikipedia.org/wiki/Extended_file_attributes">
+-   * http://en.wikipedia.org/wiki/Extended_file_attributes</a>
++   * Refer to the HDFS extended attributes user documentation for details.
++   *
+    * @param src file or directory
+    * @param xAttr <code>XAttr</code> to remove
+    * @throws IOException
+-- 
+1.7.9.5
+

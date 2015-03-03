@@ -1,0 +1,38 @@
+From 070a050afdedb6a375e3b63c46c3a77e072ed577 Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Wed, 8 Oct 2014 10:58:51 -0700
+Subject: [PATCH 564/813] YARN-2649. Fixed TestAMRMRPCNodeUpdates test
+ failure. Contributed by Ming Ma
+
+(cherry picked from commit e16e25ab1beac89c8d8be4e9f2a7fbefe81d35f3)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../hadoop/yarn/server/resourcemanager/MockRM.java |   10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+index 1338a6c..fe67f18 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+@@ -372,7 +372,15 @@ public SubmitApplicationResponse run() {
+     if (waitForAccepted) {
+       waitForState(appId, RMAppState.ACCEPTED);
+     }
+-    return getRMContext().getRMApps().get(appId);
++    RMApp rmApp = getRMContext().getRMApps().get(appId);
++
++    // unmanaged AM won't go to RMAppAttemptState.SCHEDULED.
++    if (waitForAccepted && !unmanaged) {
++      waitForState(rmApp.getCurrentAppAttempt().getAppAttemptId(),
++          RMAppAttemptState.SCHEDULED);
++    }
++
++    return rmApp;
+   }
+ 
+   public MockNM registerNode(String nodeIdStr, int memory) throws Exception {
+-- 
+1.7.9.5
+

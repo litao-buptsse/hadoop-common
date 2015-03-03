@@ -1,0 +1,54 @@
+From 9cb4fce9cbe32e9c4234791eda315de3bca604cb Mon Sep 17 00:00:00 2001
+From: cnauroth <cnauroth@apache.org>
+Date: Thu, 11 Sep 2014 12:16:19 -0700
+Subject: [PATCH 568/813] HDFS-7042. Upgrade fails for Windows HA cluster due
+ to file locks held during rename in JournalNode.
+ Contributed by Chris Nauroth.
+
+(cherry picked from commit 80ac6aabcea9f808fd55504cdaef2da7b50da7f1)
+---
+ .../hadoop/hdfs/qjournal/server/Journal.java       |    8 +++++++-
+ .../hadoop/hdfs/util/BestEffortLongFile.java       |    1 +
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
+index 71c361d..49b7b6e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
+@@ -994,6 +994,9 @@ synchronized void discardSegments(long startTxId) throws IOException {
+   }
+ 
+   public synchronized void doPreUpgrade() throws IOException {
++    // Do not hold file lock on committedTxnId, because the containing
++    // directory will be renamed.  It will be reopened lazily on next access.
++    committedTxnId.close();
+     storage.getJournalManager().doPreUpgrade();
+   }
+ 
+@@ -1043,7 +1046,10 @@ public Boolean canRollBack(StorageInfo storage, StorageInfo prevStorage,
+         targetLayoutVersion);
+   }
+ 
+-  public void doRollback() throws IOException {
++  public synchronized void doRollback() throws IOException {
++    // Do not hold file lock on committedTxnId, because the containing
++    // directory will be renamed.  It will be reopened lazily on next access.
++    committedTxnId.close();
+     storage.getJournalManager().doRollback();
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/BestEffortLongFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/BestEffortLongFile.java
+index b2626e9..2fdf547 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/BestEffortLongFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/BestEffortLongFile.java
+@@ -112,6 +112,7 @@ private void lazyOpen() throws IOException {
+   public void close() throws IOException {
+     if (ch != null) {
+       ch.close();
++      ch = null;
+     }
+   }
+ }
+-- 
+1.7.9.5
+

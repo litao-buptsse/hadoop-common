@@ -1,0 +1,1087 @@
+From 14a88b9896badb17156d2e374156a9807430f91f Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Fri, 25 Jul 2014 20:44:30 +0000
+Subject: [PATCH 370/813] Merge r1613515 from trunk. YARN-2211. Persist
+ AMRMToken master key in RMStateStore for RM
+ recovery. Contributed by Xuan Gong
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1613516 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fb86bce6f602f08e50239b2223522736ca2cfade)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../hadoop/yarn/client/ProtocolHATestBase.java     |    1 +
+ .../client/TestApplicationMasterServiceOnHA.java   |    6 +-
+ .../hadoop-yarn-server-resourcemanager/pom.xml     |   31 +++++
+ .../resourcemanager/RMSecretManagerService.java    |    6 +-
+ .../server/resourcemanager/ResourceManager.java    |    3 +
+ .../recovery/FileSystemRMStateStore.java           |   55 ++++++++-
+ .../recovery/MemoryRMStateStore.java               |   15 +++
+ .../resourcemanager/recovery/NullRMStateStore.java |    7 ++
+ .../resourcemanager/recovery/RMStateStore.java     |   20 +++-
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   45 ++++++-
+ .../records/AMRMTokenSecretManagerState.java       |   76 ++++++++++++
+ .../impl/pb/AMRMTokenSecretManagerStatePBImpl.java |  126 ++++++++++++++++++++
+ .../security/AMRMTokenSecretManager.java           |   48 +++++++-
+ .../yarn_server_resourcemanager_recovery.proto     |   30 +++++
+ .../yarn/server/resourcemanager/TestRMRestart.java |    9 +-
+ .../recovery/RMStateStoreTestBase.java             |   71 ++++++++++-
+ .../recovery/TestFSRMStateStore.java               |    2 +-
+ .../recovery/TestZKRMStateStore.java               |    1 +
+ .../rmapp/TestRMAppTransitions.java                |    2 +-
+ .../rmapp/attempt/TestRMAppAttemptTransitions.java |    3 +-
+ .../scheduler/capacity/TestUtils.java              |    5 +-
+ .../resourcemanager/security/TestAMRMTokens.java   |    4 +-
+ 22 files changed, 532 insertions(+), 34 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/AMRMTokenSecretManagerState.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/AMRMTokenSecretManagerStatePBImpl.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java
+index 15bfa28..72cb1b1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java
+@@ -267,6 +267,7 @@ public void run() {
+   protected void startHACluster(int numOfNMs, boolean overrideClientRMService,
+       boolean overrideRTS, boolean overrideApplicationMasterService)
+       throws Exception {
++    conf.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
+     conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     cluster =
+         new MiniYARNClusterForHATesting(TestRMFailover.class.getName(), 2,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java
+index 4771ccb..0b42ac3 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java
+@@ -54,11 +54,9 @@ public void initiate() throws Exception {
+     amClient = ClientRMProxy
+         .createRMProxy(this.conf, ApplicationMasterProtocol.class);
+ 
+-    AMRMTokenIdentifier id =
+-        new AMRMTokenIdentifier(attemptId);
+     Token<AMRMTokenIdentifier> appToken =
+-        new Token<AMRMTokenIdentifier>(id, this.cluster.getResourceManager()
+-            .getRMContext().getAMRMTokenSecretManager());
++        this.cluster.getResourceManager().getRMContext()
++          .getAMRMTokenSecretManager().createAndGetAMRMToken(attemptId);
+     appToken.setService(new Text("appToken service"));
+     UserGroupInformation.setLoginUser(UserGroupInformation
+         .createRemoteUser(UserGroupInformation.getCurrentUser()
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/pom.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/pom.xml
+index 9b3a463..f01138f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/pom.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/pom.xml
+@@ -262,6 +262,37 @@
+           </execution>
+         </executions>
+       </plugin>
++
++     <plugin>
++        <groupId>org.apache.hadoop</groupId>
++        <artifactId>hadoop-maven-plugins</artifactId>
++        <executions>
++          <execution>
++            <id>compile-protoc</id>
++            <phase>generate-sources</phase>
++            <goals>
++              <goal>protoc</goal>
++            </goals>
++            <configuration>
++              <protocVersion>${protobuf.version}</protocVersion>
++              <protocCommand>${protoc.path}</protocCommand>
++              <imports>
++                <param>${basedir}/../../../../hadoop-common-project/hadoop-common/src/main/proto</param>
++                <param>${basedir}/../../hadoop-yarn-api/src/main/proto</param>
++                <param>${basedir}/../hadoop-yarn-server-common/src/main/proto</param>
++                <param>${basedir}/src/main/proto</param>
++              </imports>
++              <source>
++                <directory>${basedir}/src/main/proto</directory>
++                <includes>
++		          <include>yarn_server_resourcemanager_recovery.proto</include>
++                </includes>
++              </source>
++              <output>${project.build.directory}/generated-sources/java</output>
++            </configuration>
++          </execution>
++        </executions>
++      </plugin>
+     </plugins>
+   </build>
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMSecretManagerService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMSecretManagerService.java
+index 9fdde65..d0d7d16 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMSecretManagerService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMSecretManagerService.java
+@@ -60,7 +60,7 @@ public RMSecretManagerService(Configuration conf, RMContextImpl rmContext) {
+     clientToAMSecretManager = createClientToAMTokenSecretManager();
+     rmContext.setClientToAMTokenSecretManager(clientToAMSecretManager);
+ 
+-    amRmTokenSecretManager = createAMRMTokenSecretManager(conf);
++    amRmTokenSecretManager = createAMRMTokenSecretManager(conf, this.rmContext);
+     rmContext.setAMRMTokenSecretManager(amRmTokenSecretManager);
+ 
+     rmDTSecretManager =
+@@ -115,8 +115,8 @@ protected NMTokenSecretManagerInRM createNMTokenSecretManager(
+   }
+ 
+   protected AMRMTokenSecretManager createAMRMTokenSecretManager(
+-      Configuration conf) {
+-    return new AMRMTokenSecretManager(conf);
++      Configuration conf, RMContext rmContext) {
++    return new AMRMTokenSecretManager(conf, rmContext);
+   }
+ 
+   protected ClientToAMTokenSecretManagerInRM createClientToAMTokenSecretManager() {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 684490a..9829782 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -1086,6 +1086,9 @@ public void recover(RMState state) throws Exception {
+     // recover RMdelegationTokenSecretManager
+     rmContext.getRMDelegationTokenSecretManager().recover(state);
+ 
++    // recover AMRMTokenSecretManager
++    rmContext.getAMRMTokenSecretManager().recover(state);
++
+     // recover applications
+     rmAppManager.recover(state);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+index 0e605a9..243c7a1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+@@ -22,6 +22,7 @@
+ import java.io.ByteArrayOutputStream;
+ import java.io.DataInputStream;
+ import java.io.DataOutputStream;
++import java.io.FileNotFoundException;
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.List;
+@@ -43,16 +44,18 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMStateVersionProto;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+-
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Epoch;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.AMRMTokenSecretManagerStatePBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationAttemptStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
+@@ -76,6 +79,8 @@
+   protected static final String ROOT_DIR_NAME = "FSRMStateRoot";
+   protected static final RMStateVersion CURRENT_VERSION_INFO = RMStateVersion
+     .newInstance(1, 1);
++  protected static final String AMRMTOKEN_SECRET_MANAGER_NODE =
++      "AMRMTokenSecretManagerNode";
+ 
+   protected FileSystem fs;
+ 
+@@ -89,6 +94,7 @@
+   @VisibleForTesting
+   Path fsWorkingPath;
+ 
++  Path amrmTokenSecretManagerRoot;
+   @Override
+   public synchronized void initInternal(Configuration conf)
+       throws Exception{
+@@ -96,6 +102,8 @@ public synchronized void initInternal(Configuration conf)
+     rootDirPath = new Path(fsWorkingPath, ROOT_DIR_NAME);
+     rmDTSecretManagerRoot = new Path(rootDirPath, RM_DT_SECRET_MANAGER_ROOT);
+     rmAppRoot = new Path(rootDirPath, RM_APP_ROOT);
++    amrmTokenSecretManagerRoot =
++        new Path(rootDirPath, AMRMTOKEN_SECRET_MANAGER_ROOT);
+   }
+ 
+   @Override
+@@ -113,6 +121,7 @@ protected synchronized void startInternal() throws Exception {
+     fs = fsWorkingPath.getFileSystem(conf);
+     fs.mkdirs(rmDTSecretManagerRoot);
+     fs.mkdirs(rmAppRoot);
++    fs.mkdirs(amrmTokenSecretManagerRoot);
+   }
+ 
+   @Override
+@@ -180,9 +189,32 @@ public synchronized RMState loadState() throws Exception {
+     loadRMDTSecretManagerState(rmState);
+     // recover RM applications
+     loadRMAppState(rmState);
++    // recover AMRMTokenSecretManager
++    loadAMRMTokenSecretManagerState(rmState);
+     return rmState;
+   }
+ 
++  private void loadAMRMTokenSecretManagerState(RMState rmState)
++      throws Exception {
++    checkAndResumeUpdateOperation(amrmTokenSecretManagerRoot);
++    Path amrmTokenSecretManagerStateDataDir =
++        new Path(amrmTokenSecretManagerRoot, AMRMTOKEN_SECRET_MANAGER_NODE);
++    FileStatus status;
++    try {
++      status = fs.getFileStatus(amrmTokenSecretManagerStateDataDir);
++      assert status.isFile();
++    } catch (FileNotFoundException ex) {
++      return;
++    }
++    byte[] data = readFile(amrmTokenSecretManagerStateDataDir, status.getLen());
++    AMRMTokenSecretManagerStatePBImpl stateData =
++        new AMRMTokenSecretManagerStatePBImpl(
++          AMRMTokenSecretManagerStateProto.parseFrom(data));
++    rmState.amrmTokenSecretManagerState =
++        AMRMTokenSecretManagerState.newInstance(
++          stateData.getCurrentMasterKey(), stateData.getNextMasterKey());
++  }
++
+   private void loadRMAppState(RMState rmState) throws Exception {
+     try {
+       List<ApplicationAttemptState> attempts =
+@@ -597,4 +629,25 @@ Path getNodePath(Path root, String nodeName) {
+     return new Path(root, nodeName);
+   }
+ 
++  @Override
++  public synchronized void storeOrUpdateAMRMTokenSecretManagerState(
++      AMRMTokenSecretManagerState amrmTokenSecretManagerState,
++      boolean isUpdate){
++    Path nodeCreatePath =
++        getNodePath(amrmTokenSecretManagerRoot, AMRMTOKEN_SECRET_MANAGER_NODE);
++    AMRMTokenSecretManagerState data =
++        AMRMTokenSecretManagerState.newInstance(amrmTokenSecretManagerState);
++    byte[] stateData = data.getProto().toByteArray();
++    try {
++      if (isUpdate) {
++        updateFile(nodeCreatePath, stateData);
++      } else {
++        writeFile(nodeCreatePath, stateData);
++      }
++    } catch (Exception ex) {
++      LOG.info("Error storing info for AMRMTokenSecretManager", ex);
++      notifyStoreOperationFailed(ex);
++    }
++  }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
+index 05cbb09..369f89a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/MemoryRMStateStore.java
+@@ -32,6 +32,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+@@ -72,6 +73,10 @@ public synchronized RMState loadState() throws Exception {
+       state.rmSecretManagerState.getTokenState());
+     returnState.rmSecretManagerState.dtSequenceNumber =
+         state.rmSecretManagerState.dtSequenceNumber;
++    returnState.amrmTokenSecretManagerState =
++        state.amrmTokenSecretManagerState == null ? null
++            : AMRMTokenSecretManagerState
++              .newInstance(state.amrmTokenSecretManagerState);
+     return returnState;
+   }
+   
+@@ -268,6 +273,16 @@ protected RMStateVersion getCurrentVersion() {
+   }
+ 
+   @Override
++  public void storeOrUpdateAMRMTokenSecretManagerState(
++      AMRMTokenSecretManagerState amrmTokenSecretManagerState,
++      boolean isUpdate) {
++    if (amrmTokenSecretManagerState != null) {
++      state.amrmTokenSecretManagerState = AMRMTokenSecretManagerState
++          .newInstance(amrmTokenSecretManagerState);
++    }
++  }
++
++  @Override
+   public void deleteStore() throws Exception {
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
+index 690f0be..ea70871 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/NullRMStateStore.java
+@@ -25,6 +25,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+@@ -139,6 +140,12 @@ protected RMStateVersion getCurrentVersion() {
+   }
+ 
+   @Override
++  public void storeOrUpdateAMRMTokenSecretManagerState(
++      AMRMTokenSecretManagerState state, boolean isUpdate) {
++    //DO Nothing
++  }
++
++  @Override
+   public void deleteStore() throws Exception {
+     // Do nothing
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index 5b75b42..e2c4e7e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -45,16 +45,14 @@
+ import org.apache.hadoop.yarn.event.AsyncDispatcher;
+ import org.apache.hadoop.yarn.event.Dispatcher;
+ import org.apache.hadoop.yarn.event.EventHandler;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos;
+ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEventType;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationAttemptStateDataPBImpl;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppNewSavedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+@@ -85,6 +83,8 @@
+   protected static final String DELEGATION_TOKEN_PREFIX = "RMDelegationToken_";
+   protected static final String DELEGATION_TOKEN_SEQUENCE_NUMBER_PREFIX =
+       "RMDTSequenceNumber_";
++  protected static final String AMRMTOKEN_SECRET_MANAGER_ROOT =
++      "AMRMTokenSecretManagerRoot";
+   protected static final String VERSION_NODE = "RMVersionNode";
+   protected static final String EPOCH_NODE = "EpochNode";
+ 
+@@ -412,6 +412,8 @@ public int getDTSequenceNumber() {
+ 
+     RMDTSecretManagerState rmSecretManagerState = new RMDTSecretManagerState();
+ 
++    AMRMTokenSecretManagerState amrmTokenSecretManagerState = null;
++
+     public Map<ApplicationId, ApplicationState> getApplicationState() {
+       return appState;
+     }
+@@ -419,6 +421,10 @@ public int getDTSequenceNumber() {
+     public RMDTSecretManagerState getRMDTSecretManagerState() {
+       return rmSecretManagerState;
+     }
++
++    public AMRMTokenSecretManagerState getAMRMTokenSecretManagerState() {
++      return amrmTokenSecretManagerState;
++    }
+   }
+     
+   private Dispatcher rmDispatcher;
+@@ -714,6 +720,14 @@ protected abstract void removeRMDTMasterKeyState(DelegationKey delegationKey)
+       throws Exception;
+ 
+   /**
++   * Blocking API Derived classes must implement this method to store or update
++   * the state of AMRMToken Master Key
++   */
++  public abstract void storeOrUpdateAMRMTokenSecretManagerState(
++      AMRMTokenSecretManagerState amrmTokenSecretManagerState,
++      boolean isUpdate);
++
++  /**
+    * Non-blocking API
+    * ResourceManager services call this to remove an application from the state
+    * store
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 68b4632..5644ad9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -44,18 +44,19 @@
+ import org.apache.hadoop.yarn.conf.HAUtil;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationAttemptStateDataProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ApplicationStateDataProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RMStateVersionProto;
+ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.EpochProto;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMZKUtils;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+-
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Epoch;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.AMRMTokenSecretManagerStatePBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationAttemptStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
+@@ -128,6 +129,9 @@
+    *        |      |----- Key_1
+    *        |      |----- Key_2
+    *                ....
++   * |--- AMRMTOKEN_SECRET_MANAGER_ROOT
++   *        |----- currentMasterKey
++   *        |----- nextMasterKey
+    *
+    */
+   private String zkRootNodePath;
+@@ -136,6 +140,7 @@
+   private String dtMasterKeysRootPath;
+   private String delegationTokensRootPath;
+   private String dtSequenceNumberPath;
++  private String amrmTokenSecretManagerRoot;
+ 
+   @VisibleForTesting
+   protected String znodeWorkingPath;
+@@ -255,6 +260,8 @@ public synchronized void initInternal(Configuration conf) throws Exception {
+         RM_DELEGATION_TOKENS_ROOT_ZNODE_NAME);
+     dtSequenceNumberPath = getNodePath(rmDTSecretManagerRoot,
+         RM_DT_SEQUENTIAL_NUMBER_ZNODE_NAME);
++    amrmTokenSecretManagerRoot =
++        getNodePath(zkRootNodePath, AMRMTOKEN_SECRET_MANAGER_ROOT);
+   }
+ 
+   @Override
+@@ -275,6 +282,7 @@ public synchronized void startInternal() throws Exception {
+     createRootDir(dtMasterKeysRootPath);
+     createRootDir(delegationTokensRootPath);
+     createRootDir(dtSequenceNumberPath);
++    createRootDir(amrmTokenSecretManagerRoot);
+   }
+ 
+   private void createRootDir(final String rootPath) throws Exception {
+@@ -427,9 +435,27 @@ public synchronized RMState loadState() throws Exception {
+     loadRMDTSecretManagerState(rmState);
+     // recover RM applications
+     loadRMAppState(rmState);
++    // recover AMRMTokenSecretManager
++    loadAMRMTokenSecretManagerState(rmState);
+     return rmState;
+   }
+ 
++  private void loadAMRMTokenSecretManagerState(RMState rmState)
++      throws Exception {
++    byte[] data = getDataWithRetries(amrmTokenSecretManagerRoot, true);
++    if (data == null) {
++      LOG.warn("There is no data saved");
++      return;
++    }
++    AMRMTokenSecretManagerStatePBImpl stateData =
++        new AMRMTokenSecretManagerStatePBImpl(
++          AMRMTokenSecretManagerStateProto.parseFrom(data));
++    rmState.amrmTokenSecretManagerState =
++        AMRMTokenSecretManagerState.newInstance(
++          stateData.getCurrentMasterKey(), stateData.getNextMasterKey());
++
++  }
++
+   private synchronized void loadRMDTSecretManagerState(RMState rmState)
+       throws Exception {
+     loadRMDelegationKeyState(rmState);
+@@ -1112,4 +1138,19 @@ protected synchronized ZooKeeper getNewZooKeeper()
+     return zk;
+   }
+ 
++  @Override
++  public synchronized void storeOrUpdateAMRMTokenSecretManagerState(
++      AMRMTokenSecretManagerState amrmTokenSecretManagerState,
++      boolean isUpdate) {
++    AMRMTokenSecretManagerState data =
++        AMRMTokenSecretManagerState.newInstance(amrmTokenSecretManagerState);
++    byte[] stateData = data.getProto().toByteArray();
++    try {
++      setDataWithRetries(amrmTokenSecretManagerRoot, stateData, -1);
++    } catch (Exception ex) {
++      LOG.info("Error storing info for AMRMTokenSecretManager", ex);
++      notifyStoreOperationFailed(ex);
++    }
++  }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/AMRMTokenSecretManagerState.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/AMRMTokenSecretManagerState.java
+new file mode 100644
+index 0000000..89b4ff0
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/AMRMTokenSecretManagerState.java
+@@ -0,0 +1,76 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.resourcemanager.recovery.records;
++
++import org.apache.hadoop.classification.InterfaceAudience.Public;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
++import org.apache.hadoop.yarn.util.Records;
++
++/**
++ * Contains all the state data that needs to be stored persistently 
++ * for {@link AMRMTokenSecretManager}
++ */
++@Public
++@Unstable
++public abstract class AMRMTokenSecretManagerState {
++  public static AMRMTokenSecretManagerState newInstance(
++      MasterKey currentMasterKey, MasterKey nextMasterKey) {
++    AMRMTokenSecretManagerState data =
++        Records.newRecord(AMRMTokenSecretManagerState.class);
++    data.setCurrentMasterKey(currentMasterKey);
++    data.setNextMasterKey(nextMasterKey);
++    return data;
++  }
++
++  public static AMRMTokenSecretManagerState newInstance(
++      AMRMTokenSecretManagerState state) {
++    AMRMTokenSecretManagerState data =
++        Records.newRecord(AMRMTokenSecretManagerState.class);
++    data.setCurrentMasterKey(state.getCurrentMasterKey());
++    data.setNextMasterKey(state.getNextMasterKey());
++    return data;
++  }
++
++  /**
++   * {@link AMRMTokenSecretManager} current Master key
++   */
++  @Public
++  @Unstable
++  public abstract MasterKey getCurrentMasterKey();
++
++  @Public
++  @Unstable
++  public abstract void setCurrentMasterKey(MasterKey currentMasterKey);
++
++  /**
++   * {@link AMRMTokenSecretManager} next Master key
++   */
++  @Public
++  @Unstable
++  public abstract MasterKey getNextMasterKey();
++
++  @Public
++  @Unstable
++  public abstract void setNextMasterKey(MasterKey nextMasterKey);
++
++  public abstract AMRMTokenSecretManagerStateProto getProto();
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/AMRMTokenSecretManagerStatePBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/AMRMTokenSecretManagerStatePBImpl.java
+new file mode 100644
+index 0000000..6ce0c54
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/records/impl/pb/AMRMTokenSecretManagerStatePBImpl.java
+@@ -0,0 +1,126 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb;
++
++import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.MasterKeyProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProto;
++import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.AMRMTokenSecretManagerStateProtoOrBuilder;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
++
++public class AMRMTokenSecretManagerStatePBImpl extends AMRMTokenSecretManagerState{
++  AMRMTokenSecretManagerStateProto proto =
++      AMRMTokenSecretManagerStateProto.getDefaultInstance();
++  AMRMTokenSecretManagerStateProto.Builder builder = null;
++  boolean viaProto = false;
++
++  private MasterKey currentMasterKey = null;
++  private MasterKey nextMasterKey = null;
++
++  public AMRMTokenSecretManagerStatePBImpl() {
++    builder = AMRMTokenSecretManagerStateProto.newBuilder();
++  }
++
++  public AMRMTokenSecretManagerStatePBImpl(AMRMTokenSecretManagerStateProto proto) {
++    this.proto = proto;
++    viaProto = true;
++  }
++
++  public AMRMTokenSecretManagerStateProto getProto() {
++      mergeLocalToProto();
++    proto = viaProto ? proto : builder.build();
++    viaProto = true;
++    return proto;
++  }
++
++  private void mergeLocalToBuilder() {
++    if (this.currentMasterKey != null) {
++      builder.setCurrentMasterKey(convertToProtoFormat(this.currentMasterKey));
++    }
++    if (this.nextMasterKey != null) {
++      builder.setNextMasterKey(convertToProtoFormat(this.nextMasterKey));
++    }
++  }
++
++  private void mergeLocalToProto() {
++    if (viaProto)
++      maybeInitBuilder();
++    mergeLocalToBuilder();
++    proto = builder.build();
++    viaProto = true;
++  }
++
++  private void maybeInitBuilder() {
++    if (viaProto || builder == null) {
++      builder = AMRMTokenSecretManagerStateProto.newBuilder(proto);
++    }
++    viaProto = false;
++  }
++
++  @Override
++  public MasterKey getCurrentMasterKey() {
++    AMRMTokenSecretManagerStateProtoOrBuilder p = viaProto ? proto : builder;
++    if (this.currentMasterKey != null) {
++      return this.currentMasterKey;
++    }
++    if (!p.hasCurrentMasterKey()) {
++      return null;
++    }
++    this.currentMasterKey = convertFromProtoFormat(p.getCurrentMasterKey());
++    return this.currentMasterKey;
++  }
++
++  @Override
++  public void setCurrentMasterKey(MasterKey currentMasterKey) {
++    maybeInitBuilder();
++    if (currentMasterKey == null)
++      builder.clearCurrentMasterKey();
++    this.currentMasterKey = currentMasterKey;
++  }
++
++  @Override
++  public MasterKey getNextMasterKey() {
++    AMRMTokenSecretManagerStateProtoOrBuilder p = viaProto ? proto : builder;
++    if (this.nextMasterKey != null) {
++      return this.nextMasterKey;
++    }
++    if (!p.hasNextMasterKey()) {
++      return null;
++    }
++    this.nextMasterKey = convertFromProtoFormat(p.getNextMasterKey());
++    return this.nextMasterKey;
++  }
++
++  @Override
++  public void setNextMasterKey(MasterKey nextMasterKey) {
++    maybeInitBuilder();
++    if (nextMasterKey == null)
++      builder.clearNextMasterKey();
++    this.nextMasterKey = nextMasterKey;
++  }
++
++  private MasterKeyProto convertToProtoFormat(MasterKey t) {
++    return ((MasterKeyPBImpl) t).getProto();
++  }
++
++  private MasterKeyPBImpl convertFromProtoFormat(MasterKeyProto p) {
++    return new MasterKeyPBImpl(p);
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/AMRMTokenSecretManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/AMRMTokenSecretManager.java
+index c498b52..a3132bc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/AMRMTokenSecretManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/AMRMTokenSecretManager.java
+@@ -38,6 +38,10 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
++import org.apache.hadoop.yarn.server.api.records.MasterKey;
++import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.security.MasterKeyData;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+@@ -66,6 +70,7 @@
+   private final Timer timer;
+   private final long rollingInterval;
+   private final long activationDelay;
++  private RMContext rmContext;
+ 
+   private final Set<ApplicationAttemptId> appAttemptSet =
+       new HashSet<ApplicationAttemptId>();
+@@ -73,7 +78,8 @@
+   /**
+    * Create an {@link AMRMTokenSecretManager}
+    */
+-  public AMRMTokenSecretManager(Configuration conf) {
++  public AMRMTokenSecretManager(Configuration conf, RMContext rmContext) {
++    this.rmContext = rmContext;
+     this.timer = new Timer();
+     this.rollingInterval =
+         conf
+@@ -98,6 +104,11 @@ public AMRMTokenSecretManager(Configuration conf) {
+   public void start() {
+     if (this.currentMasterKey == null) {
+       this.currentMasterKey = createNewMasterKey();
++      AMRMTokenSecretManagerState state =
++          AMRMTokenSecretManagerState.newInstance(
++            this.currentMasterKey.getMasterKey(), null);
++      rmContext.getStateStore().storeOrUpdateAMRMTokenSecretManagerState(state,
++        false);
+     }
+     this.timer.scheduleAtFixedRate(new MasterKeyRoller(), rollingInterval,
+       rollingInterval);
+@@ -130,6 +141,12 @@ void rollMasterKey() {
+     try {
+       LOG.info("Rolling master-key for amrm-tokens");
+       this.nextMasterKey = createNewMasterKey();
++      AMRMTokenSecretManagerState state =
++          AMRMTokenSecretManagerState.newInstance(
++            this.currentMasterKey.getMasterKey(),
++            this.nextMasterKey.getMasterKey());
++      rmContext.getStateStore().storeOrUpdateAMRMTokenSecretManagerState(state,
++        true);
+       this.timer.schedule(new NextKeyActivator(), this.activationDelay);
+     } finally {
+       this.writeLock.unlock();
+@@ -225,8 +242,8 @@ public void addPersistedPassword(Token<AMRMTokenIdentifier> token)
+         LOG.debug("Trying to retrieve password for " + applicationAttemptId);
+       }
+       if (!appAttemptSet.contains(applicationAttemptId)) {
+-        throw new InvalidToken("Password not found for ApplicationAttempt "
+-            + applicationAttemptId);
++        throw new InvalidToken(applicationAttemptId
++            + " not found in AMRMTokenSecretManager.");
+       }
+       if (identifier.getKeyId() == this.currentMasterKey.getMasterKey()
+         .getKeyId()) {
+@@ -238,9 +255,7 @@ public void addPersistedPassword(Token<AMRMTokenIdentifier> token)
+         return createPassword(identifier.getBytes(),
+           this.nextMasterKey.getSecretKey());
+       }
+-      throw new InvalidToken("Given AMRMToken for application : "
+-          + applicationAttemptId.toString()
+-          + " seems to have been generated illegally.");
++      throw new InvalidToken("Invalid AMRMToken from " + applicationAttemptId);
+     } finally {
+       this.readLock.unlock();
+     }
+@@ -291,4 +306,25 @@ public MasterKeyData getNextMasterKeyData() {
+       this.readLock.unlock();
+     }
+   }
++
++  public void recover(RMState state) {
++    if (state.getAMRMTokenSecretManagerState() != null) {
++      // recover the current master key
++      MasterKey currentKey =
++          state.getAMRMTokenSecretManagerState().getCurrentMasterKey();
++      this.currentMasterKey =
++          new MasterKeyData(currentKey, createSecretKey(currentKey.getBytes()
++            .array()));
++
++      // recover the next master key if not null
++      MasterKey nextKey =
++          state.getAMRMTokenSecretManagerState().getNextMasterKey();
++      if (nextKey != null) {
++        this.nextMasterKey =
++            new MasterKeyData(nextKey, createSecretKey(nextKey.getBytes()
++              .array()));
++        this.timer.schedule(new NextKeyActivator(), this.activationDelay);
++      }
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto
+new file mode 100644
+index 0000000..ae56b9f
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/proto/yarn_server_resourcemanager_recovery.proto
+@@ -0,0 +1,30 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++option java_package = "org.apache.hadoop.yarn.proto";
++option java_outer_classname = "YarnServerResourceManagerRecoveryProtos";
++option java_generic_services = true;
++option java_generate_equals_and_hash = true;
++package hadoop.yarn;
++
++import "yarn_server_common_protos.proto";
++
++message AMRMTokenSecretManagerStateProto {
++  optional MasterKeyProto current_master_key = 1;
++  optional MasterKeyProto next_master_key = 2;
++}
+\ No newline at end of file
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index af981bf..79368d5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -1250,11 +1250,10 @@ public void testAppAttemptTokensRestoredOnRMRestart() throws Exception {
+             .getEncoded());
+ 
+     // assert AMRMTokenSecretManager also knows about the AMRMToken password
+-    // TODO: fix this on YARN-2211
+-//    Token<AMRMTokenIdentifier> amrmToken = loadedAttempt1.getAMRMToken();
+-//    Assert.assertArrayEquals(amrmToken.getPassword(),
+-//      rm2.getRMContext().getAMRMTokenSecretManager().retrievePassword(
+-//        amrmToken.decodeIdentifier()));
++    Token<AMRMTokenIdentifier> amrmToken = loadedAttempt1.getAMRMToken();
++    Assert.assertArrayEquals(amrmToken.getPassword(),
++      rm2.getRMContext().getAMRMTokenSecretManager().retrievePassword(
++        amrmToken.decodeIdentifier()));
+     rm1.stop();
+     rm2.stop();
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+index 04f0348..a61f23f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+@@ -55,10 +55,12 @@
+ import org.apache.hadoop.yarn.event.EventHandler;
+ import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
++import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.ApplicationAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.ApplicationState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMDTSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
++import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+@@ -176,8 +178,12 @@ void testRMAppStateStore(RMStateStoreHelper stateStoreHelper)
+     TestDispatcher dispatcher = new TestDispatcher();
+     store.setRMDispatcher(dispatcher);
+ 
+-    AMRMTokenSecretManager appTokenMgr = spy(
+-        new AMRMTokenSecretManager(conf));
++    RMContext rmContext = mock(RMContext.class);
++    when(rmContext.getStateStore()).thenReturn(store);
++
++    AMRMTokenSecretManager appTokenMgr =
++        spy(new AMRMTokenSecretManager(conf, rmContext));
++
+     MasterKeyData masterKeyData = appTokenMgr.createNewMasterKey();
+     when(appTokenMgr.getMasterKey()).thenReturn(masterKeyData);
+ 
+@@ -576,4 +582,65 @@ protected void modifyRMDelegationTokenState() throws Exception {
+ 
+   }
+ 
++  public void testAMRMTokenSecretManagerStateStore(
++      RMStateStoreHelper stateStoreHelper) throws Exception {
++    System.out.println("Start testing");
++    RMStateStore store = stateStoreHelper.getRMStateStore();
++    TestDispatcher dispatcher = new TestDispatcher();
++    store.setRMDispatcher(dispatcher);
++
++    RMContext rmContext = mock(RMContext.class);
++    when(rmContext.getStateStore()).thenReturn(store);
++    Configuration conf = new YarnConfiguration();
++    AMRMTokenSecretManager appTokenMgr =
++        new AMRMTokenSecretManager(conf, rmContext);
++
++    //create and save the first masterkey
++    MasterKeyData firstMasterKeyData = appTokenMgr.createNewMasterKey();
++
++    AMRMTokenSecretManagerState state1 =
++        AMRMTokenSecretManagerState.newInstance(
++          firstMasterKeyData.getMasterKey(), null);
++    rmContext.getStateStore().storeOrUpdateAMRMTokenSecretManagerState(state1,
++      false);
++
++    // load state
++    store = stateStoreHelper.getRMStateStore();
++    store.setRMDispatcher(dispatcher);
++    RMState state = store.loadState();
++    Assert.assertNotNull(state.getAMRMTokenSecretManagerState());
++    Assert.assertEquals(firstMasterKeyData.getMasterKey(), state
++      .getAMRMTokenSecretManagerState().getCurrentMasterKey());
++    Assert.assertNull(state
++      .getAMRMTokenSecretManagerState().getNextMasterKey());
++
++    //create and save the second masterkey
++    MasterKeyData secondMasterKeyData = appTokenMgr.createNewMasterKey();
++    AMRMTokenSecretManagerState state2 =
++        AMRMTokenSecretManagerState
++          .newInstance(firstMasterKeyData.getMasterKey(),
++            secondMasterKeyData.getMasterKey());
++    rmContext.getStateStore().storeOrUpdateAMRMTokenSecretManagerState(state2,
++      true);
++
++    // load state
++    store = stateStoreHelper.getRMStateStore();
++    store.setRMDispatcher(dispatcher);
++    RMState state_2 = store.loadState();
++    Assert.assertNotNull(state_2.getAMRMTokenSecretManagerState());
++    Assert.assertEquals(firstMasterKeyData.getMasterKey(), state_2
++      .getAMRMTokenSecretManagerState().getCurrentMasterKey());
++    Assert.assertEquals(secondMasterKeyData.getMasterKey(), state_2
++      .getAMRMTokenSecretManagerState().getNextMasterKey());
++
++    // re-create the masterKeyData based on the recovered masterkey
++    // should have the same secretKey
++    appTokenMgr.recover(state_2);
++    Assert.assertEquals(appTokenMgr.getCurrnetMasterKeyData().getSecretKey(),
++      firstMasterKeyData.getSecretKey());
++    Assert.assertEquals(appTokenMgr.getNextMasterKeyData().getSecretKey(),
++      secondMasterKeyData.getSecretKey());
++
++    store.close();
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
+index ea90c3d..f5b3e8a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestFSRMStateStore.java
+@@ -38,7 +38,6 @@
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+-import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.RMStateVersionPBImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
+@@ -161,6 +160,7 @@ public void testFSRMStateStore() throws Exception {
+       testEpoch(fsTester);
+       testAppDeletion(fsTester);
+       testDeleteStore(fsTester);
++      testAMRMTokenSecretManagerStateStore(fsTester);
+     } finally {
+       cluster.shutdown();
+     }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+index e56f775..1dee533 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+@@ -123,6 +123,7 @@ public void testZKRMStateStoreRealZK() throws Exception {
+     testEpoch(zkTester);
+     testAppDeletion(zkTester);
+     testDeleteStore(zkTester);
++    testAMRMTokenSecretManagerStateStore(zkTester);
+   }
+ 
+   private Configuration createHARMConf(
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+index 9f7c179..0f1ec09 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+@@ -201,7 +201,7 @@ public void setUp() throws Exception {
+     this.rmContext =
+         new RMContextImpl(rmDispatcher,
+           containerAllocationExpirer, amLivelinessMonitor, amFinishingMonitor,
+-          null, new AMRMTokenSecretManager(conf),
++          null, new AMRMTokenSecretManager(conf, this.rmContext),
+           new RMContainerTokenSecretManager(conf),
+           new NMTokenSecretManagerInRM(conf),
+           new ClientToAMTokenSecretManagerInRM(),
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+index 7dfec4e..26ab480 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+@@ -135,7 +135,8 @@
+   private RMAppAttempt applicationAttempt;
+ 
+   private Configuration conf = new Configuration();
+-  private AMRMTokenSecretManager amRMTokenManager = spy(new AMRMTokenSecretManager(conf));
++  private AMRMTokenSecretManager amRMTokenManager =
++      spy(new AMRMTokenSecretManager(conf, rmContext));
+   private ClientToAMTokenSecretManagerInRM clientToAMTokenManager =
+       spy(new ClientToAMTokenSecretManagerInRM());
+   private NMTokenSecretManagerInRM nmTokenManager =
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestUtils.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestUtils.java
+index db28dca..e548661 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestUtils.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestUtils.java
+@@ -86,13 +86,12 @@ public EventHandler getEventHandler() {
+     
+     Configuration conf = new Configuration();
+     RMApplicationHistoryWriter writer =  mock(RMApplicationHistoryWriter.class);
+-    RMContext rmContext =
++    RMContextImpl rmContext =
+         new RMContextImpl(nullDispatcher, cae, null, null, null,
+-          new AMRMTokenSecretManager(conf),
++          new AMRMTokenSecretManager(conf, null),
+           new RMContainerTokenSecretManager(conf),
+           new NMTokenSecretManagerInRM(conf),
+           new ClientToAMTokenSecretManagerInRM(), writer);
+-    
+     return rmContext;
+   }
+   
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestAMRMTokens.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestAMRMTokens.java
+index b11aadd..14385c4 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestAMRMTokens.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestAMRMTokens.java
+@@ -184,8 +184,8 @@ public void testTokenExpiry() throws Exception {
+         // The exception will still have the earlier appAttemptId as it picks it
+         // up from the token.
+         Assert.assertTrue(t.getCause().getMessage().contains(
+-            "Password not found for ApplicationAttempt " +
+-            applicationAttemptId.toString()));
++          applicationAttemptId.toString()
++          + " not found in AMRMTokenSecretManager."));
+       }
+ 
+     } finally {
+-- 
+1.7.9.5
+

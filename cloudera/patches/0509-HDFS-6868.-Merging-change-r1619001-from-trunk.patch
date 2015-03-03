@@ -1,0 +1,36 @@
+From a58bb75729babea9f6689562d03ef097082b163c Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Tue, 19 Aug 2014 22:33:23 +0000
+Subject: [PATCH 509/813] HDFS-6868. Merging change r1619001 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619002 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 388d6cffe5e3e83b22782553f2ee2882bef3fbe8)
+---
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index 54544cf..8dc8137 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -229,7 +229,7 @@ HDFS NFS Gateway
+    [[2]] Start package included portmap (needs root privileges):
+ 
+ -------------------------
+-     hadoop portmap
++     hdfs portmap
+   
+      OR
+ 
+@@ -242,7 +242,7 @@ HDFS NFS Gateway
+      the Hadoop cluster and the user starting the NFS gateway are same.
+ 
+ -------------------------
+-     hadoop nfs3
++     hdfs nfs3
+ 
+      OR
+ 
+-- 
+1.7.9.5
+

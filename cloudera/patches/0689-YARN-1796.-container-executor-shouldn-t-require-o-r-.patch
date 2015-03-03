@@ -1,0 +1,45 @@
+From d9a0b13d8e59664c05de2b05dbe0c8ecc59e283b Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Sat, 26 Jul 2014 01:52:25 +0000
+Subject: [PATCH 689/813] YARN-1796. container-executor shouldn't require o-r
+ permissions. Contributed by Aaron T. Myers.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1613549 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 5d0172fdf52001d7ecd31a6b1fa5dfe97a247659)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../container-executor/impl/container-executor.c   |   12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+index 492efdd..b64da19 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+@@ -112,16 +112,16 @@ int check_executor_permissions(char *executable_file) {
+     return -1;
+   }
+ 
+-  // check others do not have read/write/execute permissions
+-  if ((filestat.st_mode & S_IROTH) == S_IROTH || (filestat.st_mode & S_IWOTH)
+-      == S_IWOTH || (filestat.st_mode & S_IXOTH) == S_IXOTH) {
++  // check others do not have write/execute permissions
++  if ((filestat.st_mode & S_IWOTH) == S_IWOTH ||
++      (filestat.st_mode & S_IXOTH) == S_IXOTH) {
+     fprintf(LOGFILE,
+-            "The container-executor binary should not have read or write or"
+-            " execute for others.\n");
++            "The container-executor binary should not have write or execute "
++            "for others.\n");
+     return -1;
+   }
+ 
+-  // Binary should be setuid/setgid executable
++  // Binary should be setuid executable
+   if ((filestat.st_mode & S_ISUID) == 0) {
+     fprintf(LOGFILE, "The container-executor binary should be set setuid.\n");
+     return -1;
+-- 
+1.7.9.5
+

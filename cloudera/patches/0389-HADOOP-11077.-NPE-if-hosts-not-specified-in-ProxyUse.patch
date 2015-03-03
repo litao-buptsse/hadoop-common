@@ -1,0 +1,57 @@
+From 537167ae20fec56c4c28abaea9c44ecfec9a4267 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Tue, 9 Sep 2014 22:18:03 -0700
+Subject: [PATCH 389/813] HADOOP-11077. NPE if hosts not specified in
+ ProxyUsers. (gchanan via tucu)
+
+(cherry picked from commit d0e211650244516abdef6ee212303af135167e39)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../authorize/DefaultImpersonationProvider.java    |    2 +-
+ .../hadoop/security/authorize/TestProxyUsers.java  |   15 +++++++++++++++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java
+index ab1c390..b36ac80 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/authorize/DefaultImpersonationProvider.java
+@@ -123,7 +123,7 @@ public void authorize(UserGroupInformation user,
+     MachineList MachineList = proxyHosts.get(
+         getProxySuperuserIpConfKey(realUser.getShortUserName()));
+ 
+-    if(!MachineList.includes(remoteAddress)) {
++    if(MachineList == null || !MachineList.includes(remoteAddress)) {
+       throw new AuthorizationException("Unauthorized connection for super-user: "
+           + realUser.getUserName() + " from IP " + remoteAddress);
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java
+index dbcac67..8ff4bfb 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/authorize/TestProxyUsers.java
+@@ -478,6 +478,21 @@ public void testProxyUsersWithCustomPrefix() throws Exception {
+     assertNotAuthorized(proxyUserUgi, "1.2.3.5");
+   }
+ 
++  @Test
++  public void testNoHostsForUsers() throws Exception {
++    Configuration conf = new Configuration(false);
++    conf.set("y." + REAL_USER_NAME + ".users",
++      StringUtils.join(",", Arrays.asList(AUTHORIZED_PROXY_USER_NAME)));
++    ProxyUsers.refreshSuperUserGroupsConfiguration(conf, "y");
++
++    UserGroupInformation realUserUgi = UserGroupInformation
++      .createRemoteUser(REAL_USER_NAME);
++    UserGroupInformation proxyUserUgi = UserGroupInformation.createProxyUserForTesting(
++      AUTHORIZED_PROXY_USER_NAME, realUserUgi, GROUP_NAMES);
++
++    // IP doesn't matter
++    assertNotAuthorized(proxyUserUgi, "1.2.3.4");
++  }
+ 
+   private void assertNotAuthorized(UserGroupInformation proxyUgi, String host) {
+     try {
+-- 
+1.7.9.5
+

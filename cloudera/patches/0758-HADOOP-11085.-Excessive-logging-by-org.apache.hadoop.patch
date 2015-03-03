@@ -1,0 +1,54 @@
+From a8edd7eda4bd983d45e955b76cca9fc2b7e9abbd Mon Sep 17 00:00:00 2001
+From: Jason Lowe <jlowe@apache.org>
+Date: Thu, 11 Sep 2014 19:53:25 +0000
+Subject: [PATCH 758/813] HADOOP-11085. Excessive logging by
+ org.apache.hadoop.util.Progress when value is NaN.
+ Contributed by Mit Desai (cherry picked from commit
+ 581176cdc868b8701a761b5a0d52f771cbba709a)
+
+(cherry picked from commit b4ab7aa110d04934cc63ae98a4db8b295804ba81)
+(cherry picked from commit c177950169035dd1d0162e93cbd4bf2955bcba7d)
+---
+ .../main/java/org/apache/hadoop/util/Progress.java |   10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Progress.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Progress.java
+index e3445b5..3fbc935 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Progress.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Progress.java
+@@ -162,27 +162,27 @@ public void complete() {
+   public synchronized void set(float progress) {
+     if (Float.isNaN(progress)) {
+       progress = 0;
+-      LOG.warn("Illegal progress value found, progress is Float.NaN. " +
++      LOG.debug("Illegal progress value found, progress is Float.NaN. " +
+         "Progress will be changed to 0");
+     }
+     else if (progress == Float.NEGATIVE_INFINITY) {
+       progress = 0;
+-      LOG.warn("Illegal progress value found, progress is " +
++      LOG.debug("Illegal progress value found, progress is " +
+         "Float.NEGATIVE_INFINITY. Progress will be changed to 0");
+     }
+     else if (progress < 0) {
+       progress = 0;
+-      LOG.warn("Illegal progress value found, progress is less than 0." +
++      LOG.debug("Illegal progress value found, progress is less than 0." +
+         " Progress will be changed to 0");
+     }
+     else if (progress > 1) {
+       progress = 1;
+-      LOG.warn("Illegal progress value found, progress is larger than 1." +
++      LOG.debug("Illegal progress value found, progress is larger than 1." +
+         " Progress will be changed to 1");
+     }
+     else if (progress == Float.POSITIVE_INFINITY) {
+       progress = 1;
+-      LOG.warn("Illegal progress value found, progress is " +
++      LOG.debug("Illegal progress value found, progress is " +
+         "Float.POSITIVE_INFINITY. Progress will be changed to 1");
+     }
+     this.progress = progress;
+-- 
+1.7.9.5
+

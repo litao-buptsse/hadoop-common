@@ -1,0 +1,53 @@
+From 5528e9e0fc05f44b87a3e25381b9330f8ba873a3 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:59:38 +0000
+Subject: [PATCH 223/813] HADOOP-10891. Add EncryptedKeyVersion factory method
+ to KeyProviderCryptoExtension. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619540 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9fd189825a147e293881b5327ea114b744768887)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../crypto/key/KeyProviderCryptoExtension.java     |   24 ++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+index d0aa17e..284a78d 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProviderCryptoExtension.java
+@@ -80,6 +80,30 @@ protected EncryptedKeyVersion(String keyName,
+     }
+ 
+     /**
++     * Factory method to create a new EncryptedKeyVersion that can then be
++     * passed into {@link #decryptEncryptedKey}. Note that the fields of the
++     * returned EncryptedKeyVersion will only partially be populated; it is not
++     * necessarily suitable for operations besides decryption.
++     *
++     * @param encryptionKeyVersionName Version name of the encryption key used
++     *                                 to encrypt the encrypted key.
++     * @param encryptedKeyIv           Initialization vector of the encrypted
++     *                                 key. The IV of the encryption key used to
++     *                                 encrypt the encrypted key is derived from
++     *                                 this IV.
++     * @param encryptedKeyMaterial     Key material of the encrypted key.
++     * @return EncryptedKeyVersion suitable for decryption.
++     */
++    public static EncryptedKeyVersion createForDecryption(String
++        encryptionKeyVersionName, byte[] encryptedKeyIv,
++        byte[] encryptedKeyMaterial) {
++      KeyVersion encryptedKeyVersion = new KeyVersion(null, null,
++          encryptedKeyMaterial);
++      return new EncryptedKeyVersion(null, encryptionKeyVersionName,
++          encryptedKeyIv, encryptedKeyVersion);
++    }
++
++    /**
+      * @return Name of the encryption key used to encrypt the encrypted key.
+      */
+     public String getEncryptionKeyName() {
+-- 
+1.7.9.5
+

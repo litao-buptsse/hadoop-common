@@ -1,0 +1,28 @@
+From 2e5276ecb899032a475fbc2e4d0cbd14ed98ea65 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Thu, 2 Oct 2014 14:07:36 -0700
+Subject: [PATCH 554/813] HADOOP-11160. Fix typo in nfs3 server duplicate
+ entry reporting. Contributed by Charles Lamb.
+ (cherry picked from
+ ebeb9da80c1dac9513edc066eb54bab38de52694)
+
+---
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+index 1a7a3f4..dd580cf 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+@@ -114,7 +114,7 @@ private void checkAndUpdateMaps() {
+       + "The host system with duplicated user/group name or id might work fine most of the time by itself.\n"
+       + "However when NFS gateway talks to HDFS, HDFS accepts only user and group name.\n"
+       + "Therefore, same name means the same user or same group. To find the duplicated names/ids, one can do:\n"
+-      + "<getent passwd | cut -d: -f1,3> and <getent group | cut -d: -f1,3> on Linux systms,\n"
++      + "<getent passwd | cut -d: -f1,3> and <getent group | cut -d: -f1,3> on Linux systems,\n"
+       + "<dscl . -list /Users UniqueID> and <dscl . -list /Groups PrimaryGroupID> on MacOS.";
+   
+   private static void reportDuplicateEntry(final String header,
+-- 
+1.7.9.5
+

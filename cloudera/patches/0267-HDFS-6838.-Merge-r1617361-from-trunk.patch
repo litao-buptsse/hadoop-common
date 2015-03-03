@@ -1,0 +1,338 @@
+From c9116cc0795755b79c88e39de18fd4ab537e242e Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Mon, 11 Aug 2014 21:30:17 +0000
+Subject: [PATCH 267/813] HDFS-6838. Merge r1617361 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1617363 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bee0c9b615ac510ffac6df9e4f76060a7d95da09)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   12 ++--
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    4 +-
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |   59 ++++++++++----------
+ .../hdfs/server/namenode/INodeDirectory.java       |    3 +-
+ .../hadoop/hdfs/server/namenode/INodeFile.java     |   12 ++--
+ .../hadoop/hdfs/server/namenode/INodeMap.java      |    3 +-
+ .../hdfs/server/namenode/INodeReference.java       |    4 +-
+ .../hadoop/hdfs/server/namenode/INodeSymlink.java  |    3 +-
+ 8 files changed, 43 insertions(+), 57 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 1aaab94..9887c8f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -766,8 +766,6 @@ private static void validateRenameSource(String src, INodesInPath srcIIP)
+     checkSnapshot(srcInode, null);
+   }
+ 
+-
+-
+   private class RenameOperation {
+     private final INodesInPath srcIIP;
+     private final INodesInPath dstIIP;
+@@ -800,7 +798,7 @@ private RenameOperation(String src, String dst, INodesInPath srcIIP, INodesInPat
+       // snapshot is taken on the dst tree, changes will be recorded in the latest
+       // snapshot of the src tree.
+       if (isSrcInSnapshot) {
+-        srcChild = srcChild.recordModification(srcIIP.getLatestSnapshotId());
++        srcChild.recordModification(srcIIP.getLatestSnapshotId());
+       }
+ 
+       // check srcChild for reference
+@@ -930,8 +928,7 @@ void updateQuotasInSourceTree() throws QuotaExceededException {
+       updateCount(iip, 0, dsDelta, true);
+     }
+ 
+-    file = file.setFileReplication(replication, iip.getLatestSnapshotId(),
+-        inodeMap);
++    file.setFileReplication(replication, iip.getLatestSnapshotId());
+     
+     final short newBR = file.getBlockReplication(); 
+     // check newBR < oldBR case. 
+@@ -1219,8 +1216,7 @@ long unprotectedDelete(INodesInPath iip, BlocksMapUpdateInfo collectedBlocks,
+ 
+     // record modification
+     final int latestSnapshot = iip.getLatestSnapshotId();
+-    targetNode = targetNode.recordModification(latestSnapshot);
+-    iip.setLastINode(targetNode);
++    targetNode.recordModification(latestSnapshot);
+ 
+     // Remove the node from the namespace
+     long removed = removeLastINode(iip);
+@@ -2126,7 +2122,7 @@ INodeDirectory unprotectedSetQuota(String src, long nsQuota, long dsQuota)
+       }
+ 
+       final int latest = iip.getLatestSnapshotId();
+-      dirNode = dirNode.recordModification(latest);
++      dirNode.recordModification(latest);
+       dirNode.setQuota(nsQuota, dsQuota);
+       return dirNode;
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index a24d360..7f933b0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2512,7 +2512,7 @@ LocatedBlock prepareFileForWrite(String src, INodeFile file,
+                                    boolean writeToEditLog,
+                                    int latestSnapshot, boolean logRetryCache)
+       throws IOException {
+-    file = file.recordModification(latestSnapshot);
++    file.recordModification(latestSnapshot);
+     final INodeFile cons = file.toUnderConstruction(leaseHolder, clientMachine);
+ 
+     leaseManager.addLease(cons.getFileUnderConstructionFeature()
+@@ -4213,7 +4213,7 @@ private void finalizeINodeFileUnderConstruction(String src,
+     Preconditions.checkArgument(uc != null);
+     leaseManager.removeLease(uc.getClientName(), src);
+     
+-    pendingFile = pendingFile.recordModification(latestSnapshot);
++    pendingFile.recordModification(latestSnapshot);
+ 
+     // The file is no longer pending.
+     // Create permanent INode, update blocks. No need to replace the inode here
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index b1e4982..c346be9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -97,9 +97,9 @@ public final String getUserName() {
+   /** Set user */
+   final INode setUser(String user, int latestSnapshotId)
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.setUser(user);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    setUser(user);
++    return this;
+   }
+   /**
+    * @param snapshotId
+@@ -122,9 +122,9 @@ public final String getGroupName() {
+   /** Set group */
+   final INode setGroup(String group, int latestSnapshotId)
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.setGroup(group);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    setGroup(group);
++    return this;
+   }
+ 
+   /**
+@@ -148,9 +148,9 @@ public final FsPermission getFsPermission() {
+   /** Set the {@link FsPermission} of this {@link INode} */
+   INode setPermission(FsPermission permission, int latestSnapshotId) 
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.setPermission(permission);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    setPermission(permission);
++    return this;
+   }
+ 
+   abstract AclFeature getAclFeature(int snapshotId);
+@@ -164,18 +164,18 @@ public final AclFeature getAclFeature() {
+ 
+   final INode addAclFeature(AclFeature aclFeature, int latestSnapshotId)
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.addAclFeature(aclFeature);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    addAclFeature(aclFeature);
++    return this;
+   }
+ 
+   abstract void removeAclFeature();
+ 
+   final INode removeAclFeature(int latestSnapshotId)
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.removeAclFeature();
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    removeAclFeature();
++    return this;
+   }
+ 
+   /**
+@@ -199,9 +199,9 @@ public final XAttrFeature getXAttrFeature() {
+   
+   final INode addXAttrFeature(XAttrFeature xAttrFeature, int latestSnapshotId) 
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.addXAttrFeature(xAttrFeature);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    addXAttrFeature(xAttrFeature);
++    return this;
+   }
+   
+   /**
+@@ -211,9 +211,9 @@ final INode addXAttrFeature(XAttrFeature xAttrFeature, int latestSnapshotId)
+   
+   final INode removeXAttrFeature(int lastestSnapshotId)
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(lastestSnapshotId);
+-    nodeToUpdate.removeXAttrFeature();
+-    return nodeToUpdate;
++    recordModification(lastestSnapshotId);
++    removeXAttrFeature();
++    return this;
+   }
+   
+   /**
+@@ -298,11 +298,8 @@ public final boolean shouldRecordInSrcSnapshot(final int latestInDst) {
+    * @param latestSnapshotId The id of the latest snapshot that has been taken.
+    *                         Note that it is {@link Snapshot#CURRENT_STATE_ID} 
+    *                         if no snapshots have been taken.
+-   * @return The current inode, which usually is the same object of this inode.
+-   *         However, in some cases, this inode may be replaced with a new inode
+-   *         for maintaining snapshots. The current inode is then the new inode.
+    */
+-  abstract INode recordModification(final int latestSnapshotId)
++  abstract void recordModification(final int latestSnapshotId)
+       throws QuotaExceededException;
+ 
+   /** Check whether it's a reference. */
+@@ -652,9 +649,9 @@ public abstract INode updateModificationTime(long mtime, int latestSnapshotId)
+   /** Set the last modification time of inode. */
+   public final INode setModificationTime(long modificationTime,
+       int latestSnapshotId) throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.setModificationTime(modificationTime);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    setModificationTime(modificationTime);
++    return this;
+   }
+ 
+   /**
+@@ -682,9 +679,9 @@ public final long getAccessTime() {
+    */
+   public final INode setAccessTime(long accessTime, int latestSnapshotId)
+       throws QuotaExceededException {
+-    final INode nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.setAccessTime(accessTime);
+-    return nodeToUpdate;
++    recordModification(latestSnapshotId);
++    setAccessTime(accessTime);
++    return this;
+   }
+ 
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index 8781934..4991ee0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -301,7 +301,7 @@ public void replaceChild(INode oldChild, final INode newChild,
+   }
+ 
+   @Override
+-  public INodeDirectory recordModification(int latestSnapshotId) 
++  public void recordModification(int latestSnapshotId)
+       throws QuotaExceededException {
+     if (isInLatestSnapshot(latestSnapshotId)
+         && !shouldRecordInSrcSnapshot(latestSnapshotId)) {
+@@ -313,7 +313,6 @@ public INodeDirectory recordModification(int latestSnapshotId)
+       // record self in the diff list if necessary
+       sf.getDiffs().saveSelf2Snapshot(latestSnapshotId, this, null);
+     }
+-    return this;
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+index 09ea9c5..c96f40b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+@@ -292,7 +292,7 @@ public INodeFileAttributes getSnapshotINode(final int snapshotId) {
+   }
+ 
+   @Override
+-  public INodeFile recordModification(final int latestSnapshotId) 
++  public void recordModification(final int latestSnapshotId)
+       throws QuotaExceededException {
+     if (isInLatestSnapshot(latestSnapshotId)
+         && !shouldRecordInSrcSnapshot(latestSnapshotId)) {
+@@ -304,7 +304,6 @@ public INodeFile recordModification(final int latestSnapshotId)
+       // record self in the diff list if necessary
+       sf.getDiffs().saveSelf2Snapshot(latestSnapshotId, this, null);
+     }
+-    return this;
+   }
+   
+   public FileDiffList getDiffs() {
+@@ -352,11 +351,10 @@ public final void setFileReplication(short replication) {
+ 
+   /** Set the replication factor of this file. */
+   public final INodeFile setFileReplication(short replication,
+-      int latestSnapshotId, final INodeMap inodeMap)
+-      throws QuotaExceededException {
+-    final INodeFile nodeToUpdate = recordModification(latestSnapshotId);
+-    nodeToUpdate.setFileReplication(replication);
+-    return nodeToUpdate;
++      int latestSnapshotId) throws QuotaExceededException {
++    recordModification(latestSnapshotId);
++    setFileReplication(replication);
++    return this;
+   }
+ 
+   /** @return preferred block size (in bytes) of the file. */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeMap.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeMap.java
+index bd0355b..02c0815 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeMap.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeMap.java
+@@ -93,9 +93,8 @@ public INode get(long id) {
+         "", "", new FsPermission((short) 0)), 0, 0) {
+       
+       @Override
+-      INode recordModification(int latestSnapshotId)
++      void recordModification(int latestSnapshotId)
+           throws QuotaExceededException {
+-        return null;
+       }
+       
+       @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+index ac0f19d..05e144d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+@@ -287,11 +287,9 @@ public final void setAccessTime(long accessTime) {
+   }
+ 
+   @Override
+-  final INode recordModification(int latestSnapshotId)
++  final void recordModification(int latestSnapshotId)
+       throws QuotaExceededException {
+     referred.recordModification(latestSnapshotId);
+-    // reference is never replaced 
+-    return this;
+   }
+ 
+   @Override // used by WithCount
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeSymlink.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeSymlink.java
+index deb3ada..6729cd2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeSymlink.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeSymlink.java
+@@ -47,12 +47,11 @@
+   }
+ 
+   @Override
+-  INode recordModification(int latestSnapshotId) throws QuotaExceededException {
++  void recordModification(int latestSnapshotId) throws QuotaExceededException {
+     if (isInLatestSnapshot(latestSnapshotId)) {
+       INodeDirectory parent = getParent();
+       parent.saveChild2Snapshot(this, latestSnapshotId, new INodeSymlink(this));
+     }
+-    return this;
+   }
+ 
+   /** @return true unconditionally. */
+-- 
+1.7.9.5
+

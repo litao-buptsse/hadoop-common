@@ -1,0 +1,31 @@
+From defe3f7aa1465e1a85bd897abaecfa0d2047e63f Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 28 Oct 2014 08:49:14 -0700
+Subject: [PATCH 707/813] YARN-2760. Remove 'experimental' from FairScheduler
+ docs. (Harsh J via kasha)
+
+(cherry picked from commit ade3727ecb092935dcc0f1291c1e6cf43d764a03)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../src/site/apt/FairScheduler.apt.vm              |    3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+index 00ccf82..45d3538 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+@@ -151,8 +151,7 @@ Properties that can be placed in yarn-site.xml
+ 
+  * <<<yarn.scheduler.fair.preemption>>>
+ 
+-    * Whether to use preemption. Note that preemption is experimental in the current
+-      version. Defaults to false.
++    * Whether to use preemption. Defaults to false.
+ 
+  * <<<yarn.scheduler.fair.preemption.cluster-utilization-threshold>>>
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,217 @@
+From 983ae6d19fd15115ee13834b476b35f050e8e639 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 21 Aug 2014 18:58:27 +0000
+Subject: [PATCH 190/813] HADOOP-10201. Add listing to KeyProvider API. (Larry
+ McCay via omalley)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1619507 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 337d7e2aae0459e187b575c12d317b830698407d)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/crypto/key/JavaKeyStoreProvider.java    |   44 +++++++++++++++++++-
+ .../org/apache/hadoop/crypto/key/KeyProvider.java  |   14 +++++++
+ .../org/apache/hadoop/crypto/key/UserProvider.java |   30 +++++++++++++
+ .../org/apache/hadoop/security/Credentials.java    |    1 +
+ .../hadoop/crypto/key/TestKeyProviderFactory.java  |   11 +++++
+ 5 files changed, 99 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+index 3c82563..93a47de 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/JavaKeyStoreProvider.java
+@@ -36,8 +36,11 @@
+ import java.security.NoSuchAlgorithmException;
+ import java.security.UnrecoverableKeyException;
+ import java.security.cert.CertificateException;
++import java.util.ArrayList;
+ import java.util.Date;
++import java.util.Enumeration;
+ import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ /**
+@@ -56,6 +59,7 @@
+  */
+ @InterfaceAudience.Private
+ public class JavaKeyStoreProvider extends KeyProvider {
++  private static final String KEY_METADATA = "KeyMetadata";
+   public static final String SCHEME_NAME = "jceks";
+   public static final String KEYSTORE_PASSWORD_NAME =
+       "HADOOP_KEYSTORE_PASSWORD";
+@@ -118,6 +122,44 @@ public KeyVersion getKeyVersion(String versionName) throws IOException {
+   }
+ 
+   @Override
++  public List<String> getKeys() throws IOException {
++    ArrayList<String> list = new ArrayList<String>();
++    String alias = null;
++    try {
++      Enumeration<String> e = keyStore.aliases();
++      while (e.hasMoreElements()) {
++         alias = e.nextElement();
++         // only include the metadata key names in the list of names
++         if (!alias.contains("@")) {
++             list.add(alias);
++         }
++      }
++    } catch (KeyStoreException e) {
++      throw new IOException("Can't get key " + alias + " from " + path, e);
++    }
++    return list;
++  }
++
++  @Override
++  public List<KeyVersion> getKeyVersions(String name) throws IOException {
++    List<KeyVersion> list = new ArrayList<KeyVersion>();
++    Metadata km = getMetadata(name);
++    if (km != null) {
++      int latestVersion = km.getVersions();
++      KeyVersion v = null;
++      String versionName = null;
++      for (int i = 0; i < latestVersion; i++) {
++        versionName = buildVersionName(name, i);
++        v = getKeyVersion(versionName);
++        if (v != null) {
++          list.add(v);
++        }
++      }
++    }
++    return list;
++  }
++
++  @Override
+   public Metadata getMetadata(String name) throws IOException {
+     if (cache.containsKey(name)) {
+       return cache.get(name);
+@@ -288,7 +330,7 @@ public String getAlgorithm() {
+ 
+     @Override
+     public String getFormat() {
+-      return "KeyMetadata";
++      return KEY_METADATA;
+     }
+ 
+     @Override
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+index a8e95e5..6f9f016 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/KeyProvider.java
+@@ -255,6 +255,20 @@ public abstract KeyVersion getKeyVersion(String versionName
+                                             ) throws IOException;
+ 
+   /**
++   * Get the key names for all keys.
++   * @return the list of key names
++   * @throws IOException
++   */
++  public abstract List<String> getKeys() throws IOException;
++
++  /**
++   * Get the key material for all versions of a specific key name.
++   * @return the list of key material
++   * @throws IOException
++   */
++  public abstract List<KeyVersion> getKeyVersions(String name) throws IOException;
++
++  /**
+    * Get the current version of the key, which should be used for encrypting new
+    * data.
+    * @param name the base name of the key
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+index 42ce693..424e7ca 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/key/UserProvider.java
+@@ -20,8 +20,10 @@
+ 
+ import java.io.IOException;
+ import java.net.URI;
++import java.util.ArrayList;
+ import java.util.Date;
+ import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -142,4 +144,32 @@ public KeyProvider createProvider(URI providerName,
+       return null;
+     }
+   }
++
++  @Override
++  public List<String> getKeys() throws IOException {
++    List<String> list = new ArrayList<String>();
++    List<Text> keys = credentials.getAllSecretKeys();
++    for (Text key : keys) {
++      if (key.find("@") == -1) {
++        list.add(key.toString());
++      }
++    }
++    return list;
++  }
++
++  @Override
++  public List<KeyVersion> getKeyVersions(String name) throws IOException {
++      List<KeyVersion> list = new ArrayList<KeyVersion>();
++      Metadata km = getMetadata(name);
++      if (km != null) {
++        int latestVersion = km.getVersions();
++        for (int i = 0; i < latestVersion; i++) {
++          KeyVersion v = getKeyVersion(buildVersionName(name, i));
++          if (v != null) {
++            list.add(v);
++          }
++        }
++      }
++      return list;
++  }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Credentials.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Credentials.java
+index 0745bed..0094f12 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Credentials.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Credentials.java
+@@ -30,6 +30,7 @@
+ import java.util.Collection;
+ import java.util.HashMap;
+ import java.util.Map;
++import java.util.Map.Entry;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+index 8d073f7..b2964af 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/crypto/key/TestKeyProviderFactory.java
+@@ -21,6 +21,7 @@
+ import java.io.IOException;
+ import java.util.List;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.crypto.key.KeyProvider.KeyVersion;
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -160,6 +161,16 @@ static void checkSpecificProvider(Configuration conf,
+         provider.getCurrentKey("key4").getMaterial());
+     assertArrayEquals(key3, provider.getCurrentKey("key3").getMaterial());
+     assertEquals("key3@0", provider.getCurrentKey("key3").getVersionName());
++
++    List<String> keys = provider.getKeys();
++    assertTrue("Keys should have been returned.", keys.size() == 2);
++    assertTrue("Returned Keys should have included key3.", keys.contains("key3"));
++    assertTrue("Returned Keys should have included key4.", keys.contains("key4"));
++
++    List<KeyVersion> kvl = provider.getKeyVersions("key3");
++    assertTrue("KeyVersions should have been returned for key3.", kvl.size() == 1);
++    assertTrue("KeyVersions should have included key3@0.", kvl.get(0).getVersionName().equals("key3@0"));
++    assertArrayEquals(key3, kvl.get(0).getMaterial());
+   }
+ 
+   @Test
+-- 
+1.7.9.5
+

@@ -1,0 +1,105 @@
+From cab86b0d73ecdb8121fec6337c8318e32a6eb976 Mon Sep 17 00:00:00 2001
+From: Harsh J <harsh@cloudera.com>
+Date: Tue, 28 Oct 2014 12:08:26 +0530
+Subject: [PATCH 648/813] HDFS-6741. Improve permission denied message when
+ FSPermissionChecker#checkOwner fails. Contributed
+ by Stephen Chu and Harsh J. (harsh)
+
+(cherry picked from commit 0398db19b2c4558a9f08ac2700a27752748896fa)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
+
+(cherry picked from commit d69d9ef86035e3514050df7e11a74119875aa29e)
+---
+ .../namenode/DefaultAuthorizationProvider.java     |    4 +++-
+ .../org/apache/hadoop/hdfs/TestDFSPermission.java  |   18 +++++++++++++++---
+ .../server/namenode/TestFSPermissionChecker.java   |    7 ++++++-
+ 3 files changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DefaultAuthorizationProvider.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DefaultAuthorizationProvider.java
+index b9cd26b..dd061d1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DefaultAuthorizationProvider.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DefaultAuthorizationProvider.java
+@@ -166,7 +166,9 @@ private void checkOwner(String user, INode inode, int snapshotId
+     if (inode != null && user.equals(inode.getUserName(snapshotId))) {
+       return;
+     }
+-    throw new AccessControlException("Permission denied");
++    throw new AccessControlException(
++        "Permission denied. user="
++        + user + " is not the owner of inode=" + inode);
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSPermission.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSPermission.java
+index 68349a2..23ce916 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSPermission.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSPermission.java
+@@ -443,7 +443,11 @@ public FileSystem run() throws Exception {
+       fs.access(p1, FsAction.WRITE);
+       fail("The access call should have failed.");
+     } catch (AccessControlException e) {
+-      // expected
++      assertTrue("Permission denied messages must carry the username",
++              e.getMessage().contains(USER1_NAME));
++      assertTrue("Permission denied messages must carry the path parent",
++              e.getMessage().contains(
++                  p1.getParent().toUri().getPath()));
+     }
+ 
+     Path badPath = new Path("/bad/bad");
+@@ -473,7 +477,11 @@ public FileSystem run() throws Exception {
+       fs.access(p2, FsAction.EXECUTE);
+       fail("The access call should have failed.");
+     } catch (AccessControlException e) {
+-      // expected
++      assertTrue("Permission denied messages must carry the username",
++              e.getMessage().contains(USER1_NAME));
++      assertTrue("Permission denied messages must carry the path parent",
++              e.getMessage().contains(
++                  p2.getParent().toUri().getPath()));
+     }
+   }
+ 
+@@ -494,7 +502,11 @@ public FileSystem run() throws Exception {
+       fs.access(p3, FsAction.READ_WRITE);
+       fail("The access call should have failed.");
+     } catch (AccessControlException e) {
+-      // expected
++      assertTrue("Permission denied messages must carry the username",
++              e.getMessage().contains(USER1_NAME));
++      assertTrue("Permission denied messages must carry the path parent",
++              e.getMessage().contains(
++                  p3.getParent().toUri().getPath()));
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
+index b1c5ca7..2c40fff 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
+@@ -30,6 +30,7 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ 
++import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.AclEntry;
+ import org.apache.hadoop.fs.permission.AclEntryScope;
+ import org.apache.hadoop.fs.permission.AclEntryType;
+@@ -403,7 +404,11 @@ private void assertPermissionDenied(UserGroupInformation user, String path,
+       fail("expected AccessControlException for user + " + user + ", path = " +
+         path + ", access = " + access);
+     } catch (AccessControlException e) {
+-      // expected
++      assertTrue("Permission denied messages must carry the username",
++          e.getMessage().contains(user.getUserName().toString()));
++      assertTrue("Permission denied messages must carry the path parent",
++          e.getMessage().contains(
++              new Path(path).getParent().toUri().getPath()));
+     }
+   }
+ 
+-- 
+1.7.9.5
+

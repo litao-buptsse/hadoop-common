@@ -1,0 +1,33 @@
+From f4c49ef80a8ad781f5838f7c1f7f9417ab744fbc Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Mon, 11 Aug 2014 01:42:26 +0000
+Subject: [PATCH 172/813] YARN-2361. RMAppAttempt state machine entries for
+ KILLED state has duplicate event entries. (Zhihai
+ Xu via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1617190 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7895e8bc71d241e2020a2cc1af57817f7f268594)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+
+(cherry picked from commit 751eb04f7e5a9522df58202f35da1ce773799d5b)
+---
+ .../rmapp/attempt/RMAppAttemptImpl.java            |    1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index 626d47e..5f73add 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -380,7 +380,6 @@
+           RMAppAttemptState.KILLED,
+           RMAppAttemptState.KILLED,
+           EnumSet.of(RMAppAttemptEventType.ATTEMPT_ADDED,
+-              RMAppAttemptEventType.EXPIRE,
+               RMAppAttemptEventType.LAUNCHED,
+               RMAppAttemptEventType.LAUNCH_FAILED,
+               RMAppAttemptEventType.EXPIRE,
+-- 
+1.7.9.5
+

@@ -1,0 +1,340 @@
+From 4f65697948f5f0249ae1d15d9ba97408aff497d2 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 17 Sep 2014 20:14:40 -0700
+Subject: [PATCH 411/813] HDFS-7004. Update KeyProvider instantiation to
+ create by URI. (wang)
+
+(cherry picked from commit 10e8602f32b553a1424f1a9b5f9f74f7b68a49d1)
+(cherry picked from commit b477d30e63bfb4ce9a660f5ffe88801758e7a985)
+---
+ .../hadoop-kms/src/main/conf/kms-site.xml          |    2 +-
+ .../crypto/key/kms/server/KMSConfiguration.java    |    4 ++
+ .../hadoop/crypto/key/kms/server/KMSWebApp.java    |   14 +++----
+ .../hadoop-kms/src/site/apt/index.apt.vm           |    2 +-
+ .../hadoop/crypto/key/kms/server/MiniKMS.java      |    2 +-
+ .../hadoop/crypto/key/kms/server/TestKMS.java      |    2 +-
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    1 +
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |   41 +++++++++++---------
+ .../src/main/resources/hdfs-default.xml            |    8 ++++
+ .../src/site/apt/TransparentEncryption.apt.vm      |    6 +++
+ .../org/apache/hadoop/cli/TestCryptoAdminCLI.java  |    2 +-
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |   10 +++--
+ .../hadoop/hdfs/TestEncryptionZonesWithHA.java     |    3 +-
+ .../apache/hadoop/hdfs/TestReservedRawPaths.java   |    3 +-
+ 14 files changed, 59 insertions(+), 41 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml b/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml
+index f55ce5f..4f4694c 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/conf/kms-site.xml
+@@ -16,7 +16,7 @@
+ 
+   <!-- KMS Backend KeyProvider -->
+   <property>
+-    <name>hadoop.security.key.provider.path</name>
++    <name>hadoop.kms.key.provider.uri</name>
+     <value>jceks://file@/${user.home}/kms.keystore</value>
+     <description>
+     </description>
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
+index 76fb40c..56123f9 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSConfiguration.java
+@@ -40,6 +40,10 @@
+   public static final String KEY_ACL_PREFIX = "key.acl.";
+   public static final String DEFAULT_KEY_ACL_PREFIX = "default.key.acl.";
+ 
++  // Property to set the backing KeyProvider
++  public static final String KEY_PROVIDER_URI = CONFIG_PREFIX +
++      "key.provider.uri";
++
+   // Property to Enable/Disable Caching
+   public static final String KEY_CACHE_ENABLE = CONFIG_PREFIX +
+       "cache.enable";
+diff --git a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
+index e90c3ee..c36823a 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
++++ b/hadoop-common-project/hadoop-kms/src/main/java/org/apache/hadoop/crypto/key/kms/server/KMSWebApp.java
+@@ -39,6 +39,7 @@
+ import javax.servlet.ServletContextListener;
+ 
+ import java.io.File;
++import java.net.URI;
+ import java.net.URL;
+ import java.util.List;
+ 
+@@ -159,17 +160,12 @@ public void contextInitialized(ServletContextEvent sce) {
+           new AccessControlList(AccessControlList.WILDCARD_ACL_VALUE));
+ 
+       // intializing the KeyProvider
+-
+-      List<KeyProvider> providers = KeyProviderFactory.getProviders(kmsConf);
+-      if (providers.isEmpty()) {
++      String providerString = kmsConf.get(KMSConfiguration.KEY_PROVIDER_URI);
++      if (providerString == null) {
+         throw new IllegalStateException("No KeyProvider has been defined");
+       }
+-      if (providers.size() > 1) {
+-        LOG.warn("There is more than one KeyProvider configured '{}', using " +
+-            "the first provider",
+-            kmsConf.get(KeyProviderFactory.KEY_PROVIDER_PATH));
+-      }
+-      KeyProvider keyProvider = providers.get(0);
++      KeyProvider keyProvider =
++          KeyProviderFactory.get(new URI(providerString), kmsConf);
+       if (kmsConf.getBoolean(KMSConfiguration.KEY_CACHE_ENABLE,
+           KMSConfiguration.KEY_CACHE_ENABLE_DEFAULT)) {
+         long keyTimeOutMillis =
+diff --git a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+index b6845b8..8570adf 100644
+--- a/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
++++ b/hadoop-common-project/hadoop-kms/src/site/apt/index.apt.vm
+@@ -51,7 +51,7 @@ Hadoop Key Management Server (KMS) - Documentation Sets ${project.version}
+ 
+ +---+
+   <property>
+-    <name>hadoop.security.key.provider.path</name>
++    <name>hadoop.kms.key.provider.uri</name>
+     <value>jceks://file@/${user.home}/kms.keystore</value>
+   </property>
+ 
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java
+index f64dcf0..16e78ce 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/MiniKMS.java
+@@ -166,7 +166,7 @@ public void start() throws Exception {
+     File kmsFile = new File(kmsConfDir, "kms-site.xml");
+     if (!kmsFile.exists()) {
+       Configuration kms = new Configuration(false);
+-      kms.set("hadoop.security.key.provider.path",
++      kms.set(KMSConfiguration.KEY_PROVIDER_URI,
+           "jceks://file@" + new Path(kmsConfDir, "kms.keystore").toUri());
+       kms.set("hadoop.kms.authentication.type", "simple");
+       kms.setBoolean(KMSConfiguration.KEY_AUTHORIZATION_ENABLE, false);
+diff --git a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+index cdb3c7f..9211417 100644
+--- a/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
++++ b/hadoop-common-project/hadoop-kms/src/test/java/org/apache/hadoop/crypto/key/kms/server/TestKMS.java
+@@ -117,7 +117,7 @@ protected void runServer(String keystore, String password, File confDir,
+ 
+   protected Configuration createBaseKMSConf(File keyStoreDir) throws Exception {
+     Configuration conf = new Configuration(false);
+-    conf.set("hadoop.security.key.provider.path",
++    conf.set(KMSConfiguration.KEY_PROVIDER_URI,
+         "jceks://file@" + new Path(keyStoreDir.getAbsolutePath(), "kms.keystore").toUri());
+     conf.set("hadoop.kms.authentication.type", "simple");
+     return conf;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 9003563..0771d4c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -578,6 +578,7 @@
+   public static final String DFS_DATA_TRANSFER_SASL_PROPS_RESOLVER_CLASS_KEY = "dfs.data.transfer.saslproperties.resolver.class";
+   public static final int    DFS_NAMENODE_LIST_ENCRYPTION_ZONES_NUM_RESPONSES_DEFAULT = 100;
+   public static final String DFS_NAMENODE_LIST_ENCRYPTION_ZONES_NUM_RESPONSES = "dfs.namenode.list.encryption.zones.num.responses";
++  public static final String DFS_ENCRYPTION_KEY_PROVIDER_URI = "dfs.encryption.key.provider.uri";
+ 
+   // Journal-node related configs. These are read on the JN side.
+   public static final String  DFS_JOURNALNODE_EDITS_DIR_KEY = "dfs.journalnode.edits.dir";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index 1b064f0..56039c8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -1826,34 +1826,37 @@ public static void assertAllResultsEqual(Collection<?> objects)
+    * Creates a new KeyProviderCryptoExtension by wrapping the
+    * KeyProvider specified in the given Configuration.
+    *
+-   * @param conf Configuration specifying a single, non-transient KeyProvider.
++   * @param conf Configuration
+    * @return new KeyProviderCryptoExtension, or null if no provider was found.
+    * @throws IOException if the KeyProvider is improperly specified in
+    *                             the Configuration
+    */
+   public static KeyProviderCryptoExtension createKeyProviderCryptoExtension(
+       final Configuration conf) throws IOException {
+-    final List<KeyProvider> providers = KeyProviderFactory.getProviders(conf);
+-    if (providers == null || providers.size() == 0) {
++    final String providerUriStr =
++        conf.get(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI, null);
++    // No provider set in conf
++    if (providerUriStr == null) {
+       return null;
+     }
+-    if (providers.size() > 1) {
+-      StringBuilder builder = new StringBuilder();
+-      builder.append("Found multiple KeyProviders but only one is permitted [");
+-      String prefix = " ";
+-      for (KeyProvider kp: providers) {
+-        builder.append(prefix + kp.toString());
+-        prefix = ", ";
+-      }
+-      builder.append("]");
+-      throw new IOException(builder.toString());
+-    }
+-    KeyProviderCryptoExtension provider = KeyProviderCryptoExtension
+-        .createKeyProviderCryptoExtension(providers.get(0));
+-    if (provider.isTransient()) {
+-      throw new IOException("KeyProvider " + provider.toString()
++    final URI providerUri;
++    try {
++      providerUri = new URI(providerUriStr);
++    } catch (URISyntaxException e) {
++      throw new IOException(e);
++    }
++    KeyProvider keyProvider = KeyProviderFactory.get(providerUri, conf);
++    if (keyProvider == null) {
++      throw new IOException("Could not instantiate KeyProvider from " + 
++          DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI + " setting of '" + 
++          providerUriStr +"'");
++    }
++    if (keyProvider.isTransient()) {
++      throw new IOException("KeyProvider " + keyProvider.toString()
+           + " was found but it is a transient provider.");
+     }
+-    return provider;
++    KeyProviderCryptoExtension cryptoProvider = KeyProviderCryptoExtension
++        .createKeyProviderCryptoExtension(keyProvider);
++    return cryptoProvider;
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index fc4e83f..5ba7f81 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -2108,4 +2108,12 @@
+     block layout (see HDFS-6482 for details on the layout).</description>
+ </property>
+ 
++<property>
++  <name>dfs.encryption.key.provider.uri</name>
++  <description>
++    The KeyProvider to use when interacting with encryption keys used
++    when reading and writing to an encryption zone.
++  </description>
++</property>
++
+ </configuration>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/TransparentEncryption.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/TransparentEncryption.apt.vm
+index 3689a77..0e2cb78 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/TransparentEncryption.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/TransparentEncryption.apt.vm
+@@ -85,6 +85,12 @@ Transparent Encryption in HDFS
+   A necessary prerequisite is an instance of the KMS, as well as a backing key store for the KMS.
+   See the {{{../../hadoop-kms/index.html}KMS documentation}} for more information.
+ 
++** Configuring the cluster KeyProvider
++
++*** dfs.encryption.key.provider.uri
++
++  The KeyProvider to use when interacting with encryption keys used when reading and writing to an encryption zone.
++
+ ** Selecting an encryption algorithm and codec
+ 
+ *** hadoop.security.crypto.codec.classes.EXAMPLECIPHERSUITE
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/cli/TestCryptoAdminCLI.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/cli/TestCryptoAdminCLI.java
+index adeabfe..1c870a2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/cli/TestCryptoAdminCLI.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/cli/TestCryptoAdminCLI.java
+@@ -66,7 +66,7 @@ public void setUp() throws Exception {
+     tmpDir = new File(System.getProperty("test.build.data", "target"),
+         UUID.randomUUID().toString()).getAbsoluteFile();
+     final Path jksPath = new Path(tmpDir.toString(), "test.jks");
+-    conf.set(KeyProviderFactory.KEY_PROVIDER_PATH,
++    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri());
+ 
+     dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index 58cd657..b4f6c1c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -25,6 +25,7 @@
+ import java.io.RandomAccessFile;
+ import java.io.StringReader;
+ import java.io.StringWriter;
++import java.net.URI;
+ import java.security.PrivilegedExceptionAction;
+ import java.util.Arrays;
+ import java.util.List;
+@@ -125,7 +126,7 @@ public void setup() throws Exception {
+     // Set up java key store
+     String testRoot = fsHelper.getTestRootDir();
+     testRootDir = new File(testRoot).getAbsoluteFile();
+-    conf.set(KeyProviderFactory.KEY_PROVIDER_PATH, getKeyProviderURI());
++    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI, getKeyProviderURI());
+     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY, true);
+     // Lower the batch size for testing
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_LIST_ENCRYPTION_ZONES_NUM_RESPONSES,
+@@ -670,7 +671,8 @@ public void testCipherSuiteNegotiation() throws Exception {
+     // Check KeyProvider state
+     // Flushing the KP on the NN, since it caches, and init a test one
+     cluster.getNamesystem().getProvider().flush();
+-    KeyProvider provider = KeyProviderFactory.getProviders(conf).get(0);
++    KeyProvider provider = KeyProviderFactory
++        .get(new URI(conf.get(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI)), conf);
+     List<String> keys = provider.getKeys();
+     assertEquals("Expected NN to have created one key per zone", 1,
+         keys.size());
+@@ -694,7 +696,7 @@ public void testCipherSuiteNegotiation() throws Exception {
+   public void testCreateEZWithNoProvider() throws Exception {
+     // Unset the key provider and make sure EZ ops don't work
+     final Configuration clusterConf = cluster.getConfiguration(0);
+-    clusterConf.set(KeyProviderFactory.KEY_PROVIDER_PATH, "");
++    clusterConf.unset(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI);
+     cluster.restartNameNode(true);
+     cluster.waitActive();
+     final Path zone1 = new Path("/zone1");
+@@ -706,7 +708,7 @@ public void testCreateEZWithNoProvider() throws Exception {
+       assertExceptionContains("since no key provider is available", e);
+     }
+     final Path jksPath = new Path(testRootDir.toString(), "test.jks");
+-    clusterConf.set(KeyProviderFactory.KEY_PROVIDER_PATH,
++    clusterConf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri()
+     );
+     // Try listing EZs as well
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZonesWithHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZonesWithHA.java
+index b604004..c74f990 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZonesWithHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZonesWithHA.java
+@@ -20,7 +20,6 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+-import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.FileSystemTestHelper;
+ import org.apache.hadoop.fs.Path;
+@@ -60,7 +59,7 @@ public void setupCluster() throws Exception {
+     fsHelper = new FileSystemTestHelper();
+     String testRoot = fsHelper.getTestRootDir();
+     testRootDir = new File(testRoot).getAbsoluteFile();
+-    conf.set(KeyProviderFactory.KEY_PROVIDER_PATH,
++    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+         JavaKeyStoreProvider.SCHEME_NAME + "://file" + testRootDir + "/test.jks"
+     );
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestReservedRawPaths.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestReservedRawPaths.java
+index 20e4f4e..cc497ac 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestReservedRawPaths.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestReservedRawPaths.java
+@@ -24,7 +24,6 @@
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+-import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.fs.FileContext;
+ import org.apache.hadoop.fs.FileContextTestWrapper;
+ import org.apache.hadoop.fs.FileStatus;
+@@ -70,7 +69,7 @@ public void setup() throws Exception {
+     String testRoot = fsHelper.getTestRootDir();
+     File testRootDir = new File(testRoot).getAbsoluteFile();
+     final Path jksPath = new Path(testRootDir.toString(), "test.jks");
+-    conf.set(KeyProviderFactory.KEY_PROVIDER_PATH,
++    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri()
+     );
+     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+-- 
+1.7.9.5
+

@@ -1,0 +1,28 @@
+From ab8aa196b013cfa4ecef94063851ce684ca274af Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 28 Oct 2014 17:18:24 -0700
+Subject: [PATCH 595/813] HADOOP-11217. Disable SSLv3 in KMS. (Robert Kanter
+ via kasha)
+
+(cherry picked from commit 1a780823384a9c4289b8bb0b3c73e6b886d78fd0)
+(cherry picked from commit 0aec8847048d908338de866ddae7e5a9f78d7695)
+---
+ .../hadoop-kms/src/main/tomcat/ssl-server.xml      |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml b/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
+index 6235b8b..531ad15 100644
+--- a/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
++++ b/hadoop-common-project/hadoop-kms/src/main/tomcat/ssl-server.xml
+@@ -70,7 +70,7 @@
+          described in the APR documentation -->
+     <Connector port="${kms.http.port}" protocol="HTTP/1.1" SSLEnabled="true"
+                maxThreads="${kms.max.threads}" scheme="https" secure="true"
+-               clientAuth="false" sslProtocol="TLS"
++               clientAuth="false" sslEnabledProtocols="TLSv1"
+                keystoreFile="${kms.ssl.keystore.file}"
+                keystorePass="${kms.ssl.keystore.pass}"/>
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,340 @@
+From 1c57967e37994cc655f38e67c817db1bc4792795 Mon Sep 17 00:00:00 2001
+From: Junping Du <junping_du@apache.org>
+Date: Tue, 22 Jul 2014 03:04:22 +0000
+Subject: [PATCH 375/813] Merget r1612449 from trunk: YARN-2013. The
+ diagnostics is always the ExitCodeException stack
+ when the container crashes. (Contributed by
+ Tsuyoshi OZAWA)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1612450 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f6b932fe484fa13473b180b4e483185b69c05519)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../nodemanager/DefaultContainerExecutor.java      |   20 +++-
+ .../server/nodemanager/LinuxContainerExecutor.java |   19 ++-
+ .../nodemanager/TestDefaultContainerExecutor.java  |  121 ++++++++++++++++++--
+ .../TestLinuxContainerExecutorWithMocks.java       |   41 ++++++-
+ 4 files changed, 182 insertions(+), 19 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/DefaultContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/DefaultContainerExecutor.java
+index 9e2e111..d45371a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/DefaultContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/DefaultContainerExecutor.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.server.nodemanager;
+ 
++import com.google.common.base.Optional;
+ import static org.apache.hadoop.fs.CreateFlag.CREATE;
+ import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
+ 
+@@ -212,10 +213,21 @@ public int launchContainer(Container container,
+           && exitCode != ExitCode.TERMINATED.getExitCode()) {
+         LOG.warn("Exception from container-launch with container ID: "
+             + containerId + " and exit code: " + exitCode , e);
+-        logOutput(shExec.getOutput());
+-        String diagnostics = "Exception from container-launch: "
+-            + e + "\n"
+-            + StringUtils.stringifyException(e) + "\n" + shExec.getOutput();
++
++        StringBuilder builder = new StringBuilder();
++        builder.append("Exception from container-launch.\n");
++        builder.append("Container id: " + containerId + "\n");
++        builder.append("Exit code: " + exitCode + "\n");
++        if (!Optional.fromNullable(e.getMessage()).or("").isEmpty()) {
++          builder.append("Exception message: " + e.getMessage() + "\n");
++        }
++        builder.append("Stack trace: "
++            + StringUtils.stringifyException(e) + "\n");
++        if (!shExec.getOutput().isEmpty()) {
++          builder.append("Shell output: " + shExec.getOutput() + "\n");
++        }
++        String diagnostics = builder.toString();
++        logOutput(diagnostics);
+         container.handle(new ContainerDiagnosticsUpdateEvent(containerId,
+             diagnostics));
+       } else {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
+index 0b1af0d..5a8598c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/LinuxContainerExecutor.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.server.nodemanager;
+ 
++import com.google.common.base.Optional;
+ import java.io.File;
+ import java.io.IOException;
+ import java.net.InetSocketAddress;
+@@ -297,9 +298,21 @@ public int launchContainer(Container container,
+           && exitCode != ExitCode.TERMINATED.getExitCode()) {
+         LOG.warn("Exception from container-launch with container ID: "
+             + containerId + " and exit code: " + exitCode , e);
+-        logOutput(shExec.getOutput());
+-        String diagnostics = "Exception from container-launch: \n"
+-            + StringUtils.stringifyException(e) + "\n" + shExec.getOutput();
++
++        StringBuilder builder = new StringBuilder();
++        builder.append("Exception from container-launch.\n");
++        builder.append("Container id: " + containerId + "\n");
++        builder.append("Exit code: " + exitCode + "\n");
++        if (!Optional.fromNullable(e.getMessage()).or("").isEmpty()) {
++          builder.append("Exception message: " + e.getMessage() + "\n");
++        }
++        builder.append("Stack trace: "
++            + StringUtils.stringifyException(e) + "\n");
++        if (!shExec.getOutput().isEmpty()) {
++          builder.append("Shell output: " + shExec.getOutput() + "\n");
++        }
++        String diagnostics = builder.toString();
++        logOutput(diagnostics);
+         container.handle(new ContainerDiagnosticsUpdateEvent(containerId,
+             diagnostics));
+       } else {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
+index 63f3a9f..9c86c71 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestDefaultContainerExecutor.java
+@@ -18,16 +18,37 @@
+ 
+ package org.apache.hadoop.yarn.server.nodemanager;
+ 
++import static org.apache.hadoop.fs.CreateFlag.CREATE;
++import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++import static org.mockito.Mockito.spy;
++import static org.mockito.Mockito.any;
++import static org.mockito.Mockito.doAnswer;
++import static org.junit.Assert.assertTrue;
++
++import java.io.File;
+ import java.io.FileNotFoundException;
++import java.io.FileReader;
+ import java.io.InputStream;
+ import java.io.IOException;
++import java.io.LineNumberReader;
+ import java.net.InetSocketAddress;
+ import java.util.ArrayList;
+ import java.util.EnumSet;
++import java.util.HashMap;
++import java.util.LinkedList;
+ import java.util.List;
+ import java.util.Random;
+ 
+-import org.junit.Assert;
++import org.apache.hadoop.fs.FileUtil;
++import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
++import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.api.records.ContainerId;
++import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
++import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerDiagnosticsUpdateEvent;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.AbstractFileSystem;
+@@ -45,15 +66,13 @@
+ import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
+ import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.FakeFSDataInputStream;
+ 
+-import static org.apache.hadoop.fs.CreateFlag.*;
+-
+-
+ import org.junit.AfterClass;
++import org.junit.Before;
+ import org.junit.Test;
+-import static org.junit.Assert.*;
+-import org.mockito.ArgumentMatcher;
+-import org.mockito.Matchers;
+-import static org.mockito.Mockito.*;
++import org.junit.After;
++import org.junit.Assert;
++import org.mockito.invocation.InvocationOnMock;
++import org.mockito.stubbing.Answer;
+ 
+ public class TestDefaultContainerExecutor {
+ 
+@@ -191,6 +210,92 @@ public void testDirPermissions() throws Exception {
+     }
+   }
+ 
++  @Test
++  public void testContainerLaunchError()
++      throws IOException, InterruptedException {
++
++    Path localDir = new Path(BASE_TMP_PATH, "localDir");
++    List<String> localDirs = new ArrayList<String>();
++    localDirs.add(localDir.toString());
++    List<String> logDirs = new ArrayList<String>();
++    Path logDir = new Path(BASE_TMP_PATH, "logDir");
++    logDirs.add(logDir.toString());
++
++    Configuration conf = new Configuration();
++    conf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "077");
++       conf.set(YarnConfiguration.NM_LOCAL_DIRS, localDir.toString());
++    conf.set(YarnConfiguration.NM_LOG_DIRS, logDir.toString());
++    
++    FileContext lfs = FileContext.getLocalFSFileContext(conf);
++    DefaultContainerExecutor mockExec = spy(new DefaultContainerExecutor(lfs));
++    mockExec.setConf(conf);
++    doAnswer(
++        new Answer() {
++          @Override
++          public Object answer(InvocationOnMock invocationOnMock)
++              throws Throwable {
++            String diagnostics = (String) invocationOnMock.getArguments()[0];
++            assertTrue("Invalid Diagnostics message: " + diagnostics,
++                diagnostics.contains("No such file or directory"));
++            return null;
++          }
++        }
++    ).when(mockExec).logOutput(any(String.class));
++
++    String appSubmitter = "nobody";
++    String appId = "APP_ID";
++    String containerId = "CONTAINER_ID";
++    Container container = mock(Container.class);
++    ContainerId cId = mock(ContainerId.class);
++    ContainerLaunchContext context = mock(ContainerLaunchContext.class);
++    HashMap<String, String> env = new HashMap<String, String>();
++
++    when(container.getContainerId()).thenReturn(cId);
++    when(container.getLaunchContext()).thenReturn(context);
++    try {
++      doAnswer(new Answer() {
++        @Override
++        public Object answer(InvocationOnMock invocationOnMock)
++            throws Throwable {
++          ContainerDiagnosticsUpdateEvent event =
++              (ContainerDiagnosticsUpdateEvent) invocationOnMock
++                  .getArguments()[0];
++          assertTrue("Invalid Diagnostics message: "
++                  + event.getDiagnosticsUpdate(),
++              event.getDiagnosticsUpdate().contains("No such file or directory")
++          );
++          return null;
++        }
++      }).when(container).handle(any(ContainerDiagnosticsUpdateEvent.class));
++
++      when(cId.toString()).thenReturn(containerId);
++      when(cId.getApplicationAttemptId()).thenReturn(
++          ApplicationAttemptId.newInstance(ApplicationId.newInstance(0, 1), 0));
++
++      when(context.getEnvironment()).thenReturn(env);
++
++      mockExec.createUserLocalDirs(localDirs, appSubmitter);
++      mockExec.createUserCacheDirs(localDirs, appSubmitter);
++      mockExec.createAppDirs(localDirs, appSubmitter, appId);
++      mockExec.createAppLogDirs(appId, logDirs);
++
++      Path scriptPath = new Path("file:///bin/echo");
++      Path tokensPath = new Path("file:///dev/null");
++      Path workDir = localDir;
++      Path pidFile = new Path(workDir, "pid.txt");
++
++      mockExec.init();
++      mockExec.activateContainer(cId, pidFile);
++      int ret = mockExec
++          .launchContainer(container, scriptPath, tokensPath, appSubmitter,
++              appId, workDir, localDirs, localDirs);
++      Assert.assertNotSame(0, ret);
++    } finally {
++      mockExec.deleteAsUser(appSubmitter, localDir);
++      mockExec.deleteAsUser(appSubmitter, logDir);
++    }
++  }
++
+ //  @Test
+ //  public void testInit() throws IOException, InterruptedException {
+ //    Configuration conf = new Configuration();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutorWithMocks.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutorWithMocks.java
+index 30569fb..8a649ba 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutorWithMocks.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/TestLinuxContainerExecutorWithMocks.java
+@@ -19,8 +19,12 @@
+ package org.apache.hadoop.yarn.server.nodemanager;
+ 
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
+ import static org.junit.Assume.assumeTrue;
++import static org.mockito.Matchers.any;
++import static org.mockito.Mockito.doAnswer;
+ import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.spy;
+ import static org.mockito.Mockito.when;
+ 
+ import java.io.File;
+@@ -34,8 +38,6 @@
+ import java.util.LinkedList;
+ import java.util.List;
+ 
+-import org.junit.Assert;
+-
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+@@ -46,9 +48,13 @@
+ import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
++import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerDiagnosticsUpdateEvent;
++import org.junit.Assert;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
++import org.mockito.invocation.InvocationOnMock;
++import org.mockito.stubbing.Answer;
+ 
+ public class TestLinuxContainerExecutorWithMocks {
+ 
+@@ -215,7 +221,19 @@ public void testContainerLaunchError() throws IOException {
+     conf.set(YarnConfiguration.NM_LOCAL_DIRS, "file:///bin/echo");
+     conf.set(YarnConfiguration.NM_LOG_DIRS, "file:///dev/null");
+ 
+-    mockExec = new LinuxContainerExecutor();
++    mockExec = spy(new LinuxContainerExecutor());
++    doAnswer(
++        new Answer() {
++          @Override
++          public Object answer(InvocationOnMock invocationOnMock)
++              throws Throwable {
++             String diagnostics = (String) invocationOnMock.getArguments()[0];
++            assertTrue("Invalid Diagnostics message: " + diagnostics,
++                diagnostics.contains("badcommand"));
++            return null;
++          }
++        }
++    ).when(mockExec).logOutput(any(String.class));
+     dirsHandler = new LocalDirsHandlerService();
+     dirsHandler.init(conf);
+     mockExec.setConf(conf);
+@@ -232,7 +250,22 @@ public void testContainerLaunchError() throws IOException {
+ 
+     when(container.getContainerId()).thenReturn(cId);
+     when(container.getLaunchContext()).thenReturn(context);
+-
++    doAnswer(
++        new Answer() {
++          @Override
++          public Object answer(InvocationOnMock invocationOnMock)
++              throws Throwable {
++            ContainerDiagnosticsUpdateEvent event =
++                (ContainerDiagnosticsUpdateEvent) invocationOnMock
++                    .getArguments()[0];
++            assertTrue("Invalid Diagnostics message: " +
++                event.getDiagnosticsUpdate(),
++                event.getDiagnosticsUpdate().contains("badcommand"));
++            return null;
++          }
++        }
++    ).when(container).handle(any(ContainerDiagnosticsUpdateEvent.class));
++    
+     when(cId.toString()).thenReturn(containerId);
+ 
+     when(context.getEnvironment()).thenReturn(env);
+-- 
+1.7.9.5
+

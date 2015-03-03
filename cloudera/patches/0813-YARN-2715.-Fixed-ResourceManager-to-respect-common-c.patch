@@ -1,0 +1,363 @@
+From 399edecc52da6b8eef1e88d8a563ede94c9cc87c Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Tue, 21 Oct 2014 20:09:40 -0700
+Subject: [PATCH 813/813] YARN-2715. Fixed ResourceManager to respect common
+ configurations for proxy users/groups beyond just
+ the YARN level config. Contributed by Zhijie Shen.
+
+(cherry picked from commit c0e034336c85296be6f549d88d137fb2b2b79a15)
+(cherry picked from commit 77dc9afe86057d5219115f4c44ca217bb63f5a66)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    6 ++
+ .../http/RMAuthenticationFilterInitializer.java    |   10 +-
+ .../yarn/server/resourcemanager/AdminService.java  |   18 ++--
+ .../yarn/server/resourcemanager/RMServerUtils.java |   27 +++++
+ .../server/resourcemanager/ResourceManager.java    |    3 +
+ .../server/resourcemanager/TestRMAdminService.java |   18 ++++
+ .../resourcemanager/TestRMProxyUsersConf.java      |  105 ++++++++++++++++++++
+ ...RMWebServicesDelegationTokenAuthentication.java |    4 +-
+ 8 files changed, 179 insertions(+), 12 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMProxyUsersConf.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index a69a524..91e4b10 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -31,6 +31,7 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.net.NetUtils;
++import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.apache.hadoop.util.StringUtils;
+ import org.apache.hadoop.yarn.api.ApplicationConstants;
+ 
+@@ -536,6 +537,11 @@ private static void addDeprecatedKeys() {
+   public static final String DEFAULT_RM_NODEMANAGER_MINIMUM_VERSION =
+       "NONE";
+ 
++  /**
++   * RM proxy users' prefix
++   */
++  public static final String RM_PROXY_USER_PREFIX = RM_PREFIX + "proxyuser.";
++
+   ////////////////////////////////
+   // Node Manager Configs
+   ////////////////////////////////
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
+index f0baf2b..a62cda3 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/security/http/RMAuthenticationFilterInitializer.java
+@@ -35,6 +35,7 @@
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
+ import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
++import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationHandler;
+ import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
+ 
+@@ -42,14 +43,12 @@
+ public class RMAuthenticationFilterInitializer extends FilterInitializer {
+ 
+   String configPrefix;
+-  String proxyPrefix;
+   String signatureSecretFileProperty;
+   String kerberosPrincipalProperty;
+   String cookiePath;
+ 
+   public RMAuthenticationFilterInitializer() {
+     this.configPrefix = "hadoop.http.authentication.";
+-    this.proxyPrefix = "yarn.resourcemanager.webapp.proxyuser.";
+     this.signatureSecretFileProperty =
+         AuthenticationFilter.SIGNATURE_SECRET + ".file";
+     this.kerberosPrincipalProperty = KerberosAuthenticationHandler.PRINCIPAL;
+@@ -62,15 +61,18 @@ public RMAuthenticationFilterInitializer() {
+     // setting the cookie path to root '/' so it is used for all resources.
+     filterConfig.put(AuthenticationFilter.COOKIE_PATH, cookiePath);
+ 
++    // Before conf object is passed in, RM has already processed it and used RM
++    // specific configs to overwrite hadoop common ones. Hence we just need to
++    // source hadoop.proxyuser configs here.
+     for (Map.Entry<String, String> entry : conf) {
+       String propName = entry.getKey();
+       if (propName.startsWith(configPrefix)) {
+         String value = conf.get(propName);
+         String name = propName.substring(configPrefix.length());
+         filterConfig.put(name, value);
+-      } else if (propName.startsWith(proxyPrefix)) {
++      } else if (propName.startsWith(ProxyUsers.CONF_HADOOP_PROXYUSER)) {
+         String value = conf.get(propName);
+-        String name = propName.substring("yarn.resourcemanager.webapp.".length());
++        String name = propName.substring("hadoop.".length());
+         filterConfig.put(name, value);
+       }
+     }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+index ff0a249..b65dd04 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+@@ -403,9 +403,13 @@ public RefreshSuperUserGroupsConfigurationResponse refreshSuperUserGroupsConfigu
+       throwStandbyException();
+     }
+ 
++    // Accept hadoop common configs in core-site.xml as well as RM specific
++    // configurations in yarn-site.xml
+     Configuration conf =
+         getConfiguration(new Configuration(false),
+-            YarnConfiguration.CORE_SITE_CONFIGURATION_FILE);
++            YarnConfiguration.CORE_SITE_CONFIGURATION_FILE,
++            YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
++    RMServerUtils.processRMProxyUsersConf(conf);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
+     RMAuditLogger.logSuccess(user.getShortUserName(),
+         argName, "AdminService");
+@@ -576,11 +580,13 @@ public UpdateNodeResourceResponse updateNodeResource(
+   }
+ 
+   private synchronized Configuration getConfiguration(Configuration conf,
+-      String confFileName) throws YarnException, IOException {
+-    InputStream confFileInputStream = this.rmContext.getConfigurationProvider()
+-        .getConfigurationInputStream(conf, confFileName);
+-    if (confFileInputStream != null) {
+-      conf.addResource(confFileInputStream);
++      String... confFileNames) throws YarnException, IOException {
++    for (String confFileName : confFileNames) {
++      InputStream confFileInputStream = this.rmContext.getConfigurationProvider()
++          .getConfigurationInputStream(conf, confFileName);
++      if (confFileInputStream != null) {
++        conf.addResource(confFileInputStream);
++      }
+     }
+     return conf;
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMServerUtils.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMServerUtils.java
+index 29c5953..c4d5d23 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMServerUtils.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMServerUtils.java
+@@ -21,12 +21,16 @@
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.EnumSet;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ import org.apache.commons.logging.Log;
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authorize.AccessControlList;
++import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationResourceUsageReport;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
+@@ -36,6 +40,7 @@
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.InvalidContainerReleaseException;
+ import org.apache.hadoop.yarn.exceptions.InvalidResourceBlacklistRequestException;
+ import org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException;
+@@ -237,4 +242,26 @@ public static YarnApplicationAttemptState createApplicationAttemptState(
+       BuilderUtils.newApplicationResourceUsageReport(-1, -1,
+           Resources.createResource(-1, -1), Resources.createResource(-1, -1),
+           Resources.createResource(-1, -1), 0, 0);
++
++
++
++  /**
++   * Find all configs whose name starts with
++   * YarnConfiguration.RM_PROXY_USER_PREFIX, and add a record for each one by
++   * replacing the prefix with ProxyUsers.CONF_HADOOP_PROXYUSER
++   */
++  public static void processRMProxyUsersConf(Configuration conf) {
++    Map<String, String> rmProxyUsers = new HashMap<String, String>();
++    for (Map.Entry<String, String> entry : conf) {
++      String propName = entry.getKey();
++      if (propName.startsWith(YarnConfiguration.RM_PROXY_USER_PREFIX)) {
++        rmProxyUsers.put(ProxyUsers.CONF_HADOOP_PROXYUSER + "." +
++            propName.substring(YarnConfiguration.RM_PROXY_USER_PREFIX.length()),
++            entry.getValue());
++      }
++    }
++    for (Map.Entry<String, String> entry : rmProxyUsers.entrySet()) {
++      conf.set(entry.getKey(), entry.getValue());
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 54bb143..9f60f10 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -200,6 +200,9 @@ protected void serviceInit(Configuration conf) throws Exception {
+         .refresh();
+ 
+     // Do refreshSuperUserGroupsConfiguration with loaded core-site.xml
++    // Or use RM specific configurations to overwrite the common ones first
++    // if they exist
++    RMServerUtils.processRMProxyUsersConf(conf);
+     ProxyUsers.refreshSuperUserGroupsConfiguration(this.conf);
+ 
+     // load yarn-site.xml
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 7161d0c..1bd3dbf 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -357,6 +357,24 @@ private void verifyServiceACLsRefresh(ServiceAuthorizationManager manager,
+         .get("hadoop.proxyuser.test.hosts").size() == 1);
+     Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyHosts()
+         .get("hadoop.proxyuser.test.hosts").contains("test_hosts"));
++
++    Configuration yarnConf = new Configuration(false);
++    yarnConf.set("yarn.resourcemanager.proxyuser.test.groups", "test_groups_1");
++    yarnConf.set("yarn.resourcemanager.proxyuser.test.hosts", "test_hosts_1");
++    uploadConfiguration(yarnConf, "yarn-site.xml");
++
++    // RM specific configs will overwrite the common ones
++    rm.adminService.refreshSuperUserGroupsConfiguration(
++        RefreshSuperUserGroupsConfigurationRequest.newInstance());
++    Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyGroups()
++        .get("hadoop.proxyuser.test.groups").size() == 1);
++    Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyGroups()
++        .get("hadoop.proxyuser.test.groups").contains("test_groups_1"));
++
++    Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyHosts()
++        .get("hadoop.proxyuser.test.hosts").size() == 1);
++    Assert.assertTrue(ProxyUsers.getDefaultImpersonationProvider().getProxyHosts()
++        .get("hadoop.proxyuser.test.hosts").contains("test_hosts_1"));
+   }
+ 
+   @Test
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMProxyUsersConf.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMProxyUsersConf.java
+new file mode 100644
+index 0000000..86a9fe4
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMProxyUsersConf.java
+@@ -0,0 +1,105 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.resourcemanager;
++
++import java.util.Arrays;
++import java.util.Collection;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authorize.AuthorizationException;
++import org.apache.hadoop.security.authorize.ProxyUsers;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.junit.Assert;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.junit.runners.Parameterized;
++
++@RunWith(Parameterized.class)
++public class TestRMProxyUsersConf {
++
++  private static final UserGroupInformation FOO_USER =
++      UserGroupInformation.createUserForTesting("foo", new String[] { "foo_group" });
++  private static final UserGroupInformation BAR_USER =
++      UserGroupInformation.createUserForTesting("bar", new String[] { "bar_group" });
++
++  @Parameterized.Parameters
++  public static Collection<Object[]> headers() {
++    return Arrays.asList(new Object[][] { { 0 }, { 1 }, { 2 } });
++  }
++
++  private Configuration conf;
++
++  public TestRMProxyUsersConf(int round) {
++    conf = new YarnConfiguration();
++    switch (round) {
++      case 0:
++        // hadoop.proxyuser prefix
++        conf.set("hadoop.proxyuser.foo.hosts", "localhost");
++        conf.set("hadoop.proxyuser.foo.users", "bar");
++        conf.set("hadoop.proxyuser.foo.groups", "bar_group");
++        break;
++      case 1:
++        // yarn.resourcemanager.proxyuser prefix
++        conf.set("yarn.resourcemanager.proxyuser.foo.hosts", "localhost");
++        conf.set("yarn.resourcemanager.proxyuser.foo.users", "bar");
++        conf.set("yarn.resourcemanager.proxyuser.foo.groups", "bar_group");
++        break;
++      case 2:
++        // hadoop.proxyuser prefix has been overwritten by
++        // yarn.resourcemanager.proxyuser prefix
++        conf.set("hadoop.proxyuser.foo.hosts", "xyz");
++        conf.set("hadoop.proxyuser.foo.users", "xyz");
++        conf.set("hadoop.proxyuser.foo.groups", "xyz");
++        conf.set("yarn.resourcemanager.proxyuser.foo.hosts", "localhost");
++        conf.set("yarn.resourcemanager.proxyuser.foo.users", "bar");
++        conf.set("yarn.resourcemanager.proxyuser.foo.groups", "bar_group");
++        break;
++      default:
++        break;
++    }
++  }
++
++  @Test
++  public void testProxyUserConfiguration() throws Exception {
++    MockRM rm = null;
++    try {
++      rm = new MockRM(conf);
++      rm.start();
++      // wait for web server starting
++      Thread.sleep(10000);
++      UserGroupInformation proxyUser =
++          UserGroupInformation.createProxyUser(
++              BAR_USER.getShortUserName(), FOO_USER);
++      try {
++        ProxyUsers.getDefaultImpersonationProvider().authorize(proxyUser,
++            "localhost");
++      } catch (AuthorizationException e) {
++        // Exception is not expected
++        Assert.fail();
++      }
++    } finally {
++      if (rm != null) {
++        rm.stop();
++        rm.close();
++      }
++    }
++  }
++
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
+index a9ae0b9..36e24ec 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesDelegationTokenAuthentication.java
+@@ -158,8 +158,8 @@ private static void setupAndStartRM() throws Exception {
+     rmconf.set(YarnConfiguration.NM_WEBAPP_SPNEGO_KEYTAB_FILE_KEY,
+       httpSpnegoKeytabFile.getAbsolutePath());
+     rmconf.setBoolean("mockrm.webapp.enabled", true);
+-    rmconf.set("yarn.resourcemanager.webapp.proxyuser.client.hosts", "*");
+-    rmconf.set("yarn.resourcemanager.webapp.proxyuser.client.groups", "*");
++    rmconf.set("yarn.resourcemanager.proxyuser.client.hosts", "*");
++    rmconf.set("yarn.resourcemanager.proxyuser.client.groups", "*");
+     UserGroupInformation.setConfiguration(rmconf);
+     rm = new MockRM(rmconf);
+     rm.start();
+-- 
+1.7.9.5
+

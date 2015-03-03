@@ -1,0 +1,396 @@
+From 9ffb5c5ec96066f541ed8cb29be86a489bae0094 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Fri, 8 Aug 2014 14:40:46 +0000
+Subject: [PATCH 181/813] YARN-2352. FairScheduler: Collect metrics on
+ duration of critical methods that affect
+ performance. (kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1616785 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 88a51c1e74d8d6568c9fb2a804357212e37143dd)
+---
+ .../hadoop/metrics2/impl/MetricsCollectorImpl.java |    6 +-
+ .../apache/hadoop/metrics2/lib/MutableStat.java    |    8 ++
+ .../hadoop-yarn/dev-support/findbugs-exclude.xml   |    7 ++
+ .../scheduler/fair/FSOpDurations.java              |  119 ++++++++++++++++++++
+ .../scheduler/fair/FairScheduler.java              |   37 ++++--
+ .../scheduler/fair/TestFairScheduler.java          |   11 ++
+ 6 files changed, 180 insertions(+), 8 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSOpDurations.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/impl/MetricsCollectorImpl.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/impl/MetricsCollectorImpl.java
+index 5f53629..be442ed 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/impl/MetricsCollectorImpl.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/impl/MetricsCollectorImpl.java
+@@ -21,14 +21,18 @@
+ import java.util.Iterator;
+ import java.util.List;
+ 
++import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.collect.Lists;
+ 
++import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.metrics2.MetricsInfo;
+ import org.apache.hadoop.metrics2.MetricsCollector;
+ import org.apache.hadoop.metrics2.MetricsFilter;
+ import static org.apache.hadoop.metrics2.lib.Interns.*;
+ 
+-class MetricsCollectorImpl implements MetricsCollector,
++@InterfaceAudience.Private
++@VisibleForTesting
++public class MetricsCollectorImpl implements MetricsCollector,
+     Iterable<MetricsRecordBuilderImpl> {
+ 
+   private final List<MetricsRecordBuilderImpl> rbs = Lists.newArrayList();
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/lib/MutableStat.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/lib/MutableStat.java
+index 38a7959..cfcfb40 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/lib/MutableStat.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/metrics2/lib/MutableStat.java
+@@ -90,6 +90,14 @@ public MutableStat(String name, String description,
+   }
+ 
+   /**
++   * Set whether to display the extended stats (stdev, min/max etc.) or not
++   * @param extended enable/disable displaying extended stats
++   */
++  public synchronized void setExtended(boolean extended) {
++    this.extended = extended;
++  }
++
++  /**
+    * Add a number of samples and their sum to the running stat
+    * @param numSamples  number of samples
+    * @param sum of the samples
+diff --git a/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml b/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+index 781d7a3..6609a26 100644
+--- a/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
++++ b/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+@@ -200,6 +200,13 @@
+     <Field name="updateInterval" />
+     <Bug pattern="IS2_INCONSISTENT_SYNC" />
+   </Match>
++  <!-- Inconsistent sync warning - callDurationMetrics is only initialized once and never changed -->
++  <Match>
++    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler" />
++    <Field name="fsOpDurations" />
++    <Bug pattern="IS2_INCONSISTENT_SYNC" />
++  </Match>
++
+   <!-- Inconsistent sync warning - numRetries is only initialized once and never changed -->
+   <Match>
+     <Class name="org.apache.hadoop.yarn.server.resourcemanager.recovery.ZKRMStateStore" />
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSOpDurations.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSOpDurations.java
+new file mode 100644
+index 0000000..c2282fd
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSOpDurations.java
+@@ -0,0 +1,119 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
++import org.apache.hadoop.metrics2.MetricsCollector;
++import org.apache.hadoop.metrics2.MetricsInfo;
++import org.apache.hadoop.metrics2.MetricsSource;
++import org.apache.hadoop.metrics2.MetricsSystem;
++import org.apache.hadoop.metrics2.annotation.Metric;
++import org.apache.hadoop.metrics2.annotation.Metrics;
++import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
++import org.apache.hadoop.metrics2.lib.MetricsRegistry;
++
++import static org.apache.hadoop.metrics2.lib.Interns.info;
++import org.apache.hadoop.metrics2.lib.MutableRate;
++
++/**
++ * Class to capture the performance metrics of FairScheduler.
++ * This should be a singleton.
++ */
++@InterfaceAudience.Private
++@InterfaceStability.Unstable
++@Metrics(context="fairscheduler-op-durations")
++public class FSOpDurations implements MetricsSource {
++
++  @Metric("Duration for a continuous scheduling run")
++  MutableRate continuousSchedulingRun;
++
++  @Metric("Duration to handle a node update")
++  MutableRate nodeUpdateCall;
++
++  @Metric("Duration for a update thread run")
++  MutableRate updateThreadRun;
++
++  @Metric("Duration for an update call")
++  MutableRate updateCall;
++
++  @Metric("Duration for a preempt call")
++  MutableRate preemptCall;
++
++  private static final MetricsInfo RECORD_INFO =
++      info("FSOpDurations", "Durations of FairScheduler calls or thread-runs");
++
++  private final MetricsRegistry registry;
++
++  private boolean isExtended = false;
++
++  private static final FSOpDurations INSTANCE = new FSOpDurations();
++
++  public static FSOpDurations getInstance(boolean isExtended) {
++    INSTANCE.setExtended(isExtended);
++    return INSTANCE;
++  }
++
++  private FSOpDurations() {
++    registry = new MetricsRegistry(RECORD_INFO);
++    registry.tag(RECORD_INFO, "FSOpDurations");
++
++    MetricsSystem ms = DefaultMetricsSystem.instance();
++    if (ms != null) {
++      ms.register(RECORD_INFO.name(), RECORD_INFO.description(), this);
++    }
++  }
++
++  private synchronized void setExtended(boolean isExtended) {
++    if (isExtended == INSTANCE.isExtended)
++      return;
++
++    continuousSchedulingRun.setExtended(isExtended);
++    nodeUpdateCall.setExtended(isExtended);
++    updateThreadRun.setExtended(isExtended);
++    updateCall.setExtended(isExtended);
++    preemptCall.setExtended(isExtended);
++
++    INSTANCE.isExtended = isExtended;
++  }
++
++  @Override
++  public synchronized void getMetrics(MetricsCollector collector, boolean all) {
++    registry.snapshot(collector.addRecord(registry.info()), all);
++  }
++
++  public void addContinuousSchedulingRunDuration(long value) {
++    continuousSchedulingRun.add(value);
++  }
++
++  public void addNodeUpdateDuration(long value) {
++    nodeUpdateCall.add(value);
++  }
++
++  public void addUpdateThreadRunDuration(long value) {
++    updateThreadRun.add(value);
++  }
++
++  public void addUpdateCallDuration(long value) {
++    updateCall.add(value);
++  }
++
++  public void addPreemptCallDuration(long value) {
++    preemptCall.add(value);
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 5a2722b..ce21702 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -149,6 +149,7 @@
+ 
+   // Aggregate metrics
+   FSQueueMetrics rootMetrics;
++  FSOpDurations fsOpDurations;
+ 
+   // Time when we last updated preemption vars
+   protected long lastPreemptionUpdateTime;
+@@ -256,8 +257,11 @@ public void run() {
+       while (!Thread.currentThread().isInterrupted()) {
+         try {
+           Thread.sleep(updateInterval);
++          long start = getClock().getTime();
+           update();
+           preemptTasksIfNecessary();
++          long duration = getClock().getTime() - start;
++          fsOpDurations.addUpdateThreadRunDuration(duration);
+         } catch (InterruptedException ie) {
+           LOG.warn("Update thread interrupted. Exiting.");
+           return;
+@@ -294,6 +298,7 @@ public void run() {
+    * required resources per job.
+    */
+   protected synchronized void update() {
++    long start = getClock().getTime();
+     updatePreemptionVariables(); // Determine if any queues merit preemption
+ 
+     FSQueue rootQueue = queueMgr.getRootQueue();
+@@ -317,6 +322,9 @@ protected synchronized void update() {
+             "  Demand: " + rootQueue.getDemand());
+       }
+     }
++
++    long duration = getClock().getTime() - start;
++    fsOpDurations.addUpdateCallDuration(duration);
+   }
+ 
+   /**
+@@ -325,7 +333,7 @@ protected synchronized void update() {
+    * for each type of task.
+    */
+   private void updatePreemptionVariables() {
+-    long now = clock.getTime();
++    long now = getClock().getTime();
+     lastPreemptionUpdateTime = now;
+     for (FSLeafQueue sched : queueMgr.getLeafQueues()) {
+       if (!isStarvedForMinShare(sched)) {
+@@ -352,7 +360,8 @@ boolean isStarvedForMinShare(FSLeafQueue sched) {
+    * defined as being below half its fair share.
+    */
+   boolean isStarvedForFairShare(FSLeafQueue sched) {
+-    Resource desiredFairShare = Resources.min(RESOURCE_CALCULATOR, clusterResource,
++    Resource desiredFairShare = Resources.min(RESOURCE_CALCULATOR,
++        clusterResource,
+         Resources.multiply(sched.getFairShare(), .5), sched.getDemand());
+     return Resources.lessThan(RESOURCE_CALCULATOR, clusterResource,
+         sched.getResourceUsage(), desiredFairShare);
+@@ -370,7 +379,7 @@ protected synchronized void preemptTasksIfNecessary() {
+       return;
+     }
+ 
+-    long curTime = clock.getTime();
++    long curTime = getClock().getTime();
+     if (curTime - lastPreemptCheckTime < preemptionInterval) {
+       return;
+     }
+@@ -398,6 +407,7 @@ protected synchronized void preemptTasksIfNecessary() {
+    * We make sure that no queue is placed below its fair share in the process.
+    */
+   protected void preemptResources(Resource toPreempt) {
++    long start = getClock().getTime();
+     if (Resources.equals(toPreempt, Resources.none())) {
+       return;
+     }
+@@ -448,6 +458,9 @@ protected void preemptResources(Resource toPreempt) {
+         }
+       }
+     }
++
++    long duration = getClock().getTime() - start;
++    fsOpDurations.addPreemptCallDuration(duration);
+   }
+   
+   protected void warnOrKillContainer(RMContainer container) {
+@@ -463,7 +476,7 @@ protected void warnOrKillContainer(RMContainer container) {
+     if (time != null) {
+       // if we asked for preemption more than maxWaitTimeBeforeKill ms ago,
+       // proceed with kill
+-      if (time + waitTimeBeforeKill < clock.getTime()) {
++      if (time + waitTimeBeforeKill < getClock().getTime()) {
+         ContainerStatus status =
+           SchedulerUtils.createPreemptedContainerStatus(
+             container.getContainerId(), SchedulerUtils.PREEMPTED_CONTAINER);
+@@ -474,11 +487,11 @@ protected void warnOrKillContainer(RMContainer container) {
+         completedContainer(container, status, RMContainerEventType.KILL);
+         LOG.info("Killing container" + container +
+             " (after waiting for premption for " +
+-            (clock.getTime() - time) + "ms)");
++            (getClock().getTime() - time) + "ms)");
+       }
+     } else {
+       // track the request in the FSSchedulerApp itself
+-      app.addPreemption(container, clock.getTime());
++      app.addPreemption(container, getClock().getTime());
+     }
+   }
+ 
+@@ -653,7 +666,7 @@ protected synchronized void addApplicationAttempt(
+             rmContext);
+     if (transferStateFromPreviousAttempt) {
+       attempt.transferStateFromPreviousAttempt(application
+-        .getCurrentAppAttempt());
++          .getCurrentAppAttempt());
+     }
+     application.setCurrentAppAttempt(attempt);
+ 
+@@ -969,6 +982,7 @@ private void containerLaunchedOnNode(ContainerId containerId, FSSchedulerNode no
+    * Process a heartbeat update from a node.
+    */
+   private synchronized void nodeUpdate(RMNode nm) {
++    long start = getClock().getTime();
+     if (LOG.isDebugEnabled()) {
+       LOG.debug("nodeUpdate: " + nm + " cluster capacity: " + clusterResource);
+     }
+@@ -1005,9 +1019,13 @@ private synchronized void nodeUpdate(RMNode nm) {
+     } else {
+       attemptScheduling(node);
+     }
++
++    long duration = getClock().getTime() - start;
++    fsOpDurations.addNodeUpdateDuration(duration);
+   }
+ 
+   void continuousSchedulingAttempt() throws InterruptedException {
++    long start = getClock().getTime();
+     List<NodeId> nodeIdList = new ArrayList<NodeId>(nodes.keySet());
+     // Sort the nodes by space available on them, so that we offer
+     // containers on emptier nodes first, facilitating an even spread. This
+@@ -1030,6 +1048,9 @@ void continuousSchedulingAttempt() throws InterruptedException {
+             ": " + ex.toString(), ex);
+       }
+     }
++
++    long duration = getClock().getTime() - start;
++    fsOpDurations.addContinuousSchedulingRunDuration(duration);
+   }
+ 
+   /** Sort nodes by available resource */
+@@ -1252,6 +1273,8 @@ private synchronized void initScheduler(Configuration conf)
+     }
+ 
+     rootMetrics = FSQueueMetrics.forQueue("root", null, true, conf);
++    fsOpDurations = FSOpDurations.getInstance(true);
++
+     // This stores per-application scheduling information
+     this.applications =
+         new ConcurrentHashMap<ApplicationId,SchedulerApplication<FSSchedulerApp>>();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index 8ff1537..8da808a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
+ 
++import org.apache.hadoop.metrics2.impl.MetricsCollectorImpl;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertNotEquals;
+@@ -3293,4 +3294,14 @@ public void testThreadLifeCycle() throws InterruptedException {
+ 
+     assertNotEquals("One of the threads is still alive", 0, numRetries);
+   }
++
++  @Test
++  public void testPerfMetricsInited() {
++    scheduler.init(conf);
++    scheduler.start();
++    MetricsCollectorImpl collector = new MetricsCollectorImpl();
++    scheduler.fsOpDurations.getMetrics(collector, true);
++    assertEquals("Incorrect number of perf metrics", 1,
++        collector.getRecords().size());
++  }
+ }
+-- 
+1.7.9.5
+

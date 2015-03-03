@@ -1,0 +1,39 @@
+From f40c8cf23147f6966e92b743e2d84eb2c41a18a4 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Mon, 29 Sep 2014 11:29:54 -0700
+Subject: [PATCH 607/813] HDFS-7157. Using Time.now() for recording start/end
+ time of reconfiguration tasks (Lei Xu via Colin
+ Patrick McCabe) (cherry picked from commit
+ b3d5d269a73a1826ebf6f637a0dbd69f6261dbcb) (cherry
+ picked from commit
+ c412652820f88af042700713da0330bda4323fe0)
+
+---
+ .../org/apache/hadoop/conf/ReconfigurableBase.java |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurableBase.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurableBase.java
+index 7521650..3248b9a 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurableBase.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/ReconfigurableBase.java
+@@ -134,7 +134,7 @@ public void run() {
+       }
+ 
+       synchronized (this.parent.reconfigLock) {
+-        this.parent.endTime = Time.monotonicNow();
++        this.parent.endTime = Time.now();
+         this.parent.status = Collections.unmodifiableMap(results);
+         this.parent.reconfigThread = null;
+       }
+@@ -160,7 +160,7 @@ public void startReconfigurationTask() throws IOException {
+       reconfigThread.setDaemon(true);
+       reconfigThread.setName("Reconfiguration Task");
+       reconfigThread.start();
+-      startTime = Time.monotonicNow();
++      startTime = Time.now();
+     }
+   }
+ 
+-- 
+1.7.9.5
+

@@ -1,0 +1,29 @@
+From 5515e8976fa335e1fe08398990fcc775a30fa391 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Mon, 14 Jul 2014 17:59:23 +0000
+Subject: [PATCH 519/813] HADOOP-10780. hadoop_user_info_alloc fails on
+ FreeBSD due to incorrect sysconf use (trtrmitya via
+ cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1610472 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 6da4b7b4e64278cb52b3ad0eec70a8746bd53110)
+---
+ .../org/apache/hadoop/security/hadoop_user_info.c  |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c b/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c
+index 566da64..ca288ec 100644
+--- a/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c
++++ b/hadoop-common-project/hadoop-common/src/main/native/src/org/apache/hadoop/security/hadoop_user_info.c
+@@ -36,7 +36,7 @@
+ struct hadoop_user_info *hadoop_user_info_alloc(void)
+ {
+   struct hadoop_user_info *uinfo;
+-  size_t buf_sz;
++  long buf_sz;
+   char *buf;
+ 
+   uinfo = calloc(1, sizeof(struct hadoop_user_info));
+-- 
+1.7.9.5
+

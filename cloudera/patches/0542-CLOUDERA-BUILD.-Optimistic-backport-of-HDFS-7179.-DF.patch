@@ -1,0 +1,135 @@
+From 9de7541ca45acc9e651b23039585b2446883799e Mon Sep 17 00:00:00 2001
+From: Andrew Wang <andrew.wang@cloudera.com>
+Date: Wed, 1 Oct 2014 17:52:29 -0700
+Subject: [PATCH 542/813] CLOUDERA-BUILD. Optimistic backport of HDFS-7179.
+ DFSClient should instantiate a KeyProvider, not a
+ KeyProviderCryptoExtension.
+
+---
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |   11 +++++----
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |   25 ++++++++++++++++----
+ .../apache/hadoop/hdfs/TestEncryptionZones.java    |    3 +--
+ 3 files changed, 29 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index 9690135..3128906 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -105,6 +105,7 @@
+ import org.apache.hadoop.crypto.CryptoInputStream;
+ import org.apache.hadoop.crypto.CryptoOutputStream;
+ import org.apache.hadoop.crypto.CryptoProtocolVersion;
++import org.apache.hadoop.crypto.key.KeyProvider;
+ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.fs.BlockLocation;
+ import org.apache.hadoop.fs.BlockStorageLocation;
+@@ -264,7 +265,7 @@
+       new DFSHedgedReadMetrics();
+   private static ThreadPoolExecutor HEDGED_READ_THREAD_POOL;
+   @VisibleForTesting
+-  KeyProviderCryptoExtension provider;
++  KeyProvider provider;
+   /**
+    * DFSClient configuration 
+    */
+@@ -596,7 +597,7 @@ public DFSClient(URI nameNodeUri, ClientProtocol rpcNamenode,
+     this.authority = nameNodeUri == null? "null": nameNodeUri.getAuthority();
+     this.clientName = "DFSClient_" + dfsClientConf.taskId + "_" + 
+         DFSUtil.getRandom().nextInt()  + "_" + Thread.currentThread().getId();
+-    provider = DFSUtil.createKeyProviderCryptoExtension(conf);
++    provider = DFSUtil.createKeyProvider(conf);
+     if (LOG.isDebugEnabled()) {
+       if (provider == null) {
+         LOG.debug("No KeyProvider found.");
+@@ -1305,7 +1306,9 @@ private KeyVersion decryptEncryptedDataEncryptionKey(FileEncryptionInfo
+         feInfo.getKeyName(), feInfo.getEzKeyVersionName(), feInfo.getIV(),
+         feInfo.getEncryptedDataEncryptionKey());
+     try {
+-      return provider.decryptEncryptedKey(ekv);
++      KeyProviderCryptoExtension cryptoProvider = KeyProviderCryptoExtension
++          .createKeyProviderCryptoExtension(provider);
++      return cryptoProvider.decryptEncryptedKey(ekv);
+     } catch (GeneralSecurityException e) {
+       throw new IOException(e);
+     }
+@@ -3102,7 +3105,7 @@ DFSHedgedReadMetrics getHedgedReadMetrics() {
+     return HEDGED_READ_METRIC;
+   }
+ 
+-  public KeyProviderCryptoExtension getKeyProvider() {
++  public KeyProvider getKeyProvider() {
+     return provider;
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index 56039c8..fd238d8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -1823,15 +1823,14 @@ public static void assertAllResultsEqual(Collection<?> objects)
+   }
+ 
+   /**
+-   * Creates a new KeyProviderCryptoExtension by wrapping the
+-   * KeyProvider specified in the given Configuration.
++   * Creates a new KeyProvider from the given Configuration.
+    *
+    * @param conf Configuration
+-   * @return new KeyProviderCryptoExtension, or null if no provider was found.
++   * @return new KeyProvider, or null if no provider was found.
+    * @throws IOException if the KeyProvider is improperly specified in
+    *                             the Configuration
+    */
+-  public static KeyProviderCryptoExtension createKeyProviderCryptoExtension(
++  public static KeyProvider createKeyProvider(
+       final Configuration conf) throws IOException {
+     final String providerUriStr =
+         conf.get(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI, null);
+@@ -1855,6 +1854,24 @@ public static KeyProviderCryptoExtension createKeyProviderCryptoExtension(
+       throw new IOException("KeyProvider " + keyProvider.toString()
+           + " was found but it is a transient provider.");
+     }
++    return keyProvider;
++  }
++
++  /**
++   * Creates a new KeyProviderCryptoExtension by wrapping the
++   * KeyProvider specified in the given Configuration.
++   *
++   * @param conf Configuration
++   * @return new KeyProviderCryptoExtension, or null if no provider was found.
++   * @throws IOException if the KeyProvider is improperly specified in
++   *                             the Configuration
++   */
++  public static KeyProviderCryptoExtension createKeyProviderCryptoExtension(
++      final Configuration conf) throws IOException {
++    KeyProvider keyProvider = createKeyProvider(conf);
++    if (keyProvider == null) {
++      return null;
++    }
+     KeyProviderCryptoExtension cryptoProvider = KeyProviderCryptoExtension
+         .createKeyProviderCryptoExtension(keyProvider);
+     return cryptoProvider;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+index ff55cdb..db7a699 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptionZones.java
+@@ -43,7 +43,6 @@
+ import org.apache.hadoop.crypto.CryptoProtocolVersion;
+ import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+ import org.apache.hadoop.crypto.key.KeyProvider;
+-import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
+ import org.apache.hadoop.crypto.key.KeyProviderFactory;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.fs.CreateFlag;
+@@ -1042,7 +1041,7 @@ public void doCleanup() throws Exception {
+   public void testDelegationToken() throws Exception {
+     UserGroupInformation.createRemoteUser("JobTracker");
+     DistributedFileSystem dfs = cluster.getFileSystem();
+-    KeyProviderCryptoExtension keyProvider = Mockito.mock(KeyProviderCryptoExtension.class,
++    KeyProvider keyProvider = Mockito.mock(KeyProvider.class,
+         withSettings().extraInterfaces(
+             DelegationTokenExtension.class,
+             CryptoExtension.class));
+-- 
+1.7.9.5
+

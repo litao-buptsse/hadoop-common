@@ -1,0 +1,50 @@
+From 72e0a8fa1857cc79ae35d2828b773c571cd052ff Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Fri, 7 Nov 2014 09:28:36 -0800
+Subject: [PATCH 716/813] YARN-2823. Fixed ResourceManager app-attempt state
+ machine to inform schedulers about previous
+ finished attempts of a running appliation to avoid
+ expectation mismatch w.r.t transferred containers.
+ Contributed by Jian He.
+
+(cherry picked from commit a5657182a7accebe08cd86e46b4cdeb163d4d1f2)
+(cherry picked from commit eb01c602ed9259f54e50e10821fffe2ce384405e)
+---
+ .../rmapp/attempt/RMAppAttemptImpl.java            |    4 ++++
+ .../yarn/server/resourcemanager/TestRMRestart.java |    5 ++++-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index a981734..15c9e5e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -1014,6 +1014,10 @@ public RMAppAttemptState transition(RMAppAttemptImpl appAttempt,
+         // state but application is not in final state.
+         if (rmApp.getCurrentAppAttempt() == appAttempt
+             && !RMAppImpl.isAppInFinalState(rmApp)) {
++          // Add the previous finished attempt to scheduler synchronously so
++          // that scheduler knows the previous attempt.
++          appAttempt.scheduler.handle(new AppAttemptAddedSchedulerEvent(
++            appAttempt.getAppAttemptId(), false, true));
+           (new BaseFinalTransition(appAttempt.recoveredFinalState)).transition(
+               appAttempt, event);
+         }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index 8f62d47..00a5ab4 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -442,7 +442,10 @@ public void testRMRestartAppRunningAMFailed() throws Exception {
+     nm1.registerNode();
+ 
+     // create app and launch the AM
+-    RMApp app0 = rm1.submitApp(200);
++    RMApp app0 =
++        rm1.submitApp(200, "name", "user",
++          new HashMap<ApplicationAccessType, String>(), false, "default", -1,
++          null, "MAPREDUCE", true, true);
+     MockAM am0 = launchAM(app0, rm1, nm1);
+ 
+     // fail the AM by sending CONTAINER_FINISHED event without registering.
+-- 
+1.7.9.5
+

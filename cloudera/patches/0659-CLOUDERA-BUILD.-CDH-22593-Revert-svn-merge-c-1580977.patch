@@ -1,0 +1,33 @@
+From 1edb9547a50921fc54d2aca4fe69cd2fdf824cc9 Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Wed, 12 Nov 2014 14:23:09 -0800
+Subject: [PATCH 659/813] CLOUDERA-BUILD. CDH-22593 Revert "svn merge -c
+ 1580977 from trunk for HADOOP-10015.
+ UserGroupInformation prints out excessive
+ warnings."
+
+This reverts commit fd8a4cb1145b7f135d95927bf66ecb30cf658c4d.
+
+(cherry picked from commit 16df712cf139f04ec5ae45832fbc6097e51289de)
+---
+ .../hadoop/security/UserGroupInformation.java      |    4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+index abfc433..60348b0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+@@ -1642,9 +1642,7 @@ protected Subject getSubject() {
+       return Subject.doAs(subject, action);
+     } catch (PrivilegedActionException pae) {
+       Throwable cause = pae.getCause();
+-      if (LOG.isDebugEnabled()) {
+-        LOG.debug("PrivilegedActionException as:" + this + " cause:" + cause);
+-      }
++      LOG.warn("PriviledgedActionException as:"+this+" cause:"+cause);
+       if (cause instanceof IOException) {
+         throw (IOException) cause;
+       } else if (cause instanceof Error) {
+-- 
+1.7.9.5
+

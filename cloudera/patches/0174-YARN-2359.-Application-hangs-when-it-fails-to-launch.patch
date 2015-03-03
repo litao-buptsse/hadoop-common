@@ -1,0 +1,83 @@
+From 8ec18acc86ec1d3a19cc5be016310ae4c90ceff4 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Mon, 18 Aug 2014 15:58:11 -0700
+Subject: [PATCH 174/813] YARN-2359. Application hangs when it fails to launch
+ AM container. (Zhihai Xu via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1616375 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit eeeddf3cc59aae21bc458cd1989756962bc5b124)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../rmapp/attempt/RMAppAttemptImpl.java            |    8 +++++-
+ .../rmapp/attempt/TestRMAppAttemptTransitions.java |   27 ++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index 5f73add..d39d513 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -215,7 +215,13 @@
+           RMAppAttemptEventType.KILL,
+           new FinalSavingTransition(new BaseFinalTransition(
+             RMAppAttemptState.KILLED), RMAppAttemptState.KILLED))
+-          
++      .addTransition(RMAppAttemptState.SCHEDULED,
++          RMAppAttemptState.FINAL_SAVING,
++          RMAppAttemptEventType.CONTAINER_FINISHED,
++          new FinalSavingTransition(
++            new AMContainerCrashedBeforeRunningTransition(),
++            RMAppAttemptState.FAILED))
++
+        // Transitions from ALLOCATED_SAVING State
+       .addTransition(RMAppAttemptState.ALLOCATED_SAVING, 
+           RMAppAttemptState.ALLOCATED,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+index b2d7c06..4bc9f97 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+@@ -89,6 +89,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptAddedSchedulerEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
+@@ -779,6 +780,32 @@ public void testScheduledToKilled() {
+   }
+ 
+   @Test
++  public void testAMCrashAtScheduled() {
++    // This is to test sending CONTAINER_FINISHED event at SCHEDULED state.
++    // Verify the state transition is correct.
++    scheduleApplicationAttempt();
++    ContainerStatus cs =
++        SchedulerUtils.createAbnormalContainerStatus(
++            BuilderUtils.newContainerId(
++                applicationAttempt.getAppAttemptId(), 1),
++            SchedulerUtils.LOST_CONTAINER);
++    // send CONTAINER_FINISHED event at SCHEDULED state,
++    // The state should be FINAL_SAVING with previous state SCHEDULED
++    applicationAttempt.handle(new RMAppAttemptContainerFinishedEvent(
++        applicationAttempt.getAppAttemptId(), cs));
++    // createApplicationAttemptState will return previous state (SCHEDULED),
++    // if the current state is FINAL_SAVING.
++    assertEquals(YarnApplicationAttemptState.SCHEDULED,
++        applicationAttempt.createApplicationAttemptState());
++    // send ATTEMPT_UPDATE_SAVED event,
++    // verify the state is changed to state FAILED.
++    sendAttemptUpdateSavedEvent(applicationAttempt);
++    assertEquals(RMAppAttemptState.FAILED,
++        applicationAttempt.getAppAttemptState());
++    verifyApplicationAttemptFinished(RMAppAttemptState.FAILED);
++  }
++
++  @Test
+   public void testAllocatedToKilled() {
+     Container amContainer = allocateApplicationAttempt();
+     applicationAttempt.handle(
+-- 
+1.7.9.5
+

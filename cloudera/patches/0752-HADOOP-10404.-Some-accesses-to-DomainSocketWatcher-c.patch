@@ -1,0 +1,54 @@
+From 8bb7057718c735ee55fc963ab75cb8a33a53d1d8 Mon Sep 17 00:00:00 2001
+From: Colin Patrick Mccabe <cmccabe@cloudera.com>
+Date: Mon, 6 Oct 2014 14:40:41 -0700
+Subject: [PATCH 752/813] HADOOP-10404. Some accesses to
+ DomainSocketWatcher#closed are not protected by the
+ lock (cmccabe) (cherry picked from commit
+ 8099de259fb91a29674bf17cb1382c038b707a90) (cherry
+ picked from commit
+ c97134d05442cebd619dfdb5cd8b81ccf1b2a0c4)
+
+---
+ .../hadoop/net/unix/DomainSocketWatcher.java       |    6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
+index 8348aeb..6215e58 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
+@@ -101,6 +101,7 @@ public static String getLoadingFailureReason() {
+    */
+   private class NotificationHandler implements Handler {
+     public boolean handle(DomainSocket sock) {
++      lock.lock();
+       try {
+         if (LOG.isTraceEnabled()) {
+           LOG.trace(this + ": NotificationHandler: doing a read on " +
+@@ -124,6 +125,8 @@ public boolean handle(DomainSocket sock) {
+         }
+         closed = true;
+         return true;
++      } finally {
++        lock.unlock();
+       }
+     }
+   }
+@@ -346,12 +349,15 @@ public void remove(DomainSocket sock) {
+    * Wake up the DomainSocketWatcher thread.
+    */
+   private void kick() {
++    lock.lock();
+     try {
+       notificationSockets[0].getOutputStream().write(0);
+     } catch (IOException e) {
+       if (!closed) {
+         LOG.error(this + ": error writing to notificationSockets[0]", e);
+       }
++    } finally {
++      lock.unlock();
+     }
+   }
+ 
+-- 
+1.7.9.5
+

@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.api.records;
 
 import java.io.Serializable;
+import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
@@ -63,19 +64,20 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
   @Stable
   public static ResourceRequest newInstance(Priority priority, String hostName,
       Resource capability, int numContainers) {
-    return newInstance(priority, hostName, capability, numContainers, true);
+    return newInstance(priority, hostName, capability, numContainers, true, null);
   }
 
   @Public
   @Stable
   public static ResourceRequest newInstance(Priority priority, String hostName,
-      Resource capability, int numContainers, boolean relaxLocality) {
+	  Resource capability, int numContainers, boolean relaxLocality, List<String> labels) {
     ResourceRequest request = Records.newRecord(ResourceRequest.class);
     request.setPriority(priority);
     request.setResourceName(hostName);
     request.setCapability(capability);
     request.setNumContainers(numContainers);
     request.setRelaxLocality(relaxLocality);
+		request.setLabels(labels);
     return request;
   }
 
@@ -238,7 +240,31 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
   @Public
   @Stable
   public abstract void setRelaxLocality(boolean relaxLocality);
-  
+ 
+  /**
+   * Get labels specified by the application for this 
+   * <code>ResourceRequest</code>.
+   * 
+   * An application can use <em>labels</em> to specify a subset of cluster nodes
+   * on which it wants to narrow container-allocations.
+   * 
+   @return labels specified by the application for this 
+   *         <code>ResourceRequest</code>
+  */
+  @Public
+  @Stable
+  public abstract List<String> getLabels();
+
+  /**
+	* Set <em>labels</em> to narrow container-allocations to a subset of cluster
+	* nodes.
+	* 
+    * @param labels node labels to narrow container allocations
+  */
+  @Public
+  @Stable
+  public abstract void setLabels(List<String> labels);
+
   @Override
   public int hashCode() {
     final int prime = 2153;
@@ -288,23 +314,43 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
 
   @Override
   public int compareTo(ResourceRequest other) {
-    int priorityComparison = this.getPriority().compareTo(other.getPriority());
-    if (priorityComparison == 0) {
-      int hostNameComparison =
-          this.getResourceName().compareTo(other.getResourceName());
-      if (hostNameComparison == 0) {
-        int capabilityComparison =
-            this.getCapability().compareTo(other.getCapability());
-        if (capabilityComparison == 0) {
-          return this.getNumContainers() - other.getNumContainers();
-        } else {
-          return capabilityComparison;
-        }
-      } else {
-        return hostNameComparison;
-      }
-    } else {
-      return priorityComparison;
-    }
-  }
+		int priorityComparison = this.getPriority().compareTo(other.getPriority());
+		if (priorityComparison == 0) {
+			int hostNameComparison =
+				this.getResourceName().compareTo(other.getResourceName());
+			if (hostNameComparison == 0) {
+				int capabilityComparison =
+					this.getCapability().compareTo(other.getCapability());
+				if (capabilityComparison == 0) {
+					int numContainersComparison =
+						this.getNumContainers() - other.getNumContainers();
+					if (numContainersComparison == 0) {
+						List<String> thisLabels = this.getLabels();
+						List<String> otherLabels = other.getLabels();
+						if (thisLabels.size() == otherLabels.size() && !thisLabels.isEmpty()) {
+							for (int i=0; i<thisLabels.size(); ++i) {
+								int rVal = thisLabels.get(i).compareTo(otherLabels.get(i));
+								if (rVal != 0) {
+									return rVal;
+								}
+							}
+							return 0;
+						} else {
+							return thisLabels.size() - otherLabels.size();
+						}
+					} else {
+						return numContainersComparison;
+					}
+				}
+				else {
+					return capabilityComparison;
+				}
+			}
+			else {
+				return hostNameComparison;
+			}
+		} else {
+			return priorityComparison;
+		}
+	}
 }

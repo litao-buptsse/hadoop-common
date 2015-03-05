@@ -306,7 +306,7 @@ public abstract class RMContainerRequestor extends RMCommunicator {
               ResourceRequest zeroedRequest =
                   ResourceRequest.newInstance(req.getPriority(),
                     req.getResourceName(), req.getCapability(),
-                    req.getNumContainers(), req.getRelaxLocality());
+                    req.getNumContainers(), req.getRelaxLocality(), req.getLabels());
 
               zeroedRequest.setNumContainers(0);
               // to be sent to RM on next heartbeat
@@ -336,22 +336,22 @@ public abstract class RMContainerRequestor extends RMCommunicator {
     return availableResources;
   }
   
-  protected void addContainerReq(ContainerRequest req) {
+  protected void addContainerReq(ContainerRequest req, String taskLabel) {
     // Create resource requests
     for (String host : req.hosts) {
       // Data-local
       if (!isNodeBlacklisted(host)) {
-        addResourceRequest(req.priority, host, req.capability);
+        addResourceRequest(req.priority, host, req.capability, taskLabel);
       }      
     }
 
     // Nothing Rack-local for now
     for (String rack : req.racks) {
-      addResourceRequest(req.priority, rack, req.capability);
+      addResourceRequest(req.priority, rack, req.capability, taskLabel);
     }
 
     // Off-switch
-    addResourceRequest(req.priority, ResourceRequest.ANY, req.capability);
+    addResourceRequest(req.priority, ResourceRequest.ANY, req.capability, taskLabel);
   }
 
   protected void decContainerReq(ContainerRequest req) {
@@ -368,7 +368,7 @@ public abstract class RMContainerRequestor extends RMCommunicator {
   }
 
   private void addResourceRequest(Priority priority, String resourceName,
-      Resource capability) {
+      Resource capability, String taskLabel) {
     Map<String, Map<Resource, ResourceRequest>> remoteRequests =
       this.remoteRequestsTable.get(priority);
     if (remoteRequests == null) {
@@ -394,6 +394,12 @@ public abstract class RMContainerRequestor extends RMCommunicator {
     }
     remoteRequest.setNumContainers(remoteRequest.getNumContainers() + 1);
 
+	if (taskLabel != null) {
+	  ArrayList<String> labels = new ArrayList<String>(1);
+	  labels.add(taskLabel);
+	  remoteRequest.setLabels(labels);
+	}
+		 
     // Note this down for next interaction with ResourceManager
     addResourceRequestToAsk(remoteRequest);
     if (LOG.isDebugEnabled()) {

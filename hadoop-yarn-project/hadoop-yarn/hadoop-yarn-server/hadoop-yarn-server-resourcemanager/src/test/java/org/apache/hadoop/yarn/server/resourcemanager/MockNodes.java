@@ -98,6 +98,7 @@ public class MockNodes {
     private String healthReport;
     private long lastHealthReportTime;
     private NodeState state;
+		private List<String> labels;
 
     public MockRMNodeImpl(NodeId nodeId, String nodeAddr, String httpAddress,
         Resource perNode, String rackName, String healthReport,
@@ -202,7 +203,12 @@ public class MockNodes {
     public long getLastHealthReportTime() {
       return lastHealthReportTime;
     }
-    
+
+		@Override
+		public List<String> getLabels() {
+			return labels;
+		}
+
   };
 
   private static RMNode buildRMNode(int rack, final Resource perNode, NodeState state, String httpAddr) {

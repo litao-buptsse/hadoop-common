@@ -49,6 +49,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.NodeType;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerLabelsManager;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 
@@ -66,10 +67,18 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
     new HashSet<ContainerId>();
 
   public FiCaSchedulerApp(ApplicationAttemptId applicationAttemptId, 
-      String user, Queue queue, ActiveUsersManager activeUsersManager,
-      RMContext rmContext) {
-    super(applicationAttemptId, user, queue, activeUsersManager, rmContext);
-  }
+			String user, Queue queue, ActiveUsersManager activeUsersManager,
+			RMContext rmContext) {
+		this(applicationAttemptId, user, queue, activeUsersManager, null, 
+				rmContext);
+	}
+
+	public FiCaSchedulerApp(ApplicationAttemptId applicationAttemptId, 
+			String user, Queue queue, ActiveUsersManager activeUsersManager,
+			SchedulerLabelsManager labelsManager, RMContext rmContext) {
+		super(applicationAttemptId, user, queue, activeUsersManager, labelsManager, 
+				rmContext);
+	}
 
   synchronized public boolean containerCompleted(RMContainer rmContainer,
       ContainerStatus containerStatus, RMContainerEventType event) {

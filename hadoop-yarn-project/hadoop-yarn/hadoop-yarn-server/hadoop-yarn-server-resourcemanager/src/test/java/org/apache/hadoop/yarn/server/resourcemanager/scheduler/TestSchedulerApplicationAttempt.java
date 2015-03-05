@@ -65,7 +65,7 @@ public class TestSchedulerApplicationAttempt {
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
     SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(appAttId,
-        user, oldQueue, oldQueue.getActiveUsersManager(), rmContext);
+        user, oldQueue, oldQueue.getActiveUsersManager(), null, rmContext);
     oldMetrics.submitApp(user);
     
     // confirm that containerId is calculated based on epoch.

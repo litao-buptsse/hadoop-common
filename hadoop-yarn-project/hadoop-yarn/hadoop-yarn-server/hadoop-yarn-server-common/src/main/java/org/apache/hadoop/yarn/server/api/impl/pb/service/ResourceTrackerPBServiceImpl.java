@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.api.impl.pb.service;
 
 import java.io.IOException;
+import java.util.List;
 
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.proto.YarnServerCommonServiceProtos.NodeHeartbeatRequestProto;

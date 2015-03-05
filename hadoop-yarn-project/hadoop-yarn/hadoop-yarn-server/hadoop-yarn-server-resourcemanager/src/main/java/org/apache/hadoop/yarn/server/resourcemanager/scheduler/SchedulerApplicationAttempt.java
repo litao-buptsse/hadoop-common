@@ -66,7 +66,7 @@ import com.google.common.collect.Multiset;
  */
 @Private
 @Unstable
-public class SchedulerApplicationAttempt {
+public class SchedulerApplicationAttempt implements Comparable<SchedulerApplicationAttempt> {
   
   private static final Log LOG = LogFactory
     .getLog(SchedulerApplicationAttempt.class);
@@ -122,12 +122,12 @@ public class SchedulerApplicationAttempt {
   
   public SchedulerApplicationAttempt(ApplicationAttemptId applicationAttemptId, 
       String user, Queue queue, ActiveUsersManager activeUsersManager,
-      RMContext rmContext) {
+      SchedulerLabelsManager labelsManager, RMContext rmContext) {
     Preconditions.checkNotNull("RMContext should not be null", rmContext);
     this.rmContext = rmContext;
     this.appSchedulingInfo = 
         new AppSchedulingInfo(applicationAttemptId, user, queue,  
-            activeUsersManager, rmContext.getEpoch());
+            activeUsersManager, labelsManager, rmContext.getEpoch());
     this.queue = queue;
     this.pendingRelease = new HashSet<ContainerId>();
     if (rmContext.getRMApps() != null &&
@@ -260,21 +260,21 @@ public class SchedulerApplicationAttempt {
   public synchronized void updateResourceRequests(
       List<ResourceRequest> requests) {
     if (!isStopped) {
-      appSchedulingInfo.updateResourceRequests(requests, false);
+      appSchedulingInfo.updateResourceRequests(this, requests, false);
     }
   }
   
   public synchronized void recoverResourceRequests(
       List<ResourceRequest> requests) {
     if (!isStopped) {
-      appSchedulingInfo.updateResourceRequests(requests, true);
+      appSchedulingInfo.updateResourceRequests(this, requests, true);
     }
   }
   
   public synchronized void stop(RMAppAttemptState rmAppAttemptFinalState) {
     // Cleanup all scheduling information
     isStopped = true;
-    appSchedulingInfo.stop(rmAppAttemptFinalState);
+    appSchedulingInfo.stop(this, rmAppAttemptFinalState);
   }
 
   public synchronized boolean isStopped() {
@@ -592,6 +592,19 @@ public class SchedulerApplicationAttempt {
     appSchedulingInfo.move(newQueue);
     this.queue = newQueue;
   }
+
+	public synchronized void addInvalidLabel(String label) {
+		appSchedulingInfo.addInvalidLabel(label);
+	}
+
+	public synchronized Collection<String> getAndResetInvalidLabels() {
+		return appSchedulingInfo.getAndResetInvalidLabels();
+	}
+
+	@Override
+	public int compareTo(SchedulerApplicationAttempt o) {
+		return getApplicationAttemptId().compareTo(o.getApplicationAttemptId());
+	}  
 
   public synchronized void recoverContainer(RMContainer rmContainer) {
     // recover app scheduling info

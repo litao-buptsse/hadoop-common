@@ -40,12 +40,18 @@ public class RMNodeWrapper implements RMNode {
   private RMNode node;
   private List<UpdatedContainerInfo> updates;
   private boolean pulled = false;
-  
+  private List<String> labels;
+
   public RMNodeWrapper(RMNode node) {
     this.node = node;
     updates = node.pullContainerUpdates();
   }
-  
+ 
+  @Override
+  public List<String> getLabels() {
+    return labels;
+  }
+
   @Override
   public NodeId getNodeID() {
     return node.getNodeID();

@@ -182,6 +182,7 @@ public class RMContainerAllocator extends RMContainerRequestor
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
     super.serviceInit(conf);
+	scheduledRequests.setTaskLabel(getConfig().get("yarn.task.label"));
     reduceSlowStart = conf.getFloat(
         MRJobConfig.COMPLETED_MAPS_FOR_REDUCE_SLOWSTART, 
         DEFAULT_COMPLETED_MAPS_PERCENT_FOR_REDUCE_SLOWSTART);
@@ -855,6 +856,12 @@ public class RMContainerAllocator extends RMContainerRequestor
     private final LinkedHashMap<TaskAttemptId, ContainerRequest> reduces = 
       new LinkedHashMap<TaskAttemptId, ContainerRequest>();
     
+	private String taskLabel;
+
+	void setTaskLabel(String taskLabel) {
+	  this.taskLabel = taskLabel;
+	}
+
     boolean remove(TaskAttemptId tId) {
       ContainerRequest req = null;
       if (tId.getTaskId().getTaskType().equals(TaskType.MAP)) {
@@ -915,13 +922,13 @@ public class RMContainerAllocator extends RMContainerRequestor
        request = new ContainerRequest(event, PRIORITY_MAP);
       }
       maps.put(event.getAttemptID(), request);
-      addContainerReq(request);
+      addContainerReq(request, taskLabel);
     }
     
     
     void addReduce(ContainerRequest req) {
       reduces.put(req.attemptID, req);
-      addContainerReq(req);
+      addContainerReq(req, taskLabel);
     }
     
     // this method will change the list of allocatedContainers.
@@ -1007,7 +1014,7 @@ public class RMContainerAllocator extends RMContainerRequestor
             else {
               reduces.put(newReq.attemptID, newReq);
             }
-            addContainerReq(newReq);
+            addContainerReq(newReq, taskLabel);
           }
           else {
             LOG.info("Could not map allocated container to a valid request."

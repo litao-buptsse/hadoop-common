@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.rmnode;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
@@ -124,7 +125,9 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
 
   private NodeHeartbeatResponse latestNodeHeartBeatResponse = recordFactory
       .newRecordInstance(NodeHeartbeatResponse.class);
-  
+
+  private final List<String> labels;
+
   private static final StateMachineFactory<RMNodeImpl,
                                            NodeState,
                                            RMNodeEventType,
@@ -220,7 +223,8 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
                              RMNodeEvent> stateMachine;
 
   public RMNodeImpl(NodeId nodeId, RMContext context, String hostName,
-      int cmPort, int httpPort, Node node, Resource capability, String nodeManagerVersion) {
+      int cmPort, int httpPort, Node node, Resource capability, String nodeManagerVersion,
+	  List<String> labels) {
     this.nodeId = nodeId;
     this.context = context;
     this.hostName = hostName;
@@ -235,6 +239,8 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
     this.nodeManagerVersion = nodeManagerVersion;
 
     this.latestNodeHeartBeatResponse.setResponseId(0);
+
+	this.labels = labels;
 
     ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     this.readLock = lock.readLock();
@@ -506,7 +512,7 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
 
   public static class AddNodeTransition implements
       SingleArcTransition<RMNodeImpl, RMNodeEvent> {
-
+	
     @Override
     public void transition(RMNodeImpl rmNode, RMNodeEvent event) {
       // Inform the scheduler
@@ -549,6 +555,16 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
   public static class ReconnectNodeTransition implements
       SingleArcTransition<RMNodeImpl, RMNodeEvent> {
 
+	  private boolean theSameLabels(RMNode node1, RMNode node2) {
+	    List<String> labels1 = node1.getLabels();
+	    List<String> labels2 = node2.getLabels();
+	    if ((labels1 == null) && (labels2 == null)) {
+		    return true;
+	    }
+
+	    return labels1.equals(labels2)? true : false;
+	  }
+
     @Override
     public void transition(RMNodeImpl rmNode, RMNodeEvent event) {
       RMNodeReconnectEvent reconnectEvent = (RMNodeReconnectEvent) event;
@@ -565,7 +581,7 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
         rmNode.context.getDispatcher().getEventHandler().handle(
             new NodeRemovedSchedulerEvent(rmNode));
         
-        if (rmNode.getHttpPort() == newNode.getHttpPort()) {
+        if (rmNode.getHttpPort() == newNode.getHttpPort() && theSameLabels(rmNode, newNode)) {
           // Reset heartbeat ID since node just restarted.
           rmNode.getLastNodeHeartBeatResponse().setResponseId(0);
           if (rmNode.getState() != NodeState.UNHEALTHY) {
@@ -848,6 +864,11 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
   @VisibleForTesting
   public int getQueueSize() {
     return nodeUpdateQueue.size();
+  }
+
+  @Override
+  public List<String> getLabels() {
+	return labels;
   }
 
   // For test only.

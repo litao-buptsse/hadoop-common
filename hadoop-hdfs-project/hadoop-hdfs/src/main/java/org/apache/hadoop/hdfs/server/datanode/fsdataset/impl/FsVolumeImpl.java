@@ -59,6 +59,8 @@ class FsVolumeImpl implements FsVolumeSpi {
   private final File currentDir;    // <StorageDirectory>/current
   private final DF usage;           
   private final long reserved;
+	private boolean useDF = false;
+	
   /**
    * Per-volume worker pool that processes new blocks to cache.
    * The maximum number of workers per volume is bounded (configurable via
@@ -78,6 +80,8 @@ class FsVolumeImpl implements FsVolumeSpi {
     File parent = currentDir.getParentFile();
     this.usage = new DF(parent, conf);
     this.storageType = storageType;
+		this.useDF = conf.getBoolean("hdfs.use.df.check.usage", false);
+
     final int maxNumThreads = dataset.datanode.getConf().getInt(
         DFSConfigKeys.DFS_DATANODE_FSDATASETCACHE_MAX_THREADS_PER_VOLUME_KEY,
         DFSConfigKeys.DFS_DATANODE_FSDATASETCACHE_MAX_THREADS_PER_VOLUME_DEFAULT
@@ -113,12 +117,16 @@ class FsVolumeImpl implements FsVolumeSpi {
   
   long getDfsUsed() throws IOException {
     long dfsUsed = 0;
-    synchronized(dataset) {
-      for(BlockPoolSlice s : bpSlices.values()) {
-        dfsUsed += s.getDfsUsed();
-      }
-    }
-    return dfsUsed;
+		synchronized(dataset) {
+			if(!useDF) {  
+				for(BlockPoolSlice s : bpSlices.values()) {
+					dfsUsed += s.getDfsUsed();
+				}
+			} else {
+				dfsUsed = bpSlices.values().toArray(new BlockPoolSlice[bpSlices.values().size()])[0].getDfsUsed();
+			}
+		}
+		return dfsUsed;
   }
 
   long getBlockPoolUsed(String bpid) throws IOException {

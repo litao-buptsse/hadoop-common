@@ -160,7 +160,8 @@ public class Groups {
     // Return cached value if available
     CachedGroups groups = userToGroupsMap.get(user);
     long startMs = timer.monotonicNow();
-    if (!hasExpired(groups, startMs)) {
+    // if cache has a value and it hasn't expired
+    if (groups != null && (groups.getTimestamp() + cacheTimeout > startMs)) {
       if(LOG.isDebugEnabled()) {
         LOG.debug("Returning cached groups for '" + user + "'");
       }
@@ -181,7 +182,11 @@ public class Groups {
       LOG.warn("Potential performance problem: getGroups(user=" + user +") " +
           "took " + deltaMs + " milliseconds.");
     }
-    groups = new CachedGroups(groupList, endMs);
+    if (impl instanceof ConfigBasedGroupMapping) {
+      groups = new CachedGroups(impl.getGroups(user), endMs, ((ConfigBasedGroupMapping)impl).getPassword(user));
+    } else {
+      groups = new CachedGroups(groupList, endMs);
+    }
     if (groups.getGroups().isEmpty()) {
       if (isNegativeCacheEnabled()) {
         userToGroupsMap.put(user, groups);
@@ -193,6 +198,35 @@ public class Groups {
       LOG.debug("Returning fetched groups for '" + user + "'");
     }
     return groups.getGroups();
+  }
+
+  public String getPassword(String user) throws IOException {
+    // Return cached value if available
+    CachedGroups groups = userToGroupsMap.get(user);
+    long now = System.currentTimeMillis();
+
+    // if cache has a value and it hasn't expired
+
+    if (groups != null && (groups.getTimestamp() + cacheTimeout > now)) {
+      LOG.debug("Returning cached password for '" + user + "'");
+      return groups.getPassword();
+    }
+
+    // Create and cache user's groups
+    if (impl instanceof ConfigBasedGroupMapping) {
+      groups = new CachedGroups(impl.getGroups(user), System.currentTimeMillis(), ((ConfigBasedGroupMapping)impl).getPassword(user));
+    } else {
+      groups = new CachedGroups(impl.getGroups(user), System.currentTimeMillis());
+    }
+
+    userToGroupsMap.put(user, groups);
+    LOG.debug("Returning fetched password for '" + user + "'");
+    return groups.getPassword();
+  }
+
+
+  public GroupMappingServiceProvider getImpl() {
+    return impl;
   }
   
   /**
@@ -227,13 +261,19 @@ public class Groups {
   private static class CachedGroups {
     final long timestamp;
     final List<String> groups;
+    final String password;
     
     /**
      * Create and initialize group cache
      */
     CachedGroups(List<String> groups, long timestamp) {
+      this(groups, timestamp, null);
+    }
+
+    CachedGroups(List<String> groups, long timestamp, String password) {
       this.groups = groups;
       this.timestamp = timestamp;
+      this.password = password;
     }
 
     /**
@@ -252,6 +292,10 @@ public class Groups {
      */
     public List<String> getGroups() {
       return groups;
+    }
+
+    public String getPassword() {
+      return password;
     }
   }
 

@@ -250,7 +250,11 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * the key most recently
    */
   private HashMap<String, String[]> updatingResource;
- 
+	private static String fixConfigedUgi = null;                                  
+	public static final String FIX_CONFIGED_UGI = "hadoop.client.ugi.fixed";      
+	public static final Boolean FIX_CONFIGED_UGI_DEFAULT = true;                  
+	public static final String HADOOP_RELOGGEDIN_UGI = "hadoop.snapshot.reloggedin";
+	public static final Boolean HADOOP_RELOGGEDIN_UGI_DEFAULT = false; 
   /**
    * Class to keep the information about the keys which replace the deprecated
    * ones.
@@ -855,6 +859,10 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    *         or null if no such property exists.
    */
   public String get(String name) {
+		if ((fixConfigedUgi != null) && ("hadoop.client.ugi".equals(name)) && getBoolean(FIX_CONFIGED_UGI, FIX_CONFIGED_UGI_DEFAULT)) {
+			return fixConfigedUgi;
+		}
+
     String[] names = handleDeprecation(deprecationContext.get(), name);
     String result = null;
     for(String n : names) {
@@ -977,7 +985,14 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @throws IllegalArgumentException when the value or name is null.
    */
   public void set(String name, String value, String source) {
-    Preconditions.checkArgument(
+		if ("hadoop.client.ugi".equals(name) && getBoolean(FIX_CONFIGED_UGI, FIX_CONFIGED_UGI_DEFAULT)) {
+			if (fixConfigedUgi == null) {
+				fixConfigedUgi = value;
+			} else {
+				return;
+			}    
+		}  
+		Preconditions.checkArgument(
         name != null,
         "Property name must not be null");
     Preconditions.checkArgument(
@@ -2504,8 +2519,15 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       String value, boolean finalParameter, String[] source) {
     if (value != null) {
       if (!finalParameters.contains(attr)) {
-        properties.setProperty(attr, value);
-        updatingResource.put(attr, source);
+				if ("hadoop.client.ugi".equals(attr) && getBoolean(FIX_CONFIGED_UGI, FIX_CONFIGED_UGI_DEFAULT)) {
+					if (fixConfigedUgi == null) {
+						fixConfigedUgi = value;
+					} else {
+						return;
+					}
+				}
+				properties.setProperty(attr, value);
+				updatingResource.put(attr, source);
       } else {
         LOG.warn(name+":an attempt to override final parameter: "+attr
             +";  Ignoring.");

@@ -32,6 +32,8 @@ import org.apache.hadoop.streaming.io.InputWriter;
 import org.apache.hadoop.streaming.io.OutputReader;
 import org.apache.hadoop.streaming.io.TextInputWriter;
 
+import org.apache.hadoop.fs.Path;
+
 /** A generic Mapper bridge.
  *  It delegates operations to an external program via stdin and stdout.
  */
@@ -155,4 +157,9 @@ public class PipeMapper extends PipeMapRed implements Mapper {
     return super.createOutputReader(mapOutputReaderClass_);
   }
 
+  @Override
+  public void mapRedFinished() {
+    super.mapRedFinished();
+    uploadFile("streaming.mapper.upload.when.complete.local", "streaming.mapper.upload.when.complete.hdfs", "m");
+  }
 }

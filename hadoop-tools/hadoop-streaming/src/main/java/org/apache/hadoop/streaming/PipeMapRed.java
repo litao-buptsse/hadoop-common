@@ -40,6 +40,11 @@ import org.apache.hadoop.util.LineReader;
 import org.apache.hadoop.util.ReflectionUtils;
 
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.fs.Path;
+
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocalFileSystem;
+import org.apache.hadoop.fs.FileStatus;
 
 /** Shared functionality for PipeMapper, PipeReducer.
  */
@@ -151,6 +156,7 @@ public abstract class PipeMapRed {
       joinDelay_ = job.getLong("stream.joindelay.milli", 0);
 
       job_ = job;
+			fs_ = FileSystem.get(job_);
       
       mapInputWriterClass_ = 
         job_.getClass("stream.map.input.writer.class", 
@@ -515,6 +521,56 @@ public abstract class PipeMapRed {
     private final String statusPrefix;
   }
 
+  public void uploadFile(String srcConf, String dstConf, String dirPrefix) {
+    String uploadLocal = job_.get(srcConf);
+    String uploadHdfs = job_.get(dstConf);
+    if ((uploadLocal != null) && (uploadHdfs != null)) {
+      String appendence = null;
+      String fixAppendence = job_.get("streaming.job.output.fixappendence");
+      if (fixAppendence != null) {
+        appendence = fixAppendence;
+      } else {
+        String taskIdString = job_.get("mapred.task.id");
+        String[] ids = taskIdString.split("_");
+        appendence = ids[ids.length - 2];
+      }
+
+      String[] uploadLocals = uploadLocal.split(",");
+      String[] uploadHdfses = uploadHdfs.split(",");
+      int minDirLen = Math.min(uploadLocals.length, uploadHdfses.length);
+      for (int i = 0; i < minDirLen; i ++) {
+        Path src = new Path(uploadLocals[i]);
+        Path dst = null;
+        try {
+          if (uploadLocals[i].indexOf("*") >= 0) {
+            int pathLen = uploadHdfses[i].length();
+            if (!"/".equals(uploadHdfses[i].substring(pathLen - 1))) {
+              uploadHdfses[i] = uploadHdfses[i] + "/";
+            }
+            dst = new Path(uploadHdfses[i] + dirPrefix + appendence);
+            if (!fs_.exists(dst)) {
+              fs_.mkdirs(dst);
+            }
+          } else {
+            dst = new Path(uploadHdfses[i] + appendence);
+          }
+
+		  		LOG.info("Upload local file " + src + " to " + dst);
+
+          LocalFileSystem localFs = FileSystem.getLocal(job_);
+          FileStatus[] srcs = localFs.globStatus(src);
+
+          for (FileStatus status : srcs) {
+            Path p = status.getPath();
+            fs_.moveFromLocalFile(p, dst);
+          }
+        } catch (Exception e) {
+          LOG.warn("Upload local file fail when the task completed: " + e);
+        }
+      }
+    }
+  }
+
   public void mapRedFinished() {
     try {
       if (!doPipe_) {
@@ -523,6 +579,9 @@ public abstract class PipeMapRed {
       }
       if (clientOut_ != null) {
         try {
+		  if (job_.getBoolean("streaming.send.zero.length.data.when.complete", false)) {
+            clientOut_.writeInt(0);
+          } 
           clientOut_.flush();
           clientOut_.close();
         } catch (IOException io) {
@@ -594,6 +653,7 @@ public abstract class PipeMapRed {
   long reporterErrDelay_ = 10*1000L; 
   long joinDelay_;
   JobConf job_;
+  FileSystem fs_;
 
   boolean doPipe_;
 

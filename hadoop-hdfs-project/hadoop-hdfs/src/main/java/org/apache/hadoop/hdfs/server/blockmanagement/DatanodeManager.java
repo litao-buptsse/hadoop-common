@@ -136,9 +136,6 @@ public class DatanodeManager {
   /** The number of stale DataNodes */
   private volatile int numStaleNodes;
 
-  /** The number of stale storages */
-  private volatile int numStaleStorages;
-
   /**
    * Number of blocks to check for each postponedMisreplicatedBlocks iteration
    */
@@ -164,6 +161,9 @@ public class DatanodeManager {
    */
   private HashMap<String, Integer> datanodesSoftwareVersions =
     new HashMap<String, Integer>(4, 0.75f);
+  
+  /** The number of stale storages */
+  private volatile int numStaleStorages;
   
   /**
    * The minimum time between resending caching directives to Datanodes,

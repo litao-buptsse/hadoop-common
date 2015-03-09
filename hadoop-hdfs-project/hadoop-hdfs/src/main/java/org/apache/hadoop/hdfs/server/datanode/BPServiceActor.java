@@ -757,7 +757,8 @@ class BPServiceActor implements Runnable {
           Thread.currentThread().interrupt();
         }
       } catch (IOException e) {
-        LOG.warn("IOException in offerService", e);
+        LOG.warn("IOException in offerService, maybe disk error", e);
+        this.dn.checkDiskError();
       }
     } // while (shouldRun())
   } // offerService

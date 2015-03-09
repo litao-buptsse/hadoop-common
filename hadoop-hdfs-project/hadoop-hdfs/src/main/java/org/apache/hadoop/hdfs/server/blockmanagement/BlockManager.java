@@ -1032,6 +1032,19 @@ public class BlockManager {
     invalidateBlocks.remove(node);
   }
 
+  /** Remove the blocks associated to the given DatanodeStorageInfo. */
+  void removeBlocksAssociatedTo(final DatanodeStorageInfo storageInfo) {
+    assert namesystem.hasWriteLock();
+    final Iterator<? extends Block> it = storageInfo.getBlockIterator();
+    DatanodeDescriptor node = storageInfo.getDatanodeDescriptor();
+    while(it.hasNext()) {
+      Block block = it.next();
+      removeStoredBlock(block, node);
+      invalidateBlocks.remove(storageInfo.getStorageID(), block);
+    }
+    namesystem.checkSafeMode();
+  }
+
   /**
    * Adds block to list of blocks which will be invalidated on specified
    * datanode and log the operation
@@ -1726,6 +1739,7 @@ public class BlockManager {
       // To minimize startup time, we discard any second (or later) block reports
       // that we receive while still in startup phase.
       DatanodeStorageInfo storageInfo = node.getStorageInfo(storage.getStorageID());
+      
 
       if (storageInfo == null) {
         // We handle this for backwards compatibility.

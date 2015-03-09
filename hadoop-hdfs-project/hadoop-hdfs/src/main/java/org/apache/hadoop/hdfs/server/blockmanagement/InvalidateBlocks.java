@@ -136,6 +136,25 @@ class InvalidateBlocks {
       }
     }
   }
+  
+  /** Remove a storage from the invalidatesSet */
+  synchronized void remove(final String storageID) {
+    final LightWeightHashSet<Block> blocks = node2blocks.remove(storageID);
+    if (blocks != null) {
+      numBlocks -= blocks.size();
+    }
+  }
+
+  /** Remove the block from the specified storage. */
+  synchronized void remove(final String storageID, final Block block) {
+    final LightWeightHashSet<Block> v = node2blocks.get(storageID);
+    if (v != null && v.remove(block)) {
+      numBlocks--;
+      if (v.isEmpty()) {
+        node2blocks.remove(storageID);
+      }
+    }
+  }
 
   /** Print the contents to out. */
   synchronized void dump(final PrintWriter out) {

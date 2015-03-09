@@ -96,7 +96,7 @@ class UnderReplicatedBlocks implements Iterable<Block> {
       priorityQueues.add(new LightWeightLinkedSet<Block>());
       priorityToReplIdx.put(i, 0);
     }
-  }
+  } 
 
   /**
    * Empty the queues.

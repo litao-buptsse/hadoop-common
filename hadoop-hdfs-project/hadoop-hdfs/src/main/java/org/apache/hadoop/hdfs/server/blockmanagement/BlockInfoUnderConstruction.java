@@ -320,7 +320,7 @@ public class BlockInfoUnderConstruction extends BlockInfo {
 
   void addReplicaIfNotPresent(DatanodeStorageInfo storage,
                      Block block,
-                     ReplicaState rState) {
+                     ReplicaState rState) { 
     Iterator<ReplicaUnderConstruction> it = replicas.iterator();
     while (it.hasNext()) {
       ReplicaUnderConstruction r = it.next();
@@ -329,7 +329,7 @@ public class BlockInfoUnderConstruction extends BlockInfo {
         // Record the gen stamp from the report
         r.setGenerationStamp(block.getGenerationStamp());
         return;
-      } else if (expectedLocation != null &&
+      } else if (expectedLocation != null && 
                  expectedLocation.getDatanodeDescriptor() ==
                      storage.getDatanodeDescriptor()) {
 

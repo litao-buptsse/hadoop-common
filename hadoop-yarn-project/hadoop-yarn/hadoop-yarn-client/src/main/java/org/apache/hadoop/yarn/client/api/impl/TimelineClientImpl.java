@@ -43,6 +43,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.yarn.api.records.timeline.TimelineDomain;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
@@ -126,6 +127,45 @@ public class TimelineClientImpl extends TimelineClient {
   }
 
   @Override
+  public void putDomain(TimelineDomain domain) throws IOException,
+      YarnException {
+    if (!isEnabled) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Nothing will be put because timeline service is not enabled");
+      }
+      return;
+    }
+    doPosting(domain, "domain");
+  }
+
+  private ClientResponse doPosting(Object obj, String path) throws IOException, YarnException {
+    ClientResponse resp = null;
+    try {
+      resp = doPostingObject(obj, path);
+    } catch (RuntimeException re) {
+      // runtime exception is expected if the client cannot connect the server
+      String msg =
+          "Failed to get the response from the timeline server.";
+      LOG.error(msg, re);
+      //throw re;
+    }
+    if (resp == null ||
+        resp.getClientResponseStatus() != ClientResponse.Status.OK) {
+      String msg =
+          "Failed to get the response from the timeline server.";
+      LOG.error(msg);
+      if (LOG.isDebugEnabled() && resp != null) {
+        String output = resp.getEntity(String.class);
+        LOG.debug("HTTP error code: " + resp.getStatus()
+            + " Server response : \n" + output);
+      }
+      //throw new YarnException(msg);
+    }
+    return null;
+  }
+
+
+  @Override
   public TimelinePutResponse putEntities(
       TimelineEntity... entities) throws IOException, YarnException {
     if (!isEnabled) {
@@ -166,6 +206,23 @@ public class TimelineClientImpl extends TimelineClient {
       String renewer) throws IOException, YarnException {
     return TimelineAuthenticator.getDelegationToken(resURI.toURL(),
         urlFactory.token, renewer);
+  }
+
+  @Private
+  @VisibleForTesting
+  public ClientResponse doPostingObject(Object object, String path) {
+    WebResource webResource = client.resource(resURI);
+    if (path == null) {
+      return webResource.accept(MediaType.APPLICATION_JSON)
+          .type(MediaType.APPLICATION_JSON)
+          .post(ClientResponse.class, object);
+    } else if (path.equals("domain")) {
+      return webResource.path(path).accept(MediaType.APPLICATION_JSON)
+          .type(MediaType.APPLICATION_JSON)
+          .put(ClientResponse.class, object);
+    } else {
+      throw new YarnRuntimeException("Unknown resource type");
+    }
   }
 
   @Private

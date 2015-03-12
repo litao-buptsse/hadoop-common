@@ -26,6 +26,7 @@ import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
+import org.apache.hadoop.yarn.api.records.timeline.TimelineDomain;
 import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.client.api.impl.TimelineClientImpl;
 import org.apache.hadoop.yarn.exceptions.YarnException;
@@ -69,6 +70,22 @@ public abstract class TimelineClient extends AbstractService {
 
   /**
    * <p>
+   * Send the information of a domain to the timeline server. It is a
+   * blocking API. The method will not return until it gets the response from
+   * the timeline server.
+   * </p>
+   * 
+   * @param domain
+   *          an {@link TimelineDomain} object
+   * @throws IOException
+   * @throws YarnException
+   */
+  @Public
+  public abstract void putDomain(
+      TimelineDomain domain) throws IOException, YarnException;
+
+  /**
+   * <p>
    * Get a delegation token so as to be able to talk to the timeline server in a
    * secure way.
    * </p>
@@ -84,5 +101,17 @@ public abstract class TimelineClient extends AbstractService {
   @Public
   public abstract Token<TimelineDelegationTokenIdentifier> getDelegationToken(
       String renewer) throws IOException, YarnException;
+
+  /**
+   * <p>
+   * Renew a timeline delegation token.
+   * </p>
+   * 
+   * @param timelineDT
+   *          the delegation token to renew
+   * @return the new expiration time
+   * @throws IOException
+   * @throws YarnException
+   */
 
 }

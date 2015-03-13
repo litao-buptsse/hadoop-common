@@ -217,9 +217,7 @@ public class TimelineClientImpl extends TimelineClient {
           .type(MediaType.APPLICATION_JSON)
           .post(ClientResponse.class, object);
     } else if (path.equals("domain")) {
-      return webResource.path(path).accept(MediaType.APPLICATION_JSON)
-          .type(MediaType.APPLICATION_JSON)
-          .put(ClientResponse.class, object);
+      return null;
     } else {
       throw new YarnRuntimeException("Unknown resource type");
     }

@@ -325,6 +325,20 @@ public class YarnConfiguration extends Configuration {
   public static final int DEFAULT_RM_HISTORY_WRITER_MULTI_THREADED_DISPATCHER_POOL_SIZE =
       10;
 
+  /**
+   *  The setting that controls whether yarn system metrics is published on the
+   *  timeline server or not by RM.
+   */
+  public static final String RM_SYSTEM_METRICS_PUBLISHER_ENABLED =
+      RM_PREFIX + "system-metrics-publisher.enabled";
+  public static final boolean DEFAULT_RM_SYSTEM_METRICS_PUBLISHER_ENABLED = false;
+
+  public static final String RM_SYSTEM_METRICS_PUBLISHER_DISPATCHER_POOL_SIZE =
+      RM_PREFIX + "system-metrics-publisher.dispatcher.pool-size";
+  public static final int DEFAULT_RM_SYSTEM_METRICS_PUBLISHER_DISPATCHER_POOL_SIZE =
+      10;
+
+
   //Delegation token related keys
   public static final String  DELEGATION_KEY_UPDATE_INTERVAL_KEY = 
     RM_PREFIX + "delegation.key.update-interval";
@@ -1271,6 +1285,32 @@ public class YarnConfiguration extends Configuration {
   /** The Kerberos keytab for the timeline server.*/
   public static final String TIMELINE_SERVICE_KEYTAB =
       TIMELINE_SERVICE_PREFIX + "keytab";
+
+	/** Enables cross origin support for timeline server.*/
+  public static final String TIMELINE_SERVICE_HTTP_CROSS_ORIGIN_ENABLED =
+      TIMELINE_SERVICE_PREFIX + "http-cross-origin.enabled";
+
+  /** Default value for cross origin support for timeline server.*/
+  public static final boolean
+      TIMELINE_SERVICE_HTTP_CROSS_ORIGIN_ENABLED_DEFAULT = false;
+
+  /** Timeline client settings */
+  public static final String TIMELINE_SERVICE_CLIENT_PREFIX =
+      TIMELINE_SERVICE_PREFIX + "client.";
+
+  /** Timeline client call, max retries (-1 means no limit) */
+  public static final String TIMELINE_SERVICE_CLIENT_MAX_RETRIES =
+      TIMELINE_SERVICE_CLIENT_PREFIX + "max-retries";
+
+  public static final int DEFAULT_TIMELINE_SERVICE_CLIENT_MAX_RETRIES = 30;
+
+  /** Timeline client call, retry interval */
+  public static final String TIMELINE_SERVICE_CLIENT_RETRY_INTERVAL_MS =
+      TIMELINE_SERVICE_CLIENT_PREFIX + "retry-interval-ms";
+
+  public static final long
+      DEFAULT_TIMELINE_SERVICE_CLIENT_RETRY_INTERVAL_MS = 1000;
+
 
   ////////////////////////////////
   // Other Configs

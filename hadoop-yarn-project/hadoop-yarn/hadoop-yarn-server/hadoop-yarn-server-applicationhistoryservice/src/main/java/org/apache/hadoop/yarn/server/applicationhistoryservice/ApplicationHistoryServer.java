@@ -44,6 +44,7 @@ import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineAuthenticationFilterInitializer;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineDelegationTokenSecretManagerService;
+import org.apache.hadoop.yarn.server.timeline.webapp.CrossOriginFilterInitializer;
 import org.apache.hadoop.yarn.webapp.WebApp;
 import org.apache.hadoop.yarn.webapp.WebApps;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
@@ -181,21 +182,34 @@ public class ApplicationHistoryServer extends CompositeService {
     // Play trick to make the customized filter will only be loaded by the
     // timeline server when security is enabled and Kerberos authentication
     // is used.
-    if (UserGroupInformation.isSecurityEnabled()
-        && conf
-            .get(TimelineAuthenticationFilterInitializer.PREFIX + "type", "")
-            .equals("kerberos")) {
+    //if (UserGroupInformation.isSecurityEnabled()
+    //    && conf
+     //       .get(TimelineAuthenticationFilterInitializer.PREFIX + "type", "")
+     //       .equals("kerberos")) {
       String initializers = conf.get("hadoop.http.filter.initializers");
-      initializers =
-          initializers == null || initializers.length() == 0 ? "" : ","
-              + initializers;
-      if (!initializers.contains(
-          TimelineAuthenticationFilterInitializer.class.getName())) {
-        conf.set("hadoop.http.filter.initializers",
-            TimelineAuthenticationFilterInitializer.class.getName()
-            + initializers);
-      }
-    }
+
+			if (!initializers.contains(CrossOriginFilterInitializer.class.getName())) {
+				if(conf.getBoolean(YarnConfiguration
+							.TIMELINE_SERVICE_HTTP_CROSS_ORIGIN_ENABLED, YarnConfiguration
+							.TIMELINE_SERVICE_HTTP_CROSS_ORIGIN_ENABLED_DEFAULT)) {
+					initializers = CrossOriginFilterInitializer.class.getName() + ","
+						+ initializers;
+					conf.set("hadoop.http.filter.initializers", initializers);
+					LOG.info("initializers : xxx : " + initializers);
+				}
+			}
+
+
+//      initializers =
+//          initializers == null || initializers.length() == 0 ? "" : ","
+//              + initializers;
+//      if (!initializers.contains(
+//          TimelineAuthenticationFilterInitializer.class.getName())) {
+//        conf.set("hadoop.http.filter.initializers",
+//            TimelineAuthenticationFilterInitializer.class.getName()
+//            + initializers);
+//      }
+    //}
     String bindAddress = WebAppUtils.getWebAppBindURL(conf,
                           YarnConfiguration.TIMELINE_SERVICE_BIND_HOST,
                           WebAppUtils.getAHSWebAppURLWithoutScheme(conf));

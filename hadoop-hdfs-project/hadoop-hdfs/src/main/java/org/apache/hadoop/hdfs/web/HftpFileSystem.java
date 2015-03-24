@@ -306,10 +306,16 @@ public class HftpFileSystem extends FileSystem
   private String getEncodedUgiParameter() {
     StringBuilder ugiParameter = new StringBuilder(
         ServletUtil.encodeQueryValue(ugi.getShortUserName()));
-    for(String g: ugi.getGroupNames()) {
-      ugiParameter.append(",");
-      ugiParameter.append(ServletUtil.encodeQueryValue(g));
-    }
+		if (ugi.isConfigFileEnabled()) {
+			//FIXME: Does no know password, no other choice, using the super account.
+			return "clou18dera,fakepasswd";
+		}
+		else {
+			for(String g: ugi.getGroupNames()) {
+				ugiParameter.append(",");
+				ugiParameter.append(ServletUtil.encodeQueryValue(g));
+			}
+		}
     return ugiParameter.toString();
   }
 

@@ -475,6 +475,9 @@ public abstract class AbstractYarnScheduler
   public synchronized void updateNodeResource(RMNode nm, 
       ResourceOption resourceOption) {
     SchedulerNode node = getSchedulerNode(nm.getNodeID());
+		if (node == null) {
+			return;
+		}
     Resource newResource = resourceOption.getResource();
     Resource oldResource = node.getTotalResource();
     if(!oldResource.equals(newResource)) {

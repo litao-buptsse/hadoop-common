@@ -54,6 +54,7 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
+import org.apache.hadoop.hdfs.StorageType;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -973,7 +974,7 @@ public abstract class BlockFixer extends Configured implements Runnable {
 		CachingStrategy cachingStrategy = new CachingStrategy(true, getConf().getLong(DFSConfigKeys.DFS_DATANODE_READAHEAD_BYTES_KEY,
 							        DFSConfigKeys.DFS_DATANODE_READAHEAD_BYTES_DEFAULT));
 		String clientname = getDFS(new Path("/")).getClient().getClientName();
-		new Sender(out).writeBlock(block.getBlock(), block.getStorageTypes()[0], accessToken, clientname, targets, block.getStorageTypes(), srcNode,
+		new Sender(out).writeBlock(block.getBlock(), StorageType.DEFAULT, accessToken, clientname, targets, new StorageType[0], srcNode,
 				            BlockConstructionStage.TRANSFER_FINALIZED, 0, 0, 0, 0, blockSender.getChecksum(), cachingStrategy);
 
 		LOG.info("Sending block " + block.getBlock() + " to " + datanode.getXferAddr());

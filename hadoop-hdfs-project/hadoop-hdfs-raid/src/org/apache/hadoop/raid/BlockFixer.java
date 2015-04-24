@@ -524,6 +524,10 @@ public abstract class BlockFixer extends Configured implements Runnable {
       }
       return null;
     }
+ 
+		protected FileSystem getViewFS(Path p) throws IOException {
+      return p.getFileSystem(new Configuration());
+    }
     
 
    /**
@@ -599,11 +603,12 @@ public abstract class BlockFixer extends Configured implements Runnable {
         return false;
       }
 
-      DistributedFileSystem parityFs = getDFS(parityPath);
+			Path newParityPath = new Path("viewfs://nsX" + parityPath.toUri().getPath());
+      FileSystem parityFs = getViewFS(newParityPath);
       FileStatus parityStat = parityFs.getFileStatus(parityPath);
       long blockSize = parityStat.getBlockSize();
       long parityFileSize = parityStat.getLen();
-      FileStatus srcStat = getDFS(srcPath).getFileStatus(srcPath);
+      FileStatus srcStat = getViewFS(srcPath).getFileStatus(srcPath);
       long srcFileSize = srcStat.getLen();
 
           // Check timestamp.
@@ -615,8 +620,21 @@ public abstract class BlockFixer extends Configured implements Runnable {
 
       String uriPath = parityPath.toUri().getPath();
       int numBlocksFixed = 0;
+
+			DistributedFileSystem actrualFS = null;
+			if(parityFs instanceof org.apache.hadoop.fs.viewfs.ViewFileSystem) {
+				for(FileSystem fss : parityFs.getChildFileSystems()) {
+					if(fss.exists(parityPath)) {
+						actrualFS = (DistributedFileSystem)fss;	
+					}
+				}
+			}
+			else {
+				actrualFS = (DistributedFileSystem)parityFs;
+			}
+
       List<LocatedBlock> corrupt =
-        RaidDFSUtil.corruptBlocksInFile(parityFs, uriPath, 0, parityFileSize);
+        RaidDFSUtil.corruptBlocksInFile(actrualFS, uriPath, 0, parityFileSize);
       if (corrupt.size() == 0) {
         return false;
       }
@@ -994,11 +1012,11 @@ public abstract class BlockFixer extends Configured implements Runnable {
       String parityPathStr = parityPath.toUri().getPath();
       if (parityPathStr.startsWith(xorPrefix)) {
         // Remove the prefix to get the source file.
-        String src = parityPathStr.replaceFirst(xorPrefix, "/");
+        String src = parityPathStr.replaceFirst(xorPrefix, "viewfs://nsX/");
         return new Path(src);
       } else if (parityPathStr.startsWith(rsPrefix)) {
         // Remove the prefix to get the source file.
-        String src = parityPathStr.replaceFirst(rsPrefix, "/");
+        String src = parityPathStr.replaceFirst(rsPrefix, "viewfs://nsX/");
         return new Path(src);
       }
       return null;

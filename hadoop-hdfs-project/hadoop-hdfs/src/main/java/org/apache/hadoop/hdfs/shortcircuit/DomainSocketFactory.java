@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -185,4 +186,9 @@ public class DomainSocketFactory {
   public void disableDomainSocketPath(String path) {
     pathMap.put(path, PathState.UNUSABLE);
   }
+
+	@VisibleForTesting
+	public void clearPathMap() {
+		pathMap.invalidateAll();
+	}
 }

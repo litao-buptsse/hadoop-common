@@ -99,10 +99,13 @@ public class MockNodes {
     private long lastHealthReportTime;
     private NodeState state;
 		private List<String> labels;
+    private List<UpdatedContainerInfo> updatedContainerInfoList
+            = new ArrayList<UpdatedContainerInfo>();
 
     public MockRMNodeImpl(NodeId nodeId, String nodeAddr, String httpAddress,
         Resource perNode, String rackName, String healthReport,
-        long lastHealthReportTime, int cmdPort, String hostName, NodeState state) {
+        long lastHealthReportTime, int cmdPort, String hostName, NodeState state,
+        List<UpdatedContainerInfo> updatedContainerInfoList) {
       this.nodeId = nodeId;
       this.nodeAddr = nodeAddr;
       this.httpAddress = httpAddress;
@@ -113,6 +116,8 @@ public class MockNodes {
       this.cmdPort = cmdPort;
       this.hostName = hostName;
       this.state = state;
+      if(updatedContainerInfoList != null)
+        this.updatedContainerInfoList = updatedContainerInfoList;
     }
 
     @Override
@@ -191,9 +196,12 @@ public class MockNodes {
 
     @Override
     public List<UpdatedContainerInfo> pullContainerUpdates() {
-      return new ArrayList<UpdatedContainerInfo>();
+      return updatedContainerInfoList;
     }
 
+    public void setUpdatedContainerInfoList(List<UpdatedContainerInfo> list){
+      updatedContainerInfoList = list;
+    }
     @Override
     public String getHealthReport() {
       return healthReport;
@@ -212,11 +220,13 @@ public class MockNodes {
   };
 
   private static RMNode buildRMNode(int rack, final Resource perNode, NodeState state, String httpAddr) {
-    return buildRMNode(rack, perNode, state, httpAddr, NODE_ID++, null, 123);
+    return buildRMNode(rack, perNode, state, httpAddr, NODE_ID++, null, 123,
+            null);
   }
 
   private static RMNode buildRMNode(int rack, final Resource perNode,
-      NodeState state, String httpAddr, int hostnum, String hostName, int port) {
+      NodeState state, String httpAddr, int hostnum, String hostName, int port,
+      List<UpdatedContainerInfo> updatedContainerInfoList) {
     final String rackName = "rack"+ rack;
     final int nid = hostnum;
     final String nodeAddr = hostName + ":" + nid;
@@ -228,7 +238,8 @@ public class MockNodes {
     final String httpAddress = httpAddr;
     String healthReport = (state == NodeState.UNHEALTHY) ? null : "HealthyMe";
     return new MockRMNodeImpl(nodeID, nodeAddr, httpAddress, perNode,
-        rackName, healthReport, 0, nid, hostName, state);
+        rackName, healthReport, 0, nid, hostName, state,
+            updatedContainerInfoList);
   }
 
   public static RMNode nodeInfo(int rack, final Resource perNode,
@@ -241,17 +252,27 @@ public class MockNodes {
   }
 
   public static RMNode newNodeInfo(int rack, final Resource perNode, int hostnum) {
-    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, null, 123);
+    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, null, 123,
+            null);
   }
   
   public static RMNode newNodeInfo(int rack, final Resource perNode,
       int hostnum, String hostName) {
-    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, hostName, 123);
+    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, hostName,
+            123, null);
   }
 
   public static RMNode newNodeInfo(int rack, final Resource perNode,
       int hostnum, String hostName, int port) {
-    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, hostName, port);
+    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, hostName,
+            port,null);
+  }
+
+  public static RMNode newNodeInfo(int rack, final Resource perNode,
+                                   int hostnum, String hostName,
+                                   List<UpdatedContainerInfo> list) {
+    return buildRMNode(rack, perNode, null, "localhost:0", hostnum, hostName,
+            123,list);
   }
 
 }

@@ -810,6 +810,13 @@ public class FairScheduler extends
       return;
     }
 
+    if(!application.getLiveContainersMap().containsKey(container.getId())){
+      LOG.info("Container " + container + " of application attempt " + appId
+              + " is not alive, skip do completedContainer operation on event "
+              + event);
+      return;
+    }
+
     // Get the node on which the container was allocated
     FSSchedulerNode node = getFSSchedulerNode(container.getNodeId());
 

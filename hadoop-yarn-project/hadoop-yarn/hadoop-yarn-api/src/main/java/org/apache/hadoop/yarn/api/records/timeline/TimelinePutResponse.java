@@ -118,6 +118,23 @@ public class TimelinePutResponse {
      */
     public static final int ACCESS_DENIED = 4;
 
+    /**
+     * Error code returned if the entity doesn't have an valid domain ID
+     */
+    public static final int NO_DOMAIN = 5;
+
+    /**
+     * Error code returned if the user is denied to relate the entity to another
+     * one in different domain
+     */
+    public static final int FORBIDDEN_RELATION = 6;
+
+    /**
+     * Error code returned if the entity start time is before the eviction
+     * period of old data.
+     */
+    public static final int EXPIRED_ENTITY = 7;
+
     private String entityId;
     private String entityType;
     private int errorCode;

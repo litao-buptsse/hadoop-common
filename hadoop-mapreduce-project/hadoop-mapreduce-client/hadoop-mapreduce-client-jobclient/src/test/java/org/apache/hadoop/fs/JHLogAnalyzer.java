@@ -57,7 +57,7 @@ import org.apache.hadoop.util.StringUtils;
  * as well as the success or failure of jobs, tasks, and attempts.
  * <p>
  * The analyzer calculates <em>per hour slot utilization</em> for the cluster 
- * as follows.
+ * as follows
  * For each task attempt it divides the time segment from the start of the 
  * attempt t<sub>S</sub> to the finish t<sub>F</sub> into whole hours 
  * [t<sub>0</sub>, ..., t<sub>n</sub>], where t<sub>0</sub> <= t<sub>S</sub> 

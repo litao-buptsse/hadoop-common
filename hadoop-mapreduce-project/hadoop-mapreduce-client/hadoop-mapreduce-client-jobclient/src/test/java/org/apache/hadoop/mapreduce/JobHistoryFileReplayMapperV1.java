@@ -67,6 +67,8 @@ class JobHistoryFileReplayMapperV1 extends
   public void map(IntWritable key, IntWritable val, Context context) throws IOException {
     // collect the apps it needs to process
     TimelineClient tlc = new TimelineClientImpl();
+    tlc.init(context.getConfiguration());
+
     TimelineEntityConverterV1 converter = new TimelineEntityConverterV1();
     JobHistoryFileReplayHelper helper = new JobHistoryFileReplayHelper(context);
     int replayMode = helper.getReplayMode();
@@ -144,7 +146,7 @@ class JobHistoryFileReplayMapperV1 extends
   private void writeAllEntities(TimelineClient tlc,
       Set<TimelineEntity> entitySet, UserGroupInformation ugi)
       throws IOException, YarnException {
-    tlc.putEntities((TimelineEntity[])entitySet.toArray());
+    tlc.putEntities(entitySet.toArray(new TimelineEntity[0] ));
   }
 
   private void writePerEntity(TimelineClient tlc,

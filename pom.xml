@@ -40,6 +40,16 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
   </dependencyManagement>
 
   <distributionManagement>
+    <repository>
+      <id>clouddev.sogou.releases.repo</id>
+      <url>http://cloud.sogou-inc.com/nexus/content/repositories/Release/</url>
+      <name>Sogou Clouddev Releases Repository</name>
+    </repository>
+    <snapshotRepository>
+      <id>clouddev.sogou.snapshots.repo</id>
+      <url>http://cloud.sogou-inc.com/nexus/content/repositories/snapshots/</url>
+      <name>Sogou Clouddev Snapshots Repository</name>
+    </snapshotRepository>
     <site>
       <id>apache.website</id>
       <url>scpexe://people.apache.org/www/hadoop.apache.org/docs/r${project.version}</url>

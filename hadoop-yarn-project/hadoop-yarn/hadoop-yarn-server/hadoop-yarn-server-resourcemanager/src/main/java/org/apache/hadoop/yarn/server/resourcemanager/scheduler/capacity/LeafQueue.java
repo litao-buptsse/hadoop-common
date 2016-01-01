@@ -1215,19 +1215,42 @@ public class LeafQueue extends AbstractCSQueue {
     return (((starvation + requiredContainers) - reservedContainers) > 0);
   }
 
+  private boolean isValidLabel(ResourceRequest request, FiCaSchedulerNode node) {
+    List<String> requestLabels = request.getLabels();
+    if ((requestLabels == null) || (requestLabels.size() == 0)) {
+      return true;
+    }
+
+    List<String> nodeLabels = node.getRMNode().getLabels();
+    if (nodeLabels == null) {
+      return true;
+    }
+
+    for (String requestLabel : requestLabels) {
+      if (nodeLabels.contains(requestLabel)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private CSAssignment assignContainersOnNode(Resource clusterResource,
-      FiCaSchedulerNode node, FiCaSchedulerApp application, Priority priority,
-      RMContainer reservedContainer, boolean needToUnreserve) {
+                                              FiCaSchedulerNode node, FiCaSchedulerApp application, Priority priority,
+                                              RMContainer reservedContainer, boolean needToUnreserve) {
     Resource assigned = Resources.none();
 
     // Data-local
     ResourceRequest nodeLocalResourceRequest =
         application.getResourceRequest(priority, node.getNodeName());
+    if ((nodeLocalResourceRequest != null) && (!isValidLabel(nodeLocalResourceRequest, node))) {
+      nodeLocalResourceRequest = null;
+    }
     if (nodeLocalResourceRequest != null) {
-      assigned = 
-          assignNodeLocalContainers(clusterResource, nodeLocalResourceRequest, 
-              node, application, priority, reservedContainer, needToUnreserve); 
-      if (Resources.greaterThan(resourceCalculator, clusterResource, 
+      assigned =
+          assignNodeLocalContainers(clusterResource, nodeLocalResourceRequest,
+              node, application, priority, reservedContainer, needToUnreserve);
+      if (Resources.greaterThan(resourceCalculator, clusterResource,
           assigned, Resources.none())) {
         return new CSAssignment(assigned, NodeType.NODE_LOCAL);
       }
@@ -1236,6 +1259,9 @@ public class LeafQueue extends AbstractCSQueue {
     // Rack-local
     ResourceRequest rackLocalResourceRequest =
         application.getResourceRequest(priority, node.getRackName());
+    if ((rackLocalResourceRequest != null) && (!isValidLabel(rackLocalResourceRequest, node))) {
+      rackLocalResourceRequest = null;
+    }
     if (rackLocalResourceRequest != null) {
       if (!rackLocalResourceRequest.getRelaxLocality()) {
         return SKIP_ASSIGNMENT;
@@ -1253,6 +1279,9 @@ public class LeafQueue extends AbstractCSQueue {
     // Off-switch
     ResourceRequest offSwitchResourceRequest =
         application.getResourceRequest(priority, ResourceRequest.ANY);
+    if ((offSwitchResourceRequest != null) && (!isValidLabel(offSwitchResourceRequest, node))) {
+      offSwitchResourceRequest = null;
+    }
     if (offSwitchResourceRequest != null) {
       if (!offSwitchResourceRequest.getRelaxLocality()) {
         return SKIP_ASSIGNMENT;

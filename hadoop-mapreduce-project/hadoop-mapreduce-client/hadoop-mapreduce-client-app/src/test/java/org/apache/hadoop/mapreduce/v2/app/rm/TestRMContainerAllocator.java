@@ -1548,7 +1548,7 @@ public class TestRMContainerAllocator {
       for (ResourceRequest req : ask) {
         ResourceRequest reqCopy = ResourceRequest.newInstance(req
             .getPriority(), req.getResourceName(), req.getCapability(), req
-            .getNumContainers(), req.getRelaxLocality());
+            .getNumContainers(), req.getRelaxLocality(), req.getLabels());
         askCopy.add(reqCopy);
       }
       SecurityUtil.setTokenServiceUseIp(false);

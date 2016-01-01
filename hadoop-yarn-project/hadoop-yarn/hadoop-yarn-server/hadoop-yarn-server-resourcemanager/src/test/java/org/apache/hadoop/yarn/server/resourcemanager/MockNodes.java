@@ -99,6 +99,7 @@ public class MockNodes {
     private String healthReport;
     private long lastHealthReportTime;
     private NodeState state;
+    private List<String> labels;
     private List<UpdatedContainerInfo> updatedContainerInfoList
         = new ArrayList<UpdatedContainerInfo>();
 
@@ -203,6 +204,10 @@ public class MockNodes {
       updatedContainerInfoList = list;
     }
 
+    @Override
+    public List<String> getLabels() {
+      return labels;
+    }
     @Override
     public String getHealthReport() {
       return healthReport;

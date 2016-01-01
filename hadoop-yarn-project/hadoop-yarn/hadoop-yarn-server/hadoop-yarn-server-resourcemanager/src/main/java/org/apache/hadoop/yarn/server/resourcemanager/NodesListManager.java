@@ -142,7 +142,7 @@ public class NodesListManager extends AbstractService implements
     for (final String host : excludeList) {
       UnknownNodeId nodeId = new UnknownNodeId(host);
       RMNodeImpl rmNode = new RMNodeImpl(nodeId,
-          rmContext, host, -1, -1, new UnknownNode(host), null, null);
+          rmContext, host, -1, -1, new UnknownNode(host), null, null, null);
 
       RMNode prevRMNode =
           rmContext.getRMNodes().putIfAbsent(nodeId, rmNode);

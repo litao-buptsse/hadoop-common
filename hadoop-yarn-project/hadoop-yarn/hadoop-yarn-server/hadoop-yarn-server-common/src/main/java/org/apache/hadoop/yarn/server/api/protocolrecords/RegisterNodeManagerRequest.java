@@ -29,7 +29,7 @@ public abstract class RegisterNodeManagerRequest {
 
   public static RegisterNodeManagerRequest newInstance(NodeId nodeId,
       int httpPort, Resource resource, String nodeManagerVersionId,
-      List<NMContainerStatus> containerStatuses,
+      List<NMContainerStatus> containerStatuses, List<String> labels,
       List<ApplicationId> runningApplications) {
     RegisterNodeManagerRequest request =
         Records.newRecord(RegisterNodeManagerRequest.class);
@@ -39,6 +39,7 @@ public abstract class RegisterNodeManagerRequest {
     request.setNMVersion(nodeManagerVersionId);
     request.setContainerStatuses(containerStatuses);
     request.setRunningApplications(runningApplications);
+    request.setLabels(labels);
     return request;
   }
   
@@ -47,7 +48,9 @@ public abstract class RegisterNodeManagerRequest {
   public abstract Resource getResource();
   public abstract String getNMVersion();
   public abstract List<NMContainerStatus> getNMContainerStatuses();
-  
+
+  public abstract List<String> getLabels();
+
   /**
    * We introduce this here because currently YARN RM doesn't persist nodes info
    * for application running. When RM restart happened, we cannot determinate if
@@ -67,6 +70,8 @@ public abstract class RegisterNodeManagerRequest {
   public abstract void setNMVersion(String version);
   public abstract void setContainerStatuses(
       List<NMContainerStatus> containerStatuses);
+
+  public abstract void setLabels(List<String> labels);
   
   /**
    * Setter for {@link RegisterNodeManagerRequest#getRunningApplications()}

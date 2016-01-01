@@ -1481,7 +1481,7 @@ public class TestRMAppAttemptTransitions {
             spyRMContext, scheduler, masterService, submissionContext,
             new Configuration(), true, ResourceRequest.newInstance(
                 Priority.UNDEFINED, "host1", Resource.newInstance(3333, 1), 3,
-                false, "label-expression"));
+                false, "label-expression", null));
     new RMAppAttemptImpl.ScheduleTransition().transition(
         (RMAppAttemptImpl) applicationAttempt, null);
   }

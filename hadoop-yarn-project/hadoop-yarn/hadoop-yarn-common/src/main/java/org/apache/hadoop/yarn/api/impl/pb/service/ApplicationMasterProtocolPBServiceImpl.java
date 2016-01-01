@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.api.impl.pb.service;
 
 import java.io.IOException;
+import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
@@ -39,6 +40,7 @@ import org.apache.hadoop.yarn.proto.YarnServiceProtos.FinishApplicationMasterReq
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.FinishApplicationMasterResponseProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.RegisterApplicationMasterRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.RegisterApplicationMasterResponseProto;
+import org.apache.hadoop.yarn.api.records.ResourceRequest;
 
 import com.google.protobuf.RpcController;
 import com.google.protobuf.ServiceException;

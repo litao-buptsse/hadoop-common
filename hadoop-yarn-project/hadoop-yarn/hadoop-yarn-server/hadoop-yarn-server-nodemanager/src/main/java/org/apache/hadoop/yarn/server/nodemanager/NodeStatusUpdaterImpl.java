@@ -122,6 +122,7 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
   private Runnable statusUpdaterRunnable;
   private Thread  statusUpdater;
   private long rmIdentifier = ResourceManagerConstants.RM_INVALID_IDENTIFIER;
+  private String nmLabel;
   Set<ContainerId> pendingContainersToRemove = new HashSet<ContainerId>();
 
   public NodeStatusUpdaterImpl(Context context, Dispatcher dispatcher,
@@ -151,6 +152,8 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
     int virtualCores =
         conf.getInt(
             YarnConfiguration.NM_VCORES, YarnConfiguration.DEFAULT_NM_VCORES);
+
+    this.nmLabel = conf.get("yarn.nodemanager.label");
 
     this.totalResource = Resource.newInstance(memoryMb, virtualCores);
     metrics.addResource(totalResource);
@@ -261,9 +264,11 @@ public class NodeStatusUpdaterImpl extends AbstractService implements
   protected void registerWithRM()
       throws YarnException, IOException {
     List<NMContainerStatus> containerReports = getNMContainerStatuses();
+    List<String> labels = new ArrayList<String>();
+    labels.add(nmLabel);
     RegisterNodeManagerRequest request =
         RegisterNodeManagerRequest.newInstance(nodeId, httpPort, totalResource,
-          nodeManagerVersionId, containerReports, getRunningApplications());
+          nodeManagerVersionId, containerReports, labels, getRunningApplications());
     if (containerReports != null) {
       LOG.info("Registering with RM using containers :" + containerReports);
     }

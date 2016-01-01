@@ -61,7 +61,9 @@ public class NodeInfo {
     private NodeState state;
     private List<ContainerId> toCleanUpContainers;
     private List<ApplicationId> toCleanUpApplications;
-    
+
+    private List<String> labels;
+
     public FakeRMNodeImpl(NodeId nodeId, String nodeAddr, String httpAddress,
         Resource perNode, String rackName, String healthReport,
         int cmdPort, String hostName, NodeState state) {
@@ -124,6 +126,10 @@ public class NodeInfo {
 
     public NodeState getState() {
       return state;
+    }
+
+    public List<String> getLabels() {
+      return labels;
     }
 
     public List<ContainerId> getContainersToCleanUp() {

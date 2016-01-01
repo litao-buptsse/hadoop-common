@@ -65,7 +65,7 @@ public class TestSchedulerApplicationAttempt {
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
     SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(appAttId,
-        user, oldQueue, oldQueue.getActiveUsersManager(), rmContext);
+        user, oldQueue, oldQueue.getActiveUsersManager(), null, rmContext);
     oldMetrics.submitApp(user);
     
     // confirm that containerId is calculated based on epoch.
@@ -171,7 +171,7 @@ public class TestSchedulerApplicationAttempt {
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getEpoch()).thenReturn(3L);
     SchedulerApplicationAttempt app = new SchedulerApplicationAttempt(
-        attemptId, "user", queue, queue.getActiveUsersManager(), rmContext);
+        attemptId, "user", queue, queue.getActiveUsersManager(),null, rmContext);
     Priority priority = Priority.newInstance(1);
     assertEquals(0, app.getSchedulingOpportunities(priority));
     app.addSchedulingOpportunity(priority);

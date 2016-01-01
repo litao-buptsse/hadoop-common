@@ -56,6 +56,7 @@ public class RegisterNodeManagerRequestPBImpl extends RegisterNodeManagerRequest
   private NodeId nodeId = null;
   private List<NMContainerStatus> containerStatuses = null;
   private List<ApplicationId> runningApplications = null;
+  private List<String> labels = null;
   
   public RegisterNodeManagerRequestPBImpl() {
     builder = RegisterNodeManagerRequestProto.newBuilder();
@@ -85,6 +86,9 @@ public class RegisterNodeManagerRequestPBImpl extends RegisterNodeManagerRequest
     }
     if (this.nodeId != null) {
       builder.setNodeId(convertToProtoFormat(this.nodeId));
+    }
+    if (this.labels != null) {
+      addLabelsToProto();
     }
 
   }
@@ -261,7 +265,44 @@ public class RegisterNodeManagerRequestPBImpl extends RegisterNodeManagerRequest
     initContainerRecoveryReports();
     this.containerStatuses.addAll(containerReports);
   }
-  
+
+  @Override
+  public List<String> getLabels() {
+    initLabels();
+    return labels;
+  }
+
+  private void initLabels() {
+    if (this.labels != null) {
+      return;
+    }
+    RegisterNodeManagerRequestProtoOrBuilder p = viaProto ? proto : builder;
+    List<String> list = p.getLabelsList();
+    this.labels = new ArrayList<String>();
+
+    for (String c : list) {
+      this.labels.add(c);
+    }
+  }
+
+  @Override
+  public void setLabels(List<String> labels) {
+    if (labels == null)
+      return;
+    initLabels();
+    this.labels.clear();
+    this.labels.addAll(labels);
+  }
+
+  private void addLabelsToProto() {
+    maybeInitBuilder();
+    builder.clearLabels();
+    if (this.labels == null)
+      return;
+    builder.addAllLabels(this.labels);
+  }
+
+
   @Override
   public int hashCode() {
     return getProto().hashCode();

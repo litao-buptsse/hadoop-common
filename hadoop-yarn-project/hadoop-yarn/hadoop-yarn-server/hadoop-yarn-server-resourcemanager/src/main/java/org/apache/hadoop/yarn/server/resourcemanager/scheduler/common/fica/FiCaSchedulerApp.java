@@ -51,6 +51,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityHeadroomProvider;
 
 /**
@@ -68,14 +69,20 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
     
   private CapacityHeadroomProvider headroomProvider;
 
-  public FiCaSchedulerApp(ApplicationAttemptId applicationAttemptId, 
-      String user, Queue queue, ActiveUsersManager activeUsersManager,
-      RMContext rmContext) {
-    super(applicationAttemptId, user, queue, activeUsersManager, rmContext);
+  public FiCaSchedulerApp(ApplicationAttemptId applicationAttemptId,
+                          String user, Queue queue, ActiveUsersManager activeUsersManager,
+                          RMContext rmContext) {
+    this(applicationAttemptId, user, queue, activeUsersManager, null, rmContext);
+  }
+
+  public FiCaSchedulerApp(ApplicationAttemptId applicationAttemptId,
+                          String user, Queue queue, ActiveUsersManager activeUsersManager,
+                          SchedulerLabelsManager labelsManager, RMContext rmContext) {
+    super(applicationAttemptId, user, queue, activeUsersManager, labelsManager, rmContext);
   }
 
   synchronized public boolean containerCompleted(RMContainer rmContainer,
-      ContainerStatus containerStatus, RMContainerEventType event) {
+                                                 ContainerStatus containerStatus, RMContainerEventType event) {
 
     // Remove from the list of containers
     if (null == liveContainers.remove(rmContainer.getContainerId())) {

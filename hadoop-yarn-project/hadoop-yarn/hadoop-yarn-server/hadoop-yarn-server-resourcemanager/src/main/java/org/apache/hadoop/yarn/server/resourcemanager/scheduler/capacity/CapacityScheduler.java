@@ -81,6 +81,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.PreemptableResour
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueNotFoundException;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplication;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration.QueueMapping;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration.QueueMapping.MappingType;
@@ -202,6 +203,7 @@ public class CapacityScheduler extends
 
   private ResourceCalculator calculator;
   private boolean usePortForNodeName;
+  private SchedulerLabelsManager labelsManager = new SchedulerLabelsManager();
 
   private boolean scheduleAsynchronously;
   private AsyncScheduleThread asyncSchedulerThread;
@@ -739,7 +741,7 @@ public class CapacityScheduler extends
 
     FiCaSchedulerApp attempt =
         new FiCaSchedulerApp(applicationAttemptId, application.getUser(),
-          queue, queue.getActiveUsersManager(), rmContext);
+          queue, queue.getActiveUsersManager(), labelsManager, rmContext);
     if (transferStateFromPreviousAttempt) {
       attempt.transferStateFromPreviousAttempt(application
         .getCurrentAppAttempt());
@@ -1144,6 +1146,7 @@ public class CapacityScheduler extends
     FiCaSchedulerNode schedulerNode = new FiCaSchedulerNode(nodeManager,
         usePortForNodeName);
     this.nodes.put(nodeManager.getNodeID(), schedulerNode);
+    labelsManager.addNode(nodeManager);
     Resources.addTo(clusterResource, nodeManager.getTotalCapability());
     root.updateClusterResource(clusterResource);
     int numNodes = numNodeManagers.incrementAndGet();
@@ -1196,6 +1199,7 @@ public class CapacityScheduler extends
     }
 
     this.nodes.remove(nodeInfo.getNodeID());
+    labelsManager.removeNode(nodeInfo);
     updateMaximumAllocation(node, false);
 
     LOG.info("Removed node " + nodeInfo.getNodeAddress() + 

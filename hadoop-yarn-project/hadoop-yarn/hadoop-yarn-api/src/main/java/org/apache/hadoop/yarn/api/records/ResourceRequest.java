@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.api.records;
 
 import java.io.Serializable;
+import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
@@ -64,22 +65,22 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
   @Stable
   public static ResourceRequest newInstance(Priority priority, String hostName,
       Resource capability, int numContainers) {
-    return newInstance(priority, hostName, capability, numContainers, true);
+    return newInstance(priority, hostName, capability, numContainers, true, null);
   }
 
   @Public
   @Stable
   public static ResourceRequest newInstance(Priority priority, String hostName,
-      Resource capability, int numContainers, boolean relaxLocality) {
+      Resource capability, int numContainers, boolean relaxLocality, List<String> labels) {
     return newInstance(priority, hostName, capability, numContainers,
-        relaxLocality, null);
+        relaxLocality, null, null);
   }
   
   @Public
   @Stable
   public static ResourceRequest newInstance(Priority priority, String hostName,
       Resource capability, int numContainers, boolean relaxLocality,
-      String labelExpression) {
+      String labelExpression, List<String> labels) {
     ResourceRequest request = Records.newRecord(ResourceRequest.class);
     request.setPriority(priority);
     request.setResourceName(hostName);
@@ -87,6 +88,7 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
     request.setNumContainers(numContainers);
     request.setRelaxLocality(relaxLocality);
     request.setNodeLabelExpression(labelExpression);
+    request.setLabels(labels);
     return request;
   }
 
@@ -249,6 +251,30 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
   @Public
   @Stable
   public abstract void setRelaxLocality(boolean relaxLocality);
+
+  /**
+   * Get labels specified by the application for this
+   * <code>ResourceRequest</code>.
+   *
+   * An application can use <em>labels</em> to specify a subset of cluster nodes
+   * on which it wants to narrow container-allocations.
+   *
+   @return labels specified by the application for this
+    *         <code>ResourceRequest</code>
+   */
+  @Public
+  @Stable
+  public abstract List<String> getLabels();
+
+  /**
+   * Set <em>labels</em> to narrow container-allocations to a subset of cluster
+   * nodes.
+   *
+   * @param labels node labels to narrow container allocations
+   */
+  @Public
+  @Stable
+  public abstract void setLabels(List<String> labels);
   
   /**
    * Get node-label-expression for this Resource Request. If this is set, all
@@ -347,7 +373,25 @@ public abstract class ResourceRequest implements Comparable<ResourceRequest> {
         int capabilityComparison =
             this.getCapability().compareTo(other.getCapability());
         if (capabilityComparison == 0) {
-          return this.getNumContainers() - other.getNumContainers();
+          int numContainersComparison =
+              this.getNumContainers() - other.getNumContainers();
+          if (numContainersComparison == 0) {
+            List<String> thisLabels = this.getLabels();
+            List<String> otherLabels = other.getLabels();
+            if (thisLabels.size() == otherLabels.size() && !thisLabels.isEmpty()) {
+              for (int i = 0; i < thisLabels.size(); ++i) {
+                int rVal = thisLabels.get(i).compareTo(otherLabels.get(i));
+                if (rVal != 0) {
+                  return rVal;
+                }
+              }
+              return 0;
+            } else {
+              return thisLabels.size() - otherLabels.size();
+            }
+          } else {
+            return numContainersComparison;
+          }
         } else {
           return capabilityComparison;
         }

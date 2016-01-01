@@ -250,7 +250,7 @@ public class AMRMClientImpl<T extends ContainerRequest> extends AMRMClient<T> {
           // RPC layer is using it to send info across
           askList.add(ResourceRequest.newInstance(r.getPriority(),
               r.getResourceName(), r.getCapability(), r.getNumContainers(),
-              r.getRelaxLocality(), r.getNodeLabelExpression()));
+              r.getRelaxLocality(), r.getNodeLabelExpression(), r.getLabels()));
         }
         releaseList = new ArrayList<ContainerId>(release);
         // optimistically clear this collection assuming no RPC failure
@@ -637,6 +637,12 @@ public class AMRMClientImpl<T extends ContainerRequest> extends AMRMClient<T> {
     resourceRequestInfo.remoteRequest.setNumContainers(
          resourceRequestInfo.remoteRequest.getNumContainers() + 1);
 
+    String taskLabel = getConfig().get("yarn.task.label");
+    if (taskLabel != null) {
+      ArrayList<String> labels = new ArrayList<String>(1);
+      labels.add(taskLabel);
+      resourceRequestInfo.remoteRequest.setLabels(labels);
+    }
     if (relaxLocality) {
       resourceRequestInfo.containerRequests.add(req);
     }

@@ -42,7 +42,7 @@ public class TestRegisterNodeManagerRequest {
               ApplicationAttemptId.newInstance(
                 ApplicationId.newInstance(1234L, 1), 1), 1),
             ContainerState.RUNNING, Resource.newInstance(1024, 1), "good", -1,
-            Priority.newInstance(0), 1234)), Arrays.asList(
+            Priority.newInstance(0), 1234)), null, Arrays.asList(
             ApplicationId.newInstance(1234L, 1),
             ApplicationId.newInstance(1234L, 2)));
 
@@ -68,7 +68,7 @@ public class TestRegisterNodeManagerRequest {
   public void testRegisterNodeManagerRequestWithNullArrays() {
     RegisterNodeManagerRequest request =
         RegisterNodeManagerRequest.newInstance(NodeId.newInstance("host", 1234),
-            1234, Resource.newInstance(0, 0), "version", null, null);
+            1234, Resource.newInstance(0, 0), "version", null, null, null);
 
     // serialze to proto, and get request from proto
     RegisterNodeManagerRequest request1 =

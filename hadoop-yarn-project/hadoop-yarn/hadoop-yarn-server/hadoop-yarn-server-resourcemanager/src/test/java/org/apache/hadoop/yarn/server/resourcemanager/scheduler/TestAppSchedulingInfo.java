@@ -39,7 +39,7 @@ public class TestAppSchedulingInfo {
     FSLeafQueue queue = mock(FSLeafQueue.class);
     doReturn("test").when(queue).getQueueName();
     AppSchedulingInfo  appSchedulingInfo = new AppSchedulingInfo(
-        appAttemptId, "test", queue, null, 0);
+        appAttemptId, "test", queue, null, null, 0);
 
     appSchedulingInfo.updateBlacklist(new ArrayList<String>(),
         new ArrayList<String>());

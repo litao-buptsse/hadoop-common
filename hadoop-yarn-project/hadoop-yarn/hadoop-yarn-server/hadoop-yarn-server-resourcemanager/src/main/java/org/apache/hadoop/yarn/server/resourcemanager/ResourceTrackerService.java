@@ -302,7 +302,7 @@ public class ResourceTrackerService extends AbstractService implements
         .getCurrentKey());    
 
     RMNode rmNode = new RMNodeImpl(nodeId, rmContext, host, cmPort, httpPort,
-        resolve(host), capability, nodeManagerVersion);
+        resolve(host), capability, nodeManagerVersion, request.getLabels());
 
     RMNode oldNode = this.rmContext.getRMNodes().putIfAbsent(nodeId, rmNode);
     if (oldNode == null) {

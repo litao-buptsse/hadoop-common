@@ -258,6 +258,7 @@ message ResourceRequestProto {
   optional int32 num_containers = 4;
   optional bool relax_locality = 5 [default = true];
   optional string node_label_expression = 6;
+  repeated string labels = 7;
 }
 
 enum AMCommandProto {

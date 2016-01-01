@@ -32,6 +32,7 @@ message RegisterNodeManagerRequestProto {
   optional string nm_version = 5;
   repeated NMContainerStatusProto container_statuses = 6;
   repeated ApplicationIdProto runningApplications = 7;
+  repeated string labels = 8;
 }
 
 message RegisterNodeManagerResponseProto {
@@ -82,4 +83,5 @@ message NMContainerStatusProto {
   optional string diagnostics = 5 [default = "N/A"];
   optional int32 container_exit_status = 6;
   optional int64 creation_time = 7;
+
 }

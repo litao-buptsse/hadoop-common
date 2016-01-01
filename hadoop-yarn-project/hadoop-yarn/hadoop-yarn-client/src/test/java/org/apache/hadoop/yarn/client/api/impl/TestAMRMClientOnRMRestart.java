@@ -531,7 +531,7 @@ public class TestAMRMClientOnRMRestart {
         ResourceRequest reqCopy =
             ResourceRequest.newInstance(req.getPriority(),
                 req.getResourceName(), req.getCapability(),
-                req.getNumContainers(), req.getRelaxLocality());
+                req.getNumContainers(), req.getRelaxLocality(), null);
         askCopy.add(reqCopy);
       }
       lastAsk = ask;

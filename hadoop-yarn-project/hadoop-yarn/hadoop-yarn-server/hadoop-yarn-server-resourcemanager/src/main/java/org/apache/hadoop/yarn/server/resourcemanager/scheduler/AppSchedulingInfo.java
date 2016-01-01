@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -39,6 +40,7 @@ import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
@@ -75,11 +77,15 @@ public class AppSchedulingInfo {
   
   /* Allocated by scheduler */
   boolean pending = true; // for app metrics
-  
- 
+
+  private Set<String> labels = new ConcurrentSkipListSet<String>();
+  private Set<String> invalidLabels = new ConcurrentSkipListSet<String>();
+  private final SchedulerLabelsManager labelsManager;
+
+
   public AppSchedulingInfo(ApplicationAttemptId appAttemptId,
-      String user, Queue queue, ActiveUsersManager activeUsersManager,
-      long epoch) {
+                           String user, Queue queue, ActiveUsersManager activeUsersManager,
+                           SchedulerLabelsManager labelsManager, long epoch) {
     this.applicationAttemptId = appAttemptId;
     this.applicationId = appAttemptId.getApplicationId();
     this.queue = queue;
@@ -87,6 +93,7 @@ public class AppSchedulingInfo {
     this.user = user;
     this.activeUsersManager = activeUsersManager;
     this.containerIdCounter = new AtomicLong(epoch << EPOCH_BIT_SHIFT);
+    this.labelsManager = labelsManager;
   }
 
   public ApplicationId getApplicationId() {
@@ -130,7 +137,7 @@ public class AppSchedulingInfo {
    * @param requests resources to be acquired
    * @param recoverPreemptedRequest recover Resource Request on preemption
    */
-  synchronized public void updateResourceRequests(
+  synchronized public void updateResourceRequests(SchedulerApplicationAttempt applicationAttempt,
       List<ResourceRequest> requests, boolean recoverPreemptedRequest) {
     QueueMetrics metrics = queue.getMetrics();
     
@@ -147,7 +154,7 @@ public class AppSchedulingInfo {
               + request);
         }
         updatePendingResources = true;
-        
+
         // Premature optimization?
         // Assumes that we won't see more than one priority request updated
         // in one call, reasonable assumption... however, it's totally safe
@@ -176,13 +183,13 @@ public class AppSchedulingInfo {
 
       asks.put(resourceName, request);
       if (updatePendingResources) {
-        
+
         // Similarly, deactivate application?
         if (request.getNumContainers() <= 0) {
           LOG.info("checking for deactivate... ");
           checkForDeactivation();
         }
-        
+
         int lastRequestContainers = lastRequest != null ? lastRequest
             .getNumContainers() : 0;
         Resource lastRequestCapability = lastRequest != null ? lastRequest
@@ -192,9 +199,33 @@ public class AppSchedulingInfo {
         metrics.decrPendingResources(user, lastRequestContainers,
             lastRequestCapability);
       }
+      //Process labels
+      if (labelsManager == null) {
+        LOG.warn("Labels are not supported!");
+      } else {
+        if (request.getLabels() != null) {
+          for (String label : request.getLabels()) {
+            addLabel(label);
+            labelsManager.addLabelToApplication(label, applicationAttempt);
+          }
+        }
+      }
     }
   }
 
+  public synchronized void addInvalidLabel(String label) {
+    invalidLabels.add(label);
+  }
+
+  public synchronized Collection<String> getAndResetInvalidLabels() {
+    List<String> current = new ArrayList<String>(invalidLabels);
+    invalidLabels.clear();
+    return current;
+  }
+
+  public synchronized void addLabel(String label) {
+    labels.add(label);
+  }
   /**
    * The ApplicationMaster is updating the userBlacklist used for containers
    * other than AMs.
@@ -450,7 +481,8 @@ public class AppSchedulingInfo {
     this.queueName = newQueue.getQueueName();
   }
 
-  synchronized public void stop(RMAppAttemptState rmAppAttemptFinalState) {
+  synchronized public void stop(SchedulerApplicationAttempt applicationAttempt,
+                                RMAppAttemptState rmAppAttemptFinalState) {
     // clear pending resources metrics for the application
     QueueMetrics metrics = queue.getMetrics();
     for (Map<String, ResourceRequest> asks : requests.values()) {
@@ -464,6 +496,13 @@ public class AppSchedulingInfo {
     
     // Clear requests themselves
     clearRequests();
+    // Clear lables and inform labelsManager
+    if (labelsManager != null) {
+      for (String label : labels) {
+        labelsManager.removeLabelFromApplication(label, applicationAttempt);
+      }
+      labels.clear();
+    }
   }
 
   public synchronized void setQueue(Queue queue) {
@@ -512,7 +551,7 @@ public class AppSchedulingInfo {
   public ResourceRequest cloneResourceRequest(ResourceRequest request) {
     ResourceRequest newRequest = ResourceRequest.newInstance(
         request.getPriority(), request.getResourceName(),
-        request.getCapability(), 1, request.getRelaxLocality());
+        request.getCapability(), 1, request.getRelaxLocality(), request.getLabels());
     return newRequest;
   }
 }

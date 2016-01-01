@@ -18,6 +18,11 @@
 
 package org.apache.hadoop.yarn.api.records.impl.pb;
 
+import java.util.List;
+import java.util.ArrayList;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
@@ -32,13 +37,15 @@ import org.apache.hadoop.yarn.proto.YarnProtos.ResourceRequestProtoOrBuilder;
 @Private
 @Unstable
 public class ResourceRequestPBImpl extends  ResourceRequest {
+  private static final Log LOG = LogFactory.getLog(ResourceRequestPBImpl.class);
   ResourceRequestProto proto = ResourceRequestProto.getDefaultInstance();
   ResourceRequestProto.Builder builder = null;
   boolean viaProto = false;
   
   private Priority priority = null;
   private Resource capability = null;
-  
+
+  private List<String> labels = null;
   
   public ResourceRequestPBImpl() {
     builder = ResourceRequestProto.newBuilder();
@@ -62,6 +69,9 @@ public class ResourceRequestPBImpl extends  ResourceRequest {
     }
     if (this.capability != null) {
       builder.setCapability(convertToProtoFormat(this.capability));
+    }
+    if (this.labels != null) {
+      addLabelsToProto();
     }
   }
 
@@ -162,6 +172,43 @@ public class ResourceRequestPBImpl extends  ResourceRequest {
     maybeInitBuilder();
     builder.setRelaxLocality(relaxLocality);
   }
+
+  @Override
+  public List<String> getLabels() {
+    initLabels();
+    return labels;
+  }
+
+  private void initLabels() {
+    if (this.labels != null) {
+      return;
+    }
+    ResourceRequestProtoOrBuilder p = viaProto ? proto : builder;
+    List<String> list = p.getLabelsList();
+    this.labels = new ArrayList<String>();
+
+    for (String c : list) {
+      this.labels.add(c);
+    }
+  }
+
+  @Override
+  public void setLabels(List<String> labels) {
+    if (labels == null)
+      return;
+    initLabels();
+    this.labels.clear();
+    this.labels.addAll(labels);
+  }
+
+  private void addLabelsToProto() {
+    maybeInitBuilder();
+    builder.clearLabels();
+    if (this.labels == null)
+      return;
+    builder.addAllLabels(this.labels);
+  }
+
 
   private PriorityPBImpl convertFromProtoFormat(PriorityProto p) {
     return new PriorityPBImpl(p);

@@ -103,7 +103,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
   public FSAppAttempt(FairScheduler scheduler,
       ApplicationAttemptId applicationAttemptId, String user, FSLeafQueue queue,
       ActiveUsersManager activeUsersManager, RMContext rmContext) {
-    super(applicationAttemptId, user, queue, activeUsersManager, rmContext);
+    super(applicationAttemptId, user, queue, activeUsersManager, null, rmContext);
 
     this.scheduler = scheduler;
     this.startTime = scheduler.getClock().getTime();
@@ -115,6 +115,23 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     return resourceWeights;
   }
 
+  private boolean isValidLabel(ResourceRequest request, FSSchedulerNode node) {
+    List<String> requestLabels = request.getLabels();
+    if ((requestLabels == null) || (requestLabels.size() == 0)) {
+      return true;
+    }
+    List<String> nodeLabels = node.getRMNode().getLabels();
+    if (nodeLabels == null) {
+      return true;
+    }
+
+    for (String requestLabel : requestLabels) {
+      if (nodeLabels.contains(requestLabel)) {
+        return true;
+      }
+    }
+    return false;
+  }
   /**
    * Get metrics reference from containing queue.
    */
@@ -718,6 +735,13 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
         ResourceRequest localRequest = getResourceRequest(priority,
             node.getNodeName());
 
+        // Consider labels
+        if (rackLocalRequest != null && !isValidLabel(rackLocalRequest, node)) {
+          rackLocalRequest = null;
+        }
+        if (localRequest != null && !isValidLabel(localRequest, node)) {
+          localRequest = null;
+        }
         if (localRequest != null && !localRequest.getRelaxLocality()) {
           LOG.warn("Relax locality off is not supported on local request: "
               + localRequest);
@@ -755,6 +779,9 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
 
         ResourceRequest offSwitchRequest =
             getResourceRequest(priority, ResourceRequest.ANY);
+        if (offSwitchRequest != null && !isValidLabel(offSwitchRequest, node)) {
+          offSwitchRequest = null;
+        }
         if (offSwitchRequest != null && !offSwitchRequest.getRelaxLocality()) {
           continue;
         }

@@ -309,8 +309,11 @@ public class MapTask extends Task {
     if (isMapTask()) {
       // If there are no reducers then there won't be any sort. Hence the map 
       // phase will govern the entire attempt's progress.
-      if (conf.getNumReduceTasks() == 0) {
-        mapPhase = getProgress().addPhase("map", 1.0f);
+			if (conf.getNumReduceTasks() == 0) {
+				mapPhase = getProgress().addPhase("map", 1.0f);
+				if (job.getBoolean("map.run.combiner.once", false)) {
+        	sortPhase  = getProgress().addPhase("sort", 0.667f);
+				}
       } else {
         // If there are reducers then the entire attempt's progress will be 
         // split between the map phase (67%) and the sort phase (33%).
@@ -437,11 +440,15 @@ public class MapTask extends Task {
     MapOutputCollector<OUTKEY, OUTVALUE> collector = null;
     if (numReduceTasks > 0) {
       collector = createSortingCollector(job, reporter);
-    } else { 
-      collector = new DirectMapOutputCollector<OUTKEY, OUTVALUE>();
-       MapOutputCollector.Context context =
+		} else { 
+			if (conf.getBoolean("map.run.combiner.once", false)) {
+        collector = createSortingCollector(job, reporter);
+			} else {
+				collector = new DirectMapOutputCollector<OUTKEY, OUTVALUE>();
+				MapOutputCollector.Context context =
                            new MapOutputCollector.Context(this, job, reporter);
-      collector.init(context);
+      	collector.init(context);
+			}
     }
     MapRunnable<INKEY,INVALUE,OUTKEY,OUTVALUE> runner =
       ReflectionUtils.newInstance(job.getMapRunnerClass(), job);
@@ -588,16 +595,27 @@ public class MapTask extends Task {
       if (numPartitions > 1) {
         partitioner = (Partitioner<K,V>)
           ReflectionUtils.newInstance(conf.getPartitionerClass(), conf);
-      } else {
-        partitioner = new Partitioner<K,V>() {
-          @Override
-          public void configure(JobConf job) { }
-          @Override
-          public int getPartition(K key, V value, int numPartitions) {
-            return numPartitions - 1;
-          }
-        };
-      }
+			} else {
+				if (conf.getBoolean("map.run.combiner.once", false)) {
+					partitioner = new Partitioner<K,V>() {
+						@Override
+							public void configure(JobConf job) { }
+						@Override
+							public int getPartition(K key, V value, int numPartitions) {
+								return 0;
+							} 
+					};
+				} else {
+					partitioner = new Partitioner<K,V>() {
+						@Override
+							public void configure(JobConf job) { }
+						@Override
+							public int getPartition(K key, V value, int numPartitions) {
+								return numPartitions - 1;
+							}
+					};
+				}
+			}
       this.collector = collector;
     }
 
@@ -696,15 +714,24 @@ public class MapTask extends Task {
       partitions = jobContext.getNumReduceTasks();
       if (partitions > 1) {
         partitioner = (org.apache.hadoop.mapreduce.Partitioner<K,V>)
-          ReflectionUtils.newInstance(jobContext.getPartitionerClass(), job);
-      } else {
-        partitioner = new org.apache.hadoop.mapreduce.Partitioner<K,V>() {
-          @Override
-          public int getPartition(K key, V value, int numPartitions) {
-            return partitions - 1;
-          }
-        };
-      }
+					ReflectionUtils.newInstance(jobContext.getPartitionerClass(), job);
+			} else {
+				if (conf.getBoolean("map.run.combiner.once", false)) {
+					partitioner = new org.apache.hadoop.mapreduce.Partitioner<K,V>() {
+						@Override
+						public int getPartition(K key, V value, int numPartitions) {
+							return 0;
+						}
+					};
+				} else {
+					partitioner = new org.apache.hadoop.mapreduce.Partitioner<K,V>() {
+						@Override
+						public int getPartition(K key, V value, int numPartitions) {
+							return partitions - 1;
+						}
+					};
+				}
+			}
     }
 
     @Override
@@ -945,6 +972,7 @@ public class MapTask extends Task {
     private MapOutputFile mapOutputFile;
     private Progress sortPhase;
     private Counters.Counter spilledRecordsCounter;
+		private boolean runOnceCombiner;
 
     public MapOutputBuffer() {
     }
@@ -960,6 +988,11 @@ public class MapTask extends Task {
       spilledRecordsCounter = reporter.getCounter(TaskCounter.SPILLED_RECORDS);
       partitions = job.getNumReduceTasks();
       rfs = ((LocalFileSystem)FileSystem.getLocal(job)).getRaw();
+			runOnceCombiner= job.getBoolean("map.run.combiner.once", false);
+			LOG.info("MapOutputBuffer init runOnceCombiner : " + runOnceCombiner);
+			if (runOnceCombiner) {
+				partitions = 1;
+			}
 
       //sanity checks
       final float spillper =
@@ -1601,7 +1634,7 @@ public class MapTask extends Task {
             FSDataOutputStream partitionOut = CryptoUtils.wrapIfNecessary(job, out);
             writer = new Writer<K, V>(job, partitionOut, keyClass, valClass, codec,
                                       spilledRecordsCounter);
-            if (combinerRunner == null) {
+            if ((combinerRunner == null) || (runOnceCombiner)) {
               // spill directly
               DataInputBuffer key = new DataInputBuffer();
               while (spindex < mend &&
@@ -1806,7 +1839,7 @@ public class MapTask extends Task {
         filename[i] = mapOutputFile.getSpillFile(i);
         finalOutFileSize += rfs.getFileStatus(filename[i]).getLen();
       }
-      if (numSpills == 1) { //the spill is the final output
+      if ((numSpills == 1) && (!runOnceCombiner)) { //the spill is the final output
         sameVolRename(filename[0],
             mapOutputFile.getOutputFileForWriteInVolume(filename[0]));
         if (indexCacheList.size() == 0) {
@@ -1838,7 +1871,7 @@ public class MapTask extends Task {
       //The output stream for the final single output file
       FSDataOutputStream finalOut = rfs.create(finalOutputFile, true, 4096);
 
-      if (numSpills == 0) {
+      if ((numSpills == 0) && (!runOnceCombiner)) {
         //create dummy files
         IndexRecord rec = new IndexRecord();
         SpillRecord sr = new SpillRecord(partitions);

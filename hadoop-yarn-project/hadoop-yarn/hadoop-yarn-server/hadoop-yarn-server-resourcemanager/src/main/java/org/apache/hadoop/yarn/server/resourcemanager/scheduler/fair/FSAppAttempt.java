@@ -201,18 +201,21 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     Resource clusterResource = this.scheduler.getClusterResource();
     Resource clusterUsage = this.scheduler.getRootQueueMetrics()
         .getAllocatedResources();
-    Resource clusterAvailableResource = Resources.subtract(clusterResource,
-        clusterUsage);
+    Resource clusterAvailableResources =
+      	Resources.subtract(clusterResource, clusterUsage);
+    Resource queueMaxAvailableResources =
+      	Resources.subtract(queue.getMaxShare(), queueUsage);
+    Resource maxAvailableResource = Resources.componentwiseMin(
+        clusterAvailableResources, queueMaxAvailableResources);
+
     Resource headroom = policy.getHeadroom(queueFairShare,
-        queueUsage, clusterAvailableResource);
+        queueUsage, maxAvailableResource);
     if (LOG.isDebugEnabled()) {
       LOG.debug("Headroom calculation for " + this.getName() + ":" +
           "Min(" +
           "(queueFairShare=" + queueFairShare +
           " - queueUsage=" + queueUsage + ")," +
-          " clusterAvailableResource=" + clusterAvailableResource +
-          "(clusterResource=" + clusterResource +
-          " - clusterUsage=" + clusterUsage + ")" +
+          " maxAvailableResource=" + maxAvailableResource +
           "Headroom=" + headroom);
     }
     return headroom;

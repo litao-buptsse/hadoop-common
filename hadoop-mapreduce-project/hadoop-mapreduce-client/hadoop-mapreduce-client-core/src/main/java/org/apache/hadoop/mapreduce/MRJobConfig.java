@@ -606,7 +606,7 @@ public interface MRJobConfig {
    */
   public static final String MR_JOB_REDUCER_PREEMPT_DELAY_SEC =
       "mapreduce.job.reducer.preempt.delay.sec";
-  public static final int DEFAULT_MR_JOB_REDUCER_PREEMPT_DELAY_SEC = 0;
+  public static final int DEFAULT_MR_JOB_REDUCER_PREEMPT_DELAY_SEC = 300;
 
   public static final String MR_AM_ENV =
       MR_AM_PREFIX + "env";

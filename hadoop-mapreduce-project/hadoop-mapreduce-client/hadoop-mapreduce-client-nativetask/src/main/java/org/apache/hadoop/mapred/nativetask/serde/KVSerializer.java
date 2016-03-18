@@ -22,21 +22,18 @@ import java.io.IOException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.nativetask.Constants;
 import org.apache.hadoop.mapred.nativetask.buffer.DataInputStream;
 import org.apache.hadoop.mapred.nativetask.buffer.DataOutputStream;
 import org.apache.hadoop.mapred.nativetask.util.SizedWritable;
 
-
-
-@InterfaceAudience.Private
 public class KVSerializer<K, V> implements IKVSerializer {
+
 
   private static final Log LOG = LogFactory.getLog(KVSerializer.class);
   
-  public static final int KV_HEAD_LENGTH = Constants.SIZEOF_KV_LENGTH;
+  public static int KV_HEAD_LENGTH = Constants.SIZEOF_KV_LENGTH;
 
   private final INativeSerializer<Writable> keySerializer;
   private final INativeSerializer<Writable> valueSerializer;
@@ -48,25 +45,22 @@ public class KVSerializer<K, V> implements IKVSerializer {
   }
 
   @Override
-  public void updateLength(SizedWritable<?> key, SizedWritable<?> value) throws IOException {
+  public void updateLength(SizedWritable key, SizedWritable value) throws IOException {
     key.length = keySerializer.getLength(key.v);
     value.length = valueSerializer.getLength(value.v);
     return;
   }
 
   @Override
-  public int serializeKV(DataOutputStream out, SizedWritable<?> key, SizedWritable<?> value)
-    throws IOException {
+  public int serializeKV(DataOutputStream out, SizedWritable key, SizedWritable value) throws IOException {
     return serializePartitionKV(out, -1, key, value);
   }
 
   @Override
-  public int serializePartitionKV(DataOutputStream out, int partitionId,
-      SizedWritable<?> key, SizedWritable<?> value)
+  public int serializePartitionKV(DataOutputStream out, int partitionId, SizedWritable key, SizedWritable value)
       throws IOException {
 
-    if (key.length == SizedWritable.INVALID_LENGTH ||
-        value.length == SizedWritable.INVALID_LENGTH) {
+    if (key.length == SizedWritable.INVALID_LENGTH || value.length == SizedWritable.INVALID_LENGTH) {
       updateLength(key, value);
     }
 
@@ -96,8 +90,7 @@ public class KVSerializer<K, V> implements IKVSerializer {
   }
 
   @Override
-  public int deserializeKV(DataInputStream in, SizedWritable<?> key,
-      SizedWritable<?> value) throws IOException {
+  public int deserializeKV(DataInputStream in, SizedWritable key, SizedWritable value) throws IOException {
 
     if (!in.hasUnReadData()) {
       return 0;

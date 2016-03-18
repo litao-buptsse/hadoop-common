@@ -15,17 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.mapred.nativetask.util;
 
 import com.google.common.base.Charsets;
-import org.apache.hadoop.classification.InterfaceAudience;
 
-@InterfaceAudience.Private
 public class ReadWriteBuffer {
   private byte[] _buff;
   private int _writePoint;
   private int _readPoint;
-  final static int CACHE_LINE_SIZE = 16;
+  final int CACHE_LINE_SIZE = 16;
 
   public ReadWriteBuffer(int length) {
     if (length > 0) {
@@ -112,15 +111,10 @@ public class ReadWriteBuffer {
   }
 
   public long readLong() {
-    final long result =
-      ((_buff[_readPoint + 0] & 255) << 0) +
-      ((_buff[_readPoint + 1] & 255) << 8) +
-      ((_buff[_readPoint + 2] & 255) << 16) +
-      ((long) (_buff[_readPoint + 3] & 255) << 24) +
-      ((long) (_buff[_readPoint + 4] & 255) << 32) +
-      ((long) (_buff[_readPoint + 5] & 255) << 40) +
-      ((long) (_buff[_readPoint + 6] & 255) << 48) +
-      (((long) _buff[_readPoint + 7] << 56));
+    final long result = ((_buff[_readPoint + 0] & 255) << 0) + ((_buff[_readPoint + 1] & 255) << 8)
+        + ((_buff[_readPoint + 2] & 255) << 16) + ((long) (_buff[_readPoint + 3] & 255) << 24)
+        + ((long) (_buff[_readPoint + 4] & 255) << 32) + ((long) (_buff[_readPoint + 5] & 255) << 40)
+        + ((long) (_buff[_readPoint + 6] & 255) << 48) + (((long) _buff[_readPoint + 7] << 56));
 
     _readPoint += 8;
     return result;
@@ -149,8 +143,7 @@ public class ReadWriteBuffer {
     if (_buff.length - _writePoint >= toBeWritten) {
       return;
     }
-    final int newLength = (toBeWritten + _writePoint > CACHE_LINE_SIZE) ?
-      (toBeWritten + _writePoint) : CACHE_LINE_SIZE;
+    final int newLength = (toBeWritten + _writePoint > CACHE_LINE_SIZE) ? (toBeWritten + _writePoint) : CACHE_LINE_SIZE;
     final byte[] newBuff = new byte[newLength];
     System.arraycopy(_buff, 0, newBuff, 0, _writePoint);
     _buff = newBuff;

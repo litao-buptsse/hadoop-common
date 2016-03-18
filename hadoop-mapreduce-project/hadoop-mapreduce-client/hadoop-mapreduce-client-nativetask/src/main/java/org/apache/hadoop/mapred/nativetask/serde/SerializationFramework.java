@@ -17,9 +17,6 @@
  */
 package org.apache.hadoop.mapred.nativetask.serde;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-
-@InterfaceAudience.Private
 public enum SerializationFramework {
   WRITABLE_SERIALIZATION(0), NATIVE_SERIALIZATION(1);
 

@@ -19,10 +19,9 @@
 #ifndef QUICK_BUILD
 #include "org_apache_hadoop_mapred_nativetask_NativeRuntime.h"
 #endif
-#include "config.h"
-#include "lib/commons.h"
-#include "lib/jniutils.h"
-#include "lib/NativeObjectFactory.h"
+#include "commons.h"
+#include "jniutils.h"
+#include "NativeObjectFactory.h"
 
 using namespace NativeTask;
 
@@ -32,33 +31,9 @@ using namespace NativeTask;
 
 /*
  * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
- * Method:    supportCompressionCodec
- * Signature: ([B)Z
- */
-JNIEXPORT jboolean JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_supportsCompressionCodec
-  (JNIEnv *jenv, jclass clazz, jbyteArray codec) {
-  const std::string codecString = JNU_ByteArrayToString(jenv, codec);
-  if ("org.apache.hadoop.io.compress.GzipCodec" == codecString) {
-    return JNI_TRUE;
-  } else if ("org.apache.hadoop.io.compress.Lz4Codec" == codecString) {
-    return JNI_TRUE;
-  } else if ("org.apache.hadoop.io.compress.SnappyCodec" == codecString) {
-#if defined HADOOP_SNAPPY_LIBRARY
-    return JNI_TRUE;
-#else
-    return JNI_FALSE;
-#endif
-  } else {
-    return JNI_FALSE;
-  }
-}
-
-/*
- * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
  * Method:    JNIRelease
  * Signature: ()V
- */
-JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIRelease(
+ */JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIRelease(
     JNIEnv * jenv, jclass nativeRuntimeClass) {
   try {
     NativeTask::NativeObjectFactory::Release();
@@ -82,8 +57,7 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JN
  * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
  * Method:    JNIConfigure
  * Signature: ([[B)V
- */
-JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIConfigure(
+ */JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIConfigure(
     JNIEnv * jenv, jclass nativeRuntimeClass, jobjectArray configs) {
   try {
     NativeTask::Config & config = NativeTask::NativeObjectFactory::GetConfig();
@@ -140,8 +114,7 @@ jlong JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNICreateNa
  * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
  * Method:    JNICreateDefaultNativeObject
  * Signature: ([B)J
- */
-JNIEXPORT jlong JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNICreateDefaultNativeObject(
+ */JNIEXPORT jlong JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNICreateDefaultNativeObject(
     JNIEnv * jenv, jclass nativeRuntimeClass, jbyteArray type) {
   try {
     std::string typeString = JNU_ByteArrayToString(jenv, type);
@@ -168,8 +141,7 @@ JNIEXPORT jlong JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_J
  * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
  * Method:    JNIReleaseNativeObject
  * Signature: (J)V
- */
-JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIReleaseNativeObject(
+ */JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIReleaseNativeObject(
     JNIEnv * jenv, jclass nativeRuntimeClass, jlong objectAddr) {
   try {
     NativeTask::NativeObject * nobj = ((NativeTask::NativeObject *)objectAddr);
@@ -199,8 +171,7 @@ JNIEXPORT void JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JN
  * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
  * Method:    JNIRegisterModule
  * Signature: ([B[B)I
- */
-JNIEXPORT jint JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIRegisterModule(
+ */JNIEXPORT jint JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIRegisterModule(
     JNIEnv * jenv, jclass nativeRuntimeClass, jbyteArray modulePath, jbyteArray moduleName) {
   try {
     std::string pathString = JNU_ByteArrayToString(jenv, modulePath);
@@ -229,8 +200,7 @@ JNIEXPORT jint JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JN
  * Class:     org_apache_hadoop_mapred_nativetask_NativeRuntime
  * Method:    JNIUpdateStatus
  * Signature: ()[B
- */
-JNIEXPORT jbyteArray JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIUpdateStatus(
+ */JNIEXPORT jbyteArray JNICALL Java_org_apache_hadoop_mapred_nativetask_NativeRuntime_JNIUpdateStatus(
     JNIEnv * jenv, jclass nativeRuntimeClass) {
   try {
     std::string statusData;

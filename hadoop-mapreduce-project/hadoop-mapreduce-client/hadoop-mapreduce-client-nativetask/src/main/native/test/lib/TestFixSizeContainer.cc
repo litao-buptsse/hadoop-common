@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "lib/Combiner.h"
 #include "test_commons.h"
 #include <iostream>
@@ -43,7 +43,7 @@ TEST(FixSizeContainer, test) {
 
   container->fill(toBeFilled.c_str(), toBeFilled.length());
 
-  for (uint32_t i = 0; i < container->position(); i++) {
+  for (int i = 0; i < container->position(); i++) {
     char * c = container->base() + i;
     ASSERT_EQ(toBeFilled[i], *c);
   }

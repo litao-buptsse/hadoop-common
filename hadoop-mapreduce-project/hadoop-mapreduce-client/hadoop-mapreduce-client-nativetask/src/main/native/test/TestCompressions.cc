@@ -16,38 +16,20 @@
  * limitations under the License.
  */
 
-#include "lz4.h"
-#include "config.h"
-#include "lib/commons.h"
-#include "lib/Path.h"
-#include "lib/BufferStream.h"
-#include "lib/FileSystem.h"
-#include "lib/Compressions.h"
+#include "commons.h"
+#include "Path.h"
+#include "BufferStream.h"
+#include "FileSystem.h"
+#include "Compressions.h"
 #include "test_commons.h"
 
 #if defined HADOOP_SNAPPY_LIBRARY
 #include <snappy.h>
 #endif
 
-void TestCodec(const string & codec) {
-  string data;
-  size_t length = TestConfig.getInt("compression.input.length", 100 * 1024 * 1024);
-  uint32_t buffhint = TestConfig.getInt("compression.buffer.hint", 128 * 1024);
-  string type = TestConfig.get("compression.input.type", "bytes");
+void TestCodec(const string & codec, const string & data, char * buff, char * buff2, size_t buffLen,
+    uint32_t buffhint) {
   Timer timer;
-  GenerateKVTextLength(data, length, type);
-  LOG("%s", timer.getInterval("Generate data").c_str());
-
-  InputBuffer inputBuffer = InputBuffer(data);
-  size_t buffLen = data.length() / 2 * 3;
-
-  timer.reset();
-  char * buff = new char[buffLen];
-  char * buff2 = new char[buffLen];
-  memset(buff, 0, buffLen);
-  memset(buff2, 0, buffLen);
-  LOG("%s", timer.getInterval("memset buffer to prevent missing page").c_str());
-
   OutputBuffer outputBuffer = OutputBuffer(buff, buffLen);
   CompressStream * compressor = Compressions::getCompressionStream(codec, &outputBuffer, buffhint);
 
@@ -77,10 +59,35 @@ void TestCodec(const string & codec) {
   ASSERT_EQ(data.length(), total);
   ASSERT_EQ(0, memcmp(data.c_str(), buff2, total));
 
-  delete[] buff;
-  delete[] buff2;
   delete compressor;
   delete decompressor;
+}
+
+TEST(Perf, Compressions) {
+  string data;
+  size_t length = TestConfig.getInt("compression.input.length", 100 * 1024 * 1024);
+  uint32_t buffhint = TestConfig.getInt("compression.buffer.hint", 128 * 1024);
+  string type = TestConfig.get("compression.input.type", "bytes");
+  Timer timer;
+  GenerateKVTextLength(data, length, type);
+  LOG("%s", timer.getInterval("Generate data").c_str());
+
+  InputBuffer inputBuffer = InputBuffer(data);
+  size_t buffLen = data.length() / 2 * 3;
+
+  timer.reset();
+  char * buff = new char[buffLen];
+  char * buff2 = new char[buffLen];
+  memset(buff, 0, buffLen);
+  memset(buff2, 0, buffLen);
+  LOG("%s", timer.getInterval("memset buffer to prevent missing page").c_str());
+
+  TestCodec("org.apache.hadoop.io.compress.SnappyCodec", data, buff, buff2, buffLen, buffhint);
+  TestCodec("org.apache.hadoop.io.compress.Lz4Codec", data, buff, buff2, buffLen, buffhint);
+  TestCodec("org.apache.hadoop.io.compress.GzipCodec", data, buff, buff2, buffLen, buffhint);
+
+  delete[] buff;
+  delete[] buff2;
 }
 
 TEST(Perf, CompressionUtil) {
@@ -144,7 +151,7 @@ TEST(Perf, CompressionUtil) {
 }
 
 class CompressResult {
- public:
+public:
   uint64_t uncompressedSize;
   uint64_t compressedSize;
   uint64_t compressTime;
@@ -168,9 +175,11 @@ class CompressResult {
   }
 };
 
-TEST(Perf, GzipCodec) {
-  TestCodec("org.apache.hadoop.io.compress.GzipCodec");
+extern "C" {
+extern int LZ4_compress(char* source, char* dest, int isize);
+extern int LZ4_uncompress(char* source, char* dest, int osize);
 }
+;
 
 void MeasureSingleFileLz4(const string & path, CompressResult & total, size_t blockSize,
     int times) {
@@ -181,11 +190,13 @@ void MeasureSingleFileLz4(const string & path, CompressResult & total, size_t bl
   char * dest = new char[blockSize + 8];
   CompressResult result;
   Timer t;
+  int compressedSize;
   for (size_t start = 0; start < data.length(); start += blockSize) {
     size_t currentblocksize = std::min(data.length() - start, blockSize);
     uint64_t startTime = t.now();
     for (int i = 0; i < times; i++) {
       int osize = LZ4_compress((char*)data.data() + start, outputBuffer, currentblocksize);
+      compressedSize = osize;
       result.compressedSize += osize;
       result.uncompressedSize += currentblocksize;
     }
@@ -193,8 +204,9 @@ void MeasureSingleFileLz4(const string & path, CompressResult & total, size_t bl
     result.compressTime += endTime - startTime;
     startTime = t.now();
     for (int i = 0; i < times; i++) {
+//      memset(dest, 0, currentblocksize+8);
       int osize = LZ4_uncompress(outputBuffer, dest, currentblocksize);
-      ASSERT_EQ(currentblocksize, osize);
+//      printf("%016llx blocksize: %lu\n", bswap64(*(uint64_t*)(dest+currentblocksize)), currentblocksize);
     }
     endTime = t.now();
     result.uncompressTime += endTime - startTime;
@@ -221,12 +233,7 @@ TEST(Perf, RawCompressionLz4) {
   printf("%s - Total\n", total.toString().c_str());
 }
 
-TEST(Perf, Lz4Codec) {
-  TestCodec("org.apache.hadoop.io.compress.Lz4Codec");
-}
-
 #if defined HADOOP_SNAPPY_LIBRARY
-
 void MeasureSingleFileSnappy(const string & path, CompressResult & total, size_t blockSize,
     int times) {
   string data;
@@ -236,7 +243,7 @@ void MeasureSingleFileSnappy(const string & path, CompressResult & total, size_t
   char * dest = new char[blockSize];
   CompressResult result;
   Timer t;
-  int compressedSize = -1;
+  int compressedSize;
   for (size_t start = 0; start < data.length(); start += blockSize) {
     size_t currentblocksize = std::min(data.length() - start, blockSize);
     uint64_t startTime = t.now();
@@ -269,7 +276,7 @@ TEST(Perf, RawCompressionSnappy) {
   vector<FileEntry> inputfiles;
   FileSystem::getLocal().list(inputdir, inputfiles);
   CompressResult total;
-  printf("Block size: %"PRId64"K\n", blockSize / 1024);
+  printf("Block size: %lldK\n", blockSize / 1024);
   for (size_t i = 0; i < inputfiles.size(); i++) {
     if (!inputfiles[i].isDirectory) {
       MeasureSingleFileSnappy((inputdir + "/" + inputfiles[i].name).c_str(), total, blockSize,
@@ -277,10 +284,6 @@ TEST(Perf, RawCompressionSnappy) {
     }
   }
   printf("%s - Total\n", total.toString().c_str());
-}
-
-TEST(Perf, SnappyCodec) {
-  TestCodec("org.apache.hadoop.io.compress.SnappyCodec");
 }
 
 #endif // define HADOOP_SNAPPY_LIBRARY

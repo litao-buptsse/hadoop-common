@@ -20,7 +20,7 @@
 #define MIN_HEAP_H_
 
 #include "NativeTask.h"
-#include "lib/Buffers.h"
+#include "Buffers.h"
 
 template<typename T, typename Compare>
 void heapify(T* first, int rt, int heap_len, Compare & Comp) {

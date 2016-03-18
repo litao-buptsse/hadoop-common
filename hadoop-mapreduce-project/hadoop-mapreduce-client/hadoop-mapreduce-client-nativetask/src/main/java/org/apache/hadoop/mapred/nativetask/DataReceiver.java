@@ -20,18 +20,18 @@ package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-
 /**
  * a DataReceiver pulls in arriving data, an example
  * is {@link org.apache.hadoop.mapred.nativetask.handlers.BufferPuller}
  */
-@InterfaceAudience.Private
 public interface DataReceiver {
 
   /**
    * Send a signal to the receiver that the data arrives.
    * The data is transferred in another band.
+   * 
+   * @return
+   * @throws IOException
    */
   public boolean receiveData() throws IOException;
 }

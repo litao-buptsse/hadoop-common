@@ -22,10 +22,9 @@ import java.lang.reflect.Constructor;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 
-@InterfaceAudience.Private
+
 public class OutputUtil {
 
   private static Log LOG = LogFactory.getLog(OutputUtil.class);
@@ -41,7 +40,7 @@ public class OutputUtil {
       NativeTaskOutput instance = (NativeTaskOutput) ctor.newInstance(conf, id);
       return instance;
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      return null;
     }
   }
 }

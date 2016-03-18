@@ -18,7 +18,7 @@
 #ifndef _COMBINEHANDLER_H_
 #define _COMBINEHANDLER_H_
 
-#include "lib/Combiner.h"
+#include "Combiner.h"
 #include "BatchHandler.h"
 
 namespace NativeTask {

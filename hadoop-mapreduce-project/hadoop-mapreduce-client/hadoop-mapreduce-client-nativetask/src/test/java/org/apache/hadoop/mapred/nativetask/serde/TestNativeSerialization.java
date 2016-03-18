@@ -21,14 +21,14 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
+import junit.framework.Assert;
+import junit.framework.TestCase;
+
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.nativetask.INativeComparable;
-import org.junit.Assert;
-import org.junit.Test;
 
-@SuppressWarnings({ "rawtypes" })
-public class TestNativeSerialization {
-  @Test
+@SuppressWarnings({ "rawtypes", "deprecation" })
+public class TestNativeSerialization extends TestCase {
   public void testRegisterAndGet() throws IOException {
     final NativeSerialization serialization = NativeSerialization.getInstance();
     serialization.reset();
@@ -93,8 +93,7 @@ public class TestNativeSerialization {
   public static class NonWritableValue {
   }
 
-  public static class ComparableKeySerializer
-    implements INativeComparable, INativeSerializer<WritableKey> {
+  public static class ComparableKeySerializer implements INativeComparable, INativeSerializer<WritableKey> {
 
     @Override
     public int getLength(WritableKey w) throws IOException {

@@ -21,7 +21,7 @@
 
 #include <string>
 #include "NativeTask.h"
-#include "lib/Streams.h"
+#include "Streams.h"
 
 namespace NativeTask {
 

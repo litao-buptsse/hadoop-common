@@ -16,11 +16,12 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "test_commons.h"
-#include "lib/MapOutputSpec.h"
+#include "MapOutputSpec.h"
 #include "lib/MemoryBlock.h"
 
+using namespace NativeTask;
 namespace NativeTaskTest {
 
 TEST(MemoryBlock, test) {
@@ -43,7 +44,6 @@ TEST(MemoryBlock, test) {
 
   ASSERT_EQ(2, block.getKVCount());
   ASSERT_EQ(kv1, block.getKVBuffer(0));
-  ASSERT_EQ(kv2, block.getKVBuffer(1));
 
   ASSERT_EQ(BUFFER_LENGTH - 2 * KV_SIZE, block.remainSpace());
   ASSERT_EQ(false, block.sorted());
@@ -106,4 +106,5 @@ TEST(MemoryBlock, sort) {
   delete [] bytes;
 }
 
-} // namespace NativeTask
+}
+

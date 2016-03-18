@@ -16,10 +16,10 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "util/StringUtil.h"
 #include "util/SyncUtils.h"
-#include "lib/jniutils.h"
+#include "jniutils.h"
 
 using namespace NativeTask;
 
@@ -53,7 +53,7 @@ JavaVM * JNU_GetJVM(void) {
         JavaVMOption options[noArgs];
         options[0].optionString = optHadoopClassPath;
 
-        // Create the VM
+        //Create the VM
         JavaVMInitArgs vm_args;
         vm_args.version = JNI_VERSION_1_6;
         vm_args.options = options;

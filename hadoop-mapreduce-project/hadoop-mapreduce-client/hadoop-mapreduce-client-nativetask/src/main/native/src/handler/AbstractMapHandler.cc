@@ -16,19 +16,20 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "util/StringUtil.h"
 #include "MCollectorOutputHandler.h"
-#include "lib/NativeObjectFactory.h"
-#include "lib/MapOutputCollector.h"
+#include "NativeObjectFactory.h"
+#include "MapOutputCollector.h"
 #include "CombineHandler.h"
 
 using std::string;
 using std::vector;
 
 namespace NativeTask {
+
 const Command AbstractMapHandler::GET_OUTPUT_PATH(100, "GET_OUTPUT_PATH");
 const Command AbstractMapHandler::GET_OUTPUT_INDEX_PATH(101, "GET_OUTPUT_INDEX_PATH");
 const Command AbstractMapHandler::GET_SPILL_PATH(102, "GET_SPILL_PATH");
 const Command AbstractMapHandler::GET_COMBINE_HANDLER(103, "GET_COMBINE_HANDLER");
-} // namespace NativeTask
+}      //namespace

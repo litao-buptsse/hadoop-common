@@ -17,8 +17,8 @@
  */
 
 #include <stdarg.h>
-#include "lib/commons.h"
-#include "util/StringUtil.h"
+#include "commons.h"
+#include "StringUtil.h"
 
 namespace NativeTask {
 
@@ -36,19 +36,19 @@ string StringUtil::ToString(uint32_t v) {
 
 string StringUtil::ToString(int64_t v) {
   char tmp[32];
-  snprintf(tmp, 32, "%"PRId64, v);
+  snprintf(tmp, 32, "%lld", (long long int)v);
   return tmp;
 }
 
 string StringUtil::ToString(int64_t v, char pad, int64_t len) {
   char tmp[32];
-  snprintf(tmp, 32, "%%%c%"PRId64""PRId64, pad, len);
+  snprintf(tmp, 32, "%%%c%lldlld", pad, len);
   return Format(tmp, v);
 }
 
 string StringUtil::ToString(uint64_t v) {
   char tmp[32];
-  snprintf(tmp, 32, "%"PRIu64, v);
+  snprintf(tmp, 32, "%llu", (long long unsigned int)v);
   return tmp;
 }
 
@@ -201,9 +201,8 @@ bool StringUtil::StartsWith(const string & str, const string & prefix) {
 }
 
 bool StringUtil::EndsWith(const string & str, const string & suffix) {
-  if ((suffix.length() > str.length()) ||
-      (memcmp(str.data() + str.length() - suffix.length(),
-              suffix.data(), suffix.length()) != 0)) {
+  if ((suffix.length() > str.length())
+      || (memcmp(str.data() + str.length() - suffix.length(), suffix.data(), suffix.length()) != 0)) {
     return false;
   }
   return true;

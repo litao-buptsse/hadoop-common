@@ -19,11 +19,11 @@
 #ifndef IFILE_H_
 #define IFILE_H_
 
-#include "util/Checksum.h"
-#include "lib/Buffers.h"
-#include "util/WritableUtils.h"
-#include "lib/SpillInfo.h"
-#include "lib/MapOutputSpec.h"
+#include "Checksum.h"
+#include "Buffers.h"
+#include "WritableUtils.h"
+#include "SpillInfo.h"
+#include "MapOutputSpec.h"
 
 namespace NativeTask {
 
@@ -129,7 +129,6 @@ protected:
   AppendBuffer _appendBuffer;
   vector<IFileSegment> _spillFileSegments;
   Counter * _recordCounter;
-  uint64_t _recordCount;
 
   bool _deleteTargetStream;
 
@@ -154,7 +153,7 @@ public:
 
   SingleSpillInfo * getSpillInfo();
 
-  void getStatistics(uint64_t & offset, uint64_t & realOffset, uint64_t & recordCount);
+  void getStatistics(uint64_t & offset, uint64_t & realOffset);
 
   virtual void collect(const void * key, uint32_t keyLen, const void * value, uint32_t valueLen) {
     write((const char*)key, keyLen, (const char*)value, valueLen);

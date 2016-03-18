@@ -18,10 +18,9 @@
 
 package org.apache.hadoop.mapred.nativetask.buffer;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-
-@InterfaceAudience.Private
 public enum BufferType {
+
   DIRECT_BUFFER,
+
   HEAP_BUFFER
 };

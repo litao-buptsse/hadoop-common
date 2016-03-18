@@ -90,7 +90,7 @@ SET(CMAKE_FIND_LIBRARY_SUFFIXES STORED_CMAKE_FIND_LIBRARY_SUFFIXES)
 
 # primitive configs
 set(PRFLAGS "-DSIMPLE_MEMCPY")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${PRFLAGS} -fno-strict-aliasing -Wall -Wno-sign-compare")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${PRFLAGS} -Wall")
 set(CMAKE_LD_FLAGS "${CMAKE_LD_FLAGS} -no-undefined -version-info 0:1:0
     -L${_JAVA_HOME}/jre/lib/amd64/server -ljvm")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} -g -O2 -DNDEBUG -fPIC")
@@ -122,6 +122,7 @@ CHECK_FUNCTION_EXISTS(memset HAVE_MEMSET)
 CHECK_FUNCTION_EXISTS(strchr HAVE_STRCHR)
 CHECK_FUNCTION_EXISTS(strtoul HAVE_STRTOUL)
 
+
 SET(STORED_CMAKE_FIND_LIBRARY_SUFFIXES CMAKE_FIND_LIBRARY_SUFFIXES)
 set_find_shared_library_version("1")
 find_library(SNAPPY_LIBRARY
@@ -138,7 +139,6 @@ if (SNAPPY_LIBRARY AND SNAPPY_INCLUDE_DIR)
     set(SNAPPY_SOURCE_FILES
         "${D}/src/codec/SnappyCodec.cc")
 else (SNAPPY_LIBRARY AND SNAPPY_INCLUDE_DIR)
-    set(SNAPPY_LIBRARY "")
     set(SNAPPY_INCLUDE_DIR "")
     set(SNAPPY_SOURCE_FILES "")
     IF(REQUIRE_SNAPPY)
@@ -146,21 +146,22 @@ else (SNAPPY_LIBRARY AND SNAPPY_INCLUDE_DIR)
     ENDIF(REQUIRE_SNAPPY)
 endif (SNAPPY_LIBRARY AND SNAPPY_INCLUDE_DIR)
 
-CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/config.h.cmake ${CMAKE_BINARY_DIR}/config.h)
-
 include_directories(
     ${GENERATED_JAVAH}
+    ${D}
     ${D}/src
     ${D}/src/util
     ${D}/src/lib
     ${D}/test
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_BINARY_DIR}
+    #${CMAKE_CURRENT_SOURCE_DIR}/src
+    #${CMAKE_BINARY_DIR}
     ${JNI_INCLUDE_DIRS}
     ${SNAPPY_INCLUDE_DIR}
 )
-# add gtest as system library to suppress gcc warnings
-include_directories(SYSTEM ${D}/gtest/include)
+
+#SET(CMAKE_SOURCE_DIR "/cygdrive/c/Users/tianlunz/repo/hadoop-2.2.0-src/hadoop-common-project/hadoop-common/src")
+CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/config.h.cmake ${CMAKE_BINARY_DIR}/config.h)
 
 
 SET(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
@@ -168,16 +169,13 @@ SET(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # macosx does not have -lrt
     set(NT_DEPEND_LIBRARY dl pthread z ${SNAPPY_LIBRARY} ${JAVA_JVM_LIBRARY})
-    set(SYSTEM_MAC TRUE)
 else (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(NT_DEPEND_LIBRARY dl rt pthread z ${SNAPPY_LIBRARY} ${JAVA_JVM_LIBRARY})
-    set(SYSTEM_MAC FALSE)
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
-configure_file(main/native/test.sh test/test.sh)
-
 add_dual_library(nativetask
-    ${CMAKE_BINARY_DIR}/lz4.c
+    ${D}/lz4/lz4.c
+    ${D}/cityhash/city.cc
     ${D}/src/codec/BlockCodec.cc
     ${D}/src/codec/GzipCodec.cc
     ${D}/src/codec/Lz4Codec.cc
@@ -207,8 +205,10 @@ add_dual_library(nativetask
     ${D}/src/lib/SpillInfo.cc
     ${D}/src/lib/Path.cc
     ${D}/src/lib/Streams.cc
+    ${D}/src/lib/Combiner.cc
     ${D}/src/lib/TaskCounters.cc
     ${D}/src/util/Checksum.cc
+    ${D}/src/util/Hash.cc
     ${D}/src/util/Random.cc
     ${D}/src/util/StringUtil.cc
     ${D}/src/util/SyncUtils.cc
@@ -218,9 +218,8 @@ add_dual_library(nativetask
 
 target_link_libraries(nativetask ${NT_DEPEND_LIBRARY})
 
-add_library(gtest ${D}/gtest/gtest-all.cc)
-set_target_properties(gtest PROPERTIES COMPILE_FLAGS "-w")
 add_executable(nttest
+    ${D}/gtest/gtest-all.cc
     ${D}/test/lib/TestByteArray.cc
     ${D}/test/lib/TestByteBuffer.cc
     ${D}/test/lib/TestComparatorForDualPivotQuickSort.cc
@@ -234,8 +233,11 @@ add_executable(nttest
     ${D}/test/lib/TestPartitionBucket.cc
     ${D}/test/lib/TestReadBuffer.cc
     ${D}/test/lib/TestReadWriteBuffer.cc
+    ${D}/test/lib/TestTrackingCollector.cc
     ${D}/test/util/TestChecksum.cc
+    ${D}/test/util/TestHash.cc
     ${D}/test/util/TestStringUtil.cc
+    ${D}/test/util/TestSyncUtils.cc
     ${D}/test/util/TestWritableUtils.cc
     ${D}/test/TestCommand.cc
     ${D}/test/TestConfig.cc
@@ -256,7 +258,6 @@ ENDIF()
 
 target_link_libraries(nttest
      nativetask_static
-     gtest
      ${NT_DEPEND_LIBRARY}
 )
 

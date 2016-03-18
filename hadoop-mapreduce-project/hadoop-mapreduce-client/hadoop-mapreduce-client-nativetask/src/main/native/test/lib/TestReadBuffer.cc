@@ -16,10 +16,9 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
-#include "config.h"
-#include "lib/BufferStream.h"
-#include "lib/Buffers.h"
+#include "commons.h"
+#include "BufferStream.h"
+#include "Buffers.h"
 #include "test_commons.h"
 
 TEST(Buffers, AppendRead) {
@@ -44,7 +43,6 @@ TEST(Buffers, AppendRead) {
   }
 }
 
-#if defined HADOOP_SNAPPY_LIBRARY
 TEST(Buffers, AppendReadSnappy) {
   string codec = "org.apache.hadoop.io.compress.SnappyCodec";
   vector<string> data;
@@ -66,4 +64,4 @@ TEST(Buffers, AppendReadSnappy) {
     ASSERT_EQ(data[i], string(rd, data[i].length()));
   }
 }
-#endif
+

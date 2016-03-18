@@ -19,9 +19,9 @@ package org.apache.hadoop.mapred.nativetask.handlers;
 
 import java.io.IOException;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
+import junit.framework.Assert;
+import junit.framework.TestCase;
+
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.nativetask.Command;
@@ -30,27 +30,22 @@ import org.apache.hadoop.mapred.nativetask.INativeHandler;
 import org.apache.hadoop.mapred.nativetask.TaskContext;
 import org.apache.hadoop.mapred.nativetask.buffer.BufferType;
 import org.apache.hadoop.mapred.nativetask.buffer.InputBuffer;
-import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
 import org.apache.hadoop.mapred.nativetask.util.OutputUtil;
 import org.apache.hadoop.mapred.nativetask.util.ReadWriteBuffer;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
 import org.mockito.Matchers;
 import org.mockito.Mockito;
 
 @SuppressWarnings({ "rawtypes", "unchecked", "deprecation" })
-public class TestNativeCollectorOnlyHandler {
+public class TestNativeCollectorOnlyHandler extends TestCase {
 
   private NativeCollectorOnlyHandler handler;
   private INativeHandler nativeHandler;
   private BufferPusher pusher;
   private ICombineHandler combiner;
   private TaskContext taskContext;
-  private static final String LOCAL_DIR = TestConstants.NATIVETASK_TEST_DIR + "/local";
+  private String localDir = "build/test/mapred/local";
 
-  @Before
+  @Override
   public void setUp() throws IOException {
     this.nativeHandler = Mockito.mock(INativeHandler.class);
     this.pusher = Mockito.mock(BufferPusher.class);
@@ -58,7 +53,7 @@ public class TestNativeCollectorOnlyHandler {
     JobConf jobConf = new JobConf();
     jobConf.set(OutputUtil.NATIVE_TASK_OUTPUT_MANAGER,
         "org.apache.hadoop.mapred.nativetask.util.LocalJobOutputFiles");
-    jobConf.set("mapred.local.dir", LOCAL_DIR);
+    jobConf.set("mapred.local.dir", localDir);
     this.taskContext = new TaskContext(jobConf,
         BytesWritable.class, BytesWritable.class,
         BytesWritable.class,
@@ -66,16 +61,9 @@ public class TestNativeCollectorOnlyHandler {
         null,
         null);
 
-    Mockito.when(nativeHandler.getInputBuffer()).thenReturn(
-      new InputBuffer(BufferType.HEAP_BUFFER, 100));
+    Mockito.when(nativeHandler.getInputBuffer()).thenReturn(new InputBuffer(BufferType.HEAP_BUFFER, 100));
   }
 
-  @After
-  public void tearDown() throws IOException {
-    FileSystem.getLocal(new Configuration()).delete(new Path(LOCAL_DIR));
-  }
-
-  @Test
   public void testCollect() throws IOException {
     this.handler = new NativeCollectorOnlyHandler(taskContext, nativeHandler, pusher, combiner);
     handler.collect(new BytesWritable(), new BytesWritable(), 100);
@@ -90,16 +78,13 @@ public class TestNativeCollectorOnlyHandler {
     Mockito.verify(nativeHandler, Mockito.times(1)).close();
   }
 
-  @Test
   public void testGetCombiner() throws IOException {
     this.handler = new NativeCollectorOnlyHandler(taskContext, nativeHandler, pusher, combiner);
     Mockito.when(combiner.getId()).thenReturn(100L);
-    final ReadWriteBuffer result = handler.onCall(
-      NativeCollectorOnlyHandler.GET_COMBINE_HANDLER, null);
+    final ReadWriteBuffer result = handler.onCall(NativeCollectorOnlyHandler.GET_COMBINE_HANDLER, null);
     Assert.assertEquals(100L, result.readLong());
   }
 
-  @Test
   public void testOnCall() throws IOException {
     this.handler = new NativeCollectorOnlyHandler(taskContext, nativeHandler, pusher, combiner);
     boolean thrown = false;
@@ -110,20 +95,17 @@ public class TestNativeCollectorOnlyHandler {
     }
     Assert.assertTrue("exception thrown", thrown);
 
-    final String expectedOutputPath = LOCAL_DIR + "/output/file.out";
-    final String expectedOutputIndexPath = LOCAL_DIR + "/output/file.out.index";
-    final String expectedSpillPath = LOCAL_DIR + "/output/spill0.out";
+    final String expectedOutputPath = localDir + "/output/file.out";
+    final String expectedOutputIndexPath = localDir + "/output/file.out.index";
+    final String expectedSpillPath = localDir + "/output/spill0.out";
 
-    final String outputPath = handler.onCall(
-      NativeCollectorOnlyHandler.GET_OUTPUT_PATH, null).readString();
+    final String outputPath = handler.onCall(NativeCollectorOnlyHandler.GET_OUTPUT_PATH, null).readString();
     Assert.assertEquals(expectedOutputPath, outputPath);
 
-    final String outputIndexPath = handler.onCall(
-      NativeCollectorOnlyHandler.GET_OUTPUT_INDEX_PATH, null).readString();
+    final String outputIndexPath = handler.onCall(NativeCollectorOnlyHandler.GET_OUTPUT_INDEX_PATH, null).readString();
     Assert.assertEquals(expectedOutputIndexPath, outputIndexPath);
 
-    final String spillPath = handler.onCall(
-      NativeCollectorOnlyHandler.GET_SPILL_PATH, null).readString();
+    final String spillPath = handler.onCall(NativeCollectorOnlyHandler.GET_SPILL_PATH, null).readString();
     Assert.assertEquals(expectedSpillPath, spillPath);
   }
 }

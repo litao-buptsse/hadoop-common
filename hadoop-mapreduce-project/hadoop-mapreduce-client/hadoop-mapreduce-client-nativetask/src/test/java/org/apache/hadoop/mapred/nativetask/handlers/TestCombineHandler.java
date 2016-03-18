@@ -19,19 +19,19 @@ package org.apache.hadoop.mapred.nativetask.handlers;
 
 import java.io.IOException;
 
+import junit.framework.Assert;
+import junit.framework.TestCase;
+
 import org.apache.hadoop.mapred.Task.CombinerRunner;
 import org.apache.hadoop.mapred.nativetask.Command;
 import org.apache.hadoop.mapred.nativetask.INativeHandler;
 import org.apache.hadoop.mapred.nativetask.buffer.BufferType;
 import org.apache.hadoop.mapred.nativetask.buffer.InputBuffer;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
 import org.mockito.Matchers;
 import org.mockito.Mockito;
 
 @SuppressWarnings({ "rawtypes", "unchecked", "deprecation" })
-public class TestCombineHandler {
+public class TestCombineHandler extends TestCase {
 
   private CombinerHandler handler;
   private INativeHandler nativeHandler;
@@ -39,40 +39,36 @@ public class TestCombineHandler {
   private BufferPuller puller;
   private CombinerRunner combinerRunner;
 
-  @Before
+  @Override
   public void setUp() throws IOException {
+    
     this.nativeHandler = Mockito.mock(INativeHandler.class);
     this.pusher = Mockito.mock(BufferPusher.class);
     this.puller =  Mockito.mock(BufferPuller.class);
     this.combinerRunner =  Mockito.mock(CombinerRunner.class);
 
-    Mockito.when(nativeHandler.getInputBuffer()).thenReturn(
-      new InputBuffer(BufferType.HEAP_BUFFER, 100));
+    Mockito.when(nativeHandler.getInputBuffer()).thenReturn(new InputBuffer(BufferType.HEAP_BUFFER, 100));
   }
 
-  @Test
   public void testCommandDispatcherSetting() throws IOException {
     this.handler = new CombinerHandler(nativeHandler, combinerRunner, puller, pusher);
     Mockito.verify(nativeHandler, Mockito.times(1)).setCommandDispatcher(Matchers.eq(handler));
     Mockito.verify(nativeHandler, Mockito.times(1)).setDataReceiver(Matchers.eq(puller));
   }
 
-  @Test
   public void testCombine() throws IOException, InterruptedException, ClassNotFoundException {
     this.handler = new CombinerHandler(nativeHandler, combinerRunner, puller, pusher);
     Assert.assertEquals(null, handler.onCall(CombinerHandler.COMBINE, null));
     handler.close();
     handler.close();
 
-    Mockito.verify(combinerRunner, Mockito.times(1))
-      .combine(Matchers.eq(puller), Matchers.eq(pusher));
+    Mockito.verify(combinerRunner, Mockito.times(1)).combine(Matchers.eq(puller), Matchers.eq(pusher));
 
     Mockito.verify(pusher, Mockito.times(1)).close();
     Mockito.verify(puller, Mockito.times(1)).close();
     Mockito.verify(nativeHandler, Mockito.times(1)).close();
   }
 
-  @Test
   public void testOnCall() throws IOException {
     this.handler = new CombinerHandler(nativeHandler, combinerRunner, puller, pusher);
     Assert.assertEquals(null, handler.onCall(new Command(-1), null));

@@ -23,7 +23,6 @@ import java.io.IOException;
 import com.google.common.base.Charsets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.FloatWritable;
@@ -32,15 +31,15 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.Task.TaskReporter;
 import org.apache.hadoop.mapred.nativetask.util.ConfigUtil;
+import org.apache.hadoop.mapred.nativetask.util.SnappyUtil;
 import org.apache.hadoop.util.VersionInfo;
 
 /**
- * This class stands for the native runtime It has three functions:
- * 1. Create native handlers for map, reduce, outputcollector, etc
- * 2. Configure native task with provided MR configs
- * 3. Provide file system api to native space, so that it can use File system like HDFS.
+ * This class stands for the native runtime It has three functions: 1. Create native handlers for map, reduce,
+ * outputcollector, and etc 2. Configure native task with provided MR configs 3. Provide file system api to native
+ * space, so that it can use File system like HDFS.
+ * 
  */
-@InterfaceAudience.Private
 public class NativeRuntime {
   private static Log LOG = LogFactory.getLog(NativeRuntime.class);
   private static boolean nativeLibraryLoaded = false;
@@ -49,6 +48,11 @@ public class NativeRuntime {
 
   static {
     try {
+      if (false == SnappyUtil.isNativeSnappyLoaded(conf)) {
+        throw new IOException("Snappy library cannot be loaded");
+      } else {
+        LOG.info("Snappy native library is available");
+      }
       System.loadLibrary("nativetask");
       LOG.info("Nativetask JNI library loaded.");
       nativeLibraryLoaded = true;
@@ -79,6 +83,9 @@ public class NativeRuntime {
 
   /**
    * create native object We use it to create native handlers
+   * 
+   * @param clazz
+   * @return
    */
   public synchronized static long createNativeObject(String clazz) {
     assertNativeLibraryLoaded();
@@ -91,11 +98,13 @@ public class NativeRuntime {
 
   /**
    * Register a customized library
+   * 
+   * @param clazz
+   * @return
    */
   public synchronized static long registerLibrary(String libraryName, String clazz) {
     assertNativeLibraryLoaded();
-    final long ret = JNIRegisterModule(libraryName.getBytes(Charsets.UTF_8),
-                                       clazz.getBytes(Charsets.UTF_8));
+    final long ret = JNIRegisterModule(libraryName.getBytes(Charsets.UTF_8), clazz.getBytes(Charsets.UTF_8));
     if (ret != 0) {
       LOG.warn("Can't create NativeObject for class " + clazz + ", probably not exist.");
     }
@@ -112,6 +121,9 @@ public class NativeRuntime {
 
   /**
    * Get the status report from native space
+   * 
+   * @param reporter
+   * @throws IOException
    */
   public static void reportStatus(TaskReporter reporter) throws IOException {
     assertNativeLibraryLoaded();
@@ -150,38 +162,41 @@ public class NativeRuntime {
    ********************************************************/
 
   /**
-   * Check whether the native side has compression codec support built in
-   */
-  public native static boolean supportsCompressionCodec(byte[] codec);
-
-  /**
    * Config the native runtime with mapreduce job configurations.
+   * 
+   * @param configs
    */
   private native static void JNIConfigure(byte[][] configs);
 
   /**
    * create a native object in native space
+   * 
+   * @param clazz
+   * @return
    */
   private native static long JNICreateNativeObject(byte[] clazz);
 
   /**
    * create the default native object for certain type
+   * 
+   * @param type
+   * @return
    */
   @Deprecated
   private native static long JNICreateDefaultNativeObject(byte[] type);
 
   /**
    * destroy native object in native space
+   * 
+   * @param addr
    */
   private native static void JNIReleaseNativeObject(long addr);
 
   /**
-   * Get status update from native side
-   * Encoding:
-   *  progress:float
-   *  status:Text
-   *  number: int the count of the counters
-   *  Counters: array [group:Text, name:Text, incrCount:Long]
+   * get status update from native side Encoding: progress:float status:Text Counter number: int the count of the
+   * counters Counters: array [group:Text, name:Text, incrCount:Long]
+   * 
+   * @return
    */
   private native static byte[] JNIUpdateStatus();
 

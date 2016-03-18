@@ -20,14 +20,14 @@
 #define MAP_OUTPUT_COLLECTOR_H_
 
 #include "NativeTask.h"
-#include "lib/MemoryPool.h"
-#include "util/Timer.h"
-#include "lib/Buffers.h"
-#include "lib/MapOutputSpec.h"
-#include "lib/IFile.h"
-#include "lib/SpillInfo.h"
-#include "lib/Combiner.h"
-#include "lib/PartitionBucket.h"
+#include "MemoryPool.h"
+#include "Timer.h"
+#include "Buffers.h"
+#include "MapOutputSpec.h"
+#include "IFile.h"
+#include "SpillInfo.h"
+#include "Combiner.h"
+#include "PartitionBucket.h"
 #include "lib/SpillOutputService.h"
 
 namespace NativeTask {
@@ -55,8 +55,8 @@ private:
 
 public:
   CombineRunnerWrapper(Config * config, SpillOutputService * service)
-      : _config(config), _combineRunner(NULL), _isJavaCombiner(false),
-          _combinerInited(false), _spillOutput(service) {
+      : _spillOutput(service), _config(config), _isJavaCombiner(false), _combineRunner(NULL),
+          _combinerInited(false) {
   }
 
   ~CombineRunnerWrapper() {
@@ -85,11 +85,7 @@ private:
 
   ICombineRunner * _combineRunner;
 
-  Counter * _mapOutputRecords;
-  Counter * _mapOutputBytes;
-  Counter * _mapOutputMaterializedBytes;
   Counter * _spilledRecords;
-
   SpillOutputService * _spillOutput;
 
   uint32_t _defaultBlockSize;
@@ -122,7 +118,7 @@ public:
 
 private:
   void init(uint32_t maxBlockSize, uint32_t memory_capacity, ComparatorPtr keyComparator,
-      ICombineRunner * combiner);
+      Counter * spilledRecord, ICombineRunner * combiner);
 
   void reset();
 
@@ -153,7 +149,7 @@ private:
    * normal spill use options in _config
    * @param filepaths: spill file path
    */
-  void middleSpill(const std::string & spillOutput, const std::string & indexFilePath, bool final);
+  void middleSpill(const std::string & spillOutput, const std::string & indexFilePath);
 
   /**
    * final merge and/or spill use options in _config, and

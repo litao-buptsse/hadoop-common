@@ -19,7 +19,7 @@
 #ifndef GZIPCODEC_H_
 #define GZIPCODEC_H_
 
-#include "lib/Compressions.h"
+#include "Compressions.h"
 
 namespace NativeTask {
 

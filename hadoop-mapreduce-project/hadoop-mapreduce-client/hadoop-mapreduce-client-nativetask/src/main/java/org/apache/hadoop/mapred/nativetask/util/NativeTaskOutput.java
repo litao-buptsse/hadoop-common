@@ -19,7 +19,6 @@ package org.apache.hadoop.mapred.nativetask.util;
 
 import java.io.IOException;
 
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.TaskID;
@@ -27,75 +26,107 @@ import org.apache.hadoop.mapred.TaskID;
 /**
  * base class of output files manager.
  */
-@InterfaceAudience.Private
 public interface NativeTaskOutput {
 
   /**
    * Return the path to local map output file created earlier
+   * 
+   * @return path
+   * @throws IOException
    */
   public Path getOutputFile() throws IOException;
 
   /**
    * Create a local map output file name.
    * 
-   * @param size the size of the file
+   * @param size
+   *          the size of the file
+   * @return path
+   * @throws IOException
    */
   public Path getOutputFileForWrite(long size) throws IOException;
 
   /**
    * Return the path to a local map output index file created earlier
+   * 
+   * @return path
+   * @throws IOException
    */
   public Path getOutputIndexFile() throws IOException;
 
   /**
    * Create a local map output index file name.
    * 
-   * @param size the size of the file
+   * @param size
+   *          the size of the file
+   * @return path
+   * @throws IOException
    */
   public Path getOutputIndexFileForWrite(long size) throws IOException;
 
   /**
    * Return a local map spill file created earlier.
    * 
-   * @param spillNumber the number
+   * @param spillNumber
+   *          the number
+   * @return path
+   * @throws IOException
    */
   public Path getSpillFile(int spillNumber) throws IOException;
 
   /**
    * Create a local map spill file name.
    * 
-   * @param spillNumber the number
-   * @param size the size of the file
+   * @param spillNumber
+   *          the number
+   * @param size
+   *          the size of the file
+   * @return path
+   * @throws IOException
    */
   public Path getSpillFileForWrite(int spillNumber, long size) throws IOException;
 
   /**
    * Return a local map spill index file created earlier
    * 
-   * @param spillNumber the number
+   * @param spillNumber
+   *          the number
+   * @return path
+   * @throws IOException
    */
   public Path getSpillIndexFile(int spillNumber) throws IOException;
 
   /**
    * Create a local map spill index file name.
    * 
-    r* @param spillNumber the number
-   * @param size the size of the file
+   * @param spillNumber
+   *          the number
+   * @param size
+   *          the size of the file
+   * @return path
+   * @throws IOException
    */
   public Path getSpillIndexFileForWrite(int spillNumber, long size) throws IOException;
 
   /**
    * Return a local reduce input file created earlier
    * 
-   * @param mapId a map task id
+   * @param mapId
+   *          a map task id
+   * @return path
+   * @throws IOException
    */
   public Path getInputFile(int mapId) throws IOException;
 
   /**
    * Create a local reduce input file name.
    * 
-   * @param mapId a map task id
-   * @param size the size of the file
+   * @param mapId
+   *          a map task id
+   * @param size
+   *          the size of the file
+   * @return path
+   * @throws IOException
    */
   public Path getInputFileForWrite(TaskID mapId, long size, Configuration conf) throws IOException;
 

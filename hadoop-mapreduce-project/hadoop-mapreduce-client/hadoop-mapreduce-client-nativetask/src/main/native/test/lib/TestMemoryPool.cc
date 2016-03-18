@@ -16,12 +16,14 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "test_commons.h"
-#include "lib/PartitionBucket.h"
-#include "lib/PartitionBucketIterator.h"
-#include "lib/MemoryBlock.h"
-#include "lib/IFile.h"
+#include "PartitionBucket.h"
+#include "PartitionBucketIterator.h"
+#include "MemoryBlock.h"
+#include "IFile.h"
+
+using namespace NativeTask;
 
 namespace NativeTask {
 
@@ -45,4 +47,4 @@ TEST(MemoryPool, general) {
 
   delete pool;
 }
-} // namespace NativeTask
+}

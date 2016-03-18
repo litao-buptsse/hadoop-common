@@ -24,8 +24,8 @@
 #include "util/Random.h"
 #include "util/StringUtil.h"
 #include "util/Timer.h"
-#include "lib/Buffers.h"
-#include "lib/BufferStream.h"
+#include "Buffers.h"
+#include "BufferStream.h"
 
 using std::pair;
 using std::vector;

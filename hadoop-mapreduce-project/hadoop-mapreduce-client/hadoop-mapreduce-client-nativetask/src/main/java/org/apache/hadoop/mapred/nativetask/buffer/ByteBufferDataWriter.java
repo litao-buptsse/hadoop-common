@@ -17,13 +17,16 @@
  */
 package org.apache.hadoop.mapred.nativetask.buffer;
 
+import java.io.DataOutput;
 import java.io.IOException;
+import java.io.UTFDataFormatException;
 import java.nio.ByteBuffer;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.mapred.nativetask.NativeDataTarget;
-
+import com.google.common.base.Charsets;
 import com.google.common.base.Preconditions;
+import com.google.common.primitives.UnsignedInteger;
+import com.google.common.primitives.UnsignedInts;
+import org.apache.hadoop.mapred.nativetask.NativeDataTarget;
 
 /**
  * DataOutputStream implementation which buffers data in a fixed-size
@@ -31,7 +34,6 @@ import com.google.common.base.Preconditions;
  * When the byte buffer has filled up, synchronously passes the buffer
  * to a downstream NativeDataTarget.
  */
-@InterfaceAudience.Private
 public class ByteBufferDataWriter extends DataOutputStream {
   private final ByteBuffer buffer;
   private final NativeDataTarget target;

@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "lib/FileSystem.h"
+#include "FileSystem.h"
 #include "test_commons.h"
 
 TEST(FileSystem, RawFileSystem) {

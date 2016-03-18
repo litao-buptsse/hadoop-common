@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "lib/Log.h"
+#include "Log.h"
 
 namespace NativeTask {
 

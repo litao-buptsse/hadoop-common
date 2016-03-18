@@ -23,7 +23,6 @@ import java.nio.ByteBuffer;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapred.nativetask.buffer.BufferType;
@@ -31,11 +30,11 @@ import org.apache.hadoop.mapred.nativetask.buffer.InputBuffer;
 import org.apache.hadoop.mapred.nativetask.buffer.OutputBuffer;
 import org.apache.hadoop.mapred.nativetask.util.ReadWriteBuffer;
 import org.apache.hadoop.mapred.nativetask.util.ConfigUtil;
+import org.apache.hadoop.util.DirectBufferPool;
 
 /**
  * used to create channel, transfer data and command between Java and native
  */
-@InterfaceAudience.Private
 public class NativeBatchProcessor implements INativeHandler {
   private static Log LOG = LogFactory.getLog(NativeBatchProcessor.class);
 
@@ -229,21 +228,32 @@ public class NativeBatchProcessor implements INativeHandler {
 
   /**
    * Let native side to process data in inputBuffer
+   * 
+   * @param handler
+   * @param length
    */
   private native void nativeProcessInput(long handler, int length);
 
   /**
    * Notice native side input is finished
+   * 
+   * @param handler
    */
   private native void nativeFinish(long handler);
 
   /**
    * Send control message to native side
+   * 
+   * @param cmd
+   *          command data
+   * @return return value
    */
   private native byte[] nativeCommand(long handler, int cmd, byte[] parameter);
 
   /**
    * Load data from native
+   * 
+   * @return
    */
   private native void nativeLoadData(long handler);
 

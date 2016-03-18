@@ -21,19 +21,22 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.io.OutputStream;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-
-@InterfaceAudience.Private
 public abstract class DataOutputStream extends OutputStream implements DataOutput {
+
   /**
    * Check whether this buffer has enough space to store length of bytes
    * 
-   * @param length length of bytes
+   * @param length
+   *          , length of bytes
+   * @return
+   * @throws IOException
    */
   public abstract boolean shortOfSpace(int length) throws IOException;
 
   /**
    * Check whether there is unflushed data stored in the stream
+   * 
+   * @return
    */
   public abstract boolean hasUnFlushedData();
 }

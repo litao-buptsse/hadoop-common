@@ -16,10 +16,10 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "util/StringUtil.h"
-#include "lib/IFile.h"
-#include "lib/Compressions.h"
+#include "IFile.h"
+#include "Compressions.h"
 #include "lib/FileSystem.h"
 
 namespace NativeTask {
@@ -27,9 +27,9 @@ namespace NativeTask {
 ///////////////////////////////////////////////////////////
 
 IFileReader::IFileReader(InputStream * stream, SingleSpillInfo * spill, bool deleteInputStream)
-    :  _stream(stream), _source(NULL), _checksumType(spill->checkSumType), _kType(spill->keyType),
-        _vType(spill->valueType), _codec(spill->codec), _segmentIndex(-1), _spillInfo(spill),
-        _valuePos(NULL), _valueLen(0), _deleteSourceStream(deleteInputStream) {
+    : _deleteSourceStream(deleteInputStream), _stream(stream), _source(NULL),
+        _checksumType(spill->checkSumType), _kType(spill->keyType), _vType(spill->valueType),
+        _codec(spill->codec), _segmentIndex(-1), _spillInfo(spill), _valuePos(NULL), _valueLen(0) {
   _source = new ChecksumInputStream(_stream, _checksumType);
   _source->setLimit(0);
   _reader.init(128 * 1024, _source, _codec);
@@ -97,8 +97,9 @@ IFileWriter * IFileWriter::create(const std::string & filepath, const MapOutputS
 
 IFileWriter::IFileWriter(OutputStream * stream, ChecksumType checksumType, KeyValueType ktype,
     KeyValueType vtype, const string & codec, Counter * counter, bool deleteTargetStream)
-    : _stream(stream), _dest(NULL), _checksumType(checksumType), _kType(ktype), _vType(vtype),
-        _codec(codec), _recordCounter(counter), _recordCount(0), _deleteTargetStream(deleteTargetStream) {
+    : _deleteTargetStream(deleteTargetStream), _stream(stream), _dest(NULL),
+        _checksumType(checksumType), _kType(ktype), _vType(vtype), _codec(codec),
+        _recordCounter(counter) {
   _dest = new ChecksumOutputStream(_stream, _checksumType);
   _appendBuffer.init(128 * 1024, _dest, _codec);
 }
@@ -184,7 +185,6 @@ void IFileWriter::write(const char * key, uint32_t keyLen, const char * value, u
   if (NULL != _recordCounter) {
     _recordCounter->increase();
   }
-  _recordCount++;
 
   switch (_vType) {
   case TextType:
@@ -215,7 +215,7 @@ SingleSpillInfo * IFileWriter::getSpillInfo() {
       _codec);
 }
 
-void IFileWriter::getStatistics(uint64_t & offset, uint64_t & realOffset, uint64_t & recordCount) {
+void IFileWriter::getStatistics(uint64_t & offset, uint64_t & realOffset) {
   if (_spillFileSegments.size() > 0) {
     offset = _spillFileSegments[_spillFileSegments.size() - 1].uncompressedEndOffset;
     realOffset = _spillFileSegments[_spillFileSegments.size() - 1].realEndOffset;
@@ -223,7 +223,6 @@ void IFileWriter::getStatistics(uint64_t & offset, uint64_t & realOffset, uint64
     offset = 0;
     realOffset = 0;
   }
-  recordCount = _recordCount;
 }
 
 } // namespace NativeTask

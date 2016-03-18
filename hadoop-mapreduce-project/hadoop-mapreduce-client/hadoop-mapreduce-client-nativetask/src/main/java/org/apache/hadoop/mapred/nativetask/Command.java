@@ -17,9 +17,6 @@
  */
 package org.apache.hadoop.mapred.nativetask;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-
-@InterfaceAudience.Private
 public class Command {
 
   private int id;
@@ -48,10 +45,5 @@ public class Command {
       return this.id == ((Command)other).id;
     }
     return false;
-  }
-  
-  @Override
-  public int hashCode() {
-    return id;
   }
 }

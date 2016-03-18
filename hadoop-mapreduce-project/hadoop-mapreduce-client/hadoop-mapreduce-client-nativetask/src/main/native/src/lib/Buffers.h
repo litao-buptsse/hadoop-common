@@ -19,12 +19,69 @@
 #ifndef BUFFERS_H_
 #define BUFFERS_H_
 
-#include "lib/Streams.h"
-#include "lib/Compressions.h"
-#include "lib/Constants.h"
+#include "Streams.h"
+#include "Compressions.h"
+#include "Constants.h"
 
 namespace NativeTask {
 
+class DynamicBuffer {
+protected:
+  char * _data;
+  uint32_t _capacity;
+  uint32_t _size;
+  uint32_t _used;
+public:
+  DynamicBuffer();
+
+  DynamicBuffer(uint32_t capacity);
+
+  ~DynamicBuffer();
+
+  void reserve(uint32_t capacity);
+
+  void release();
+
+  uint32_t capacity() {
+    return _capacity;
+  }
+
+  char * data() {
+    return _data;
+  }
+
+  uint32_t size() {
+    return _size;
+  }
+
+  uint32_t used() {
+    return _used;
+  }
+
+  char * current() {
+    return _data + _used;
+  }
+
+  char * end() {
+    return _data + _size;
+  }
+
+  uint32_t remain() {
+    return _size - _used;
+  }
+
+  uint32_t freeSpace() {
+    return _capacity - _size;
+  }
+
+  void use(uint32_t count) {
+    _used += count;
+  }
+
+  void cleanUsed();
+
+  int32_t refill(InputStream * stream);
+};
 
 /**
  * A lightweight read buffer, act as buffered input stream
@@ -372,8 +429,8 @@ public:
 
   void rewind(int newPos, int newLimit) {
     this->_position = newPos;
-    if (newLimit < 0 || newLimit > this->_capacity) {
-      THROW_EXCEPTION(IOException, "length smaller than zero or larger than input buffer capacity");
+    if (newLimit > this->_capacity) {
+      THROW_EXCEPTION(IOException, "length larger than input buffer capacity");
     }
     this->_limit = newLimit;
   }

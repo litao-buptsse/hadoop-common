@@ -24,6 +24,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.nativetask.testutil.ScenarioConfiguration;
+import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
@@ -31,33 +32,38 @@ import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 
 public class CompressMapper {
+  public static final String inputFile = "./compress/input.txt";
+  public static final String outputFileDir = "./compress/output/";
 
   public static class TextCompressMapper extends Mapper<Text, Text, Text, Text> {
 
     @Override
-    protected void map(Text key, Text value, Context context)
-      throws IOException, InterruptedException {
+    protected void map(Text key, Text value, Context context) throws IOException, InterruptedException {
        context.write(key, value);
     }
   }
 
-  public static Job getCompressJob(String jobname, Configuration conf,
-                                   String inputpath, String outputpath)
-    throws Exception {
-    Job job = Job.getInstance(conf, jobname + "-CompressMapperJob");
-    job.setJarByClass(CompressMapper.class);
-    job.setMapperClass(TextCompressMapper.class);
-    job.setOutputKeyClass(Text.class);
-    job.setMapOutputValueClass(Text.class);
-    // if output file exists ,delete it
-    final FileSystem hdfs = FileSystem.get(new ScenarioConfiguration());
-    if (hdfs.exists(new Path(outputpath))) {
-      hdfs.delete(new Path(outputpath), true);
+  public static Job getCompressJob(String jobname, Configuration conf) {
+    Job job = null;
+    try {
+      job = new Job(conf, jobname + "-CompressMapperJob");
+      job.setJarByClass(CompressMapper.class);
+      job.setMapperClass(TextCompressMapper.class);
+      job.setOutputKeyClass(Text.class);
+      job.setMapOutputValueClass(Text.class);
+      final Path outputpath = new Path(outputFileDir + jobname);
+      // if output file exists ,delete it
+      final FileSystem hdfs = FileSystem.get(new ScenarioConfiguration());
+      if (hdfs.exists(outputpath)) {
+        hdfs.delete(outputpath);
+      }
+      hdfs.close();
+      job.setInputFormatClass(SequenceFileInputFormat.class);
+      FileInputFormat.addInputPath(job, new Path(inputFile));
+      FileOutputFormat.setOutputPath(job, outputpath);
+    } catch (final Exception e) {
+      e.printStackTrace();
     }
-    hdfs.close();
-    job.setInputFormatClass(SequenceFileInputFormat.class);
-    FileInputFormat.addInputPath(job, new Path(inputpath));
-    FileOutputFormat.setOutputPath(job, new Path(outputpath));
     return job;
   }
 }

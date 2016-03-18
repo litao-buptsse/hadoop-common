@@ -16,14 +16,14 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "NativeTask.h"
 #include "BlockCodec.h"
 
 namespace NativeTask {
 
 BlockCompressStream::BlockCompressStream(OutputStream * stream, uint32_t bufferSizeHint)
-    : CompressStream(stream), _tempBuffer(NULL), _tempBufferSize(0), _compressedBytesWritten(0) {
+    : CompressStream(stream), _compressedBytesWritten(0), _tempBufferSize(0), _tempBuffer(NULL) {
   _hint = bufferSizeHint;
   _blockMax = bufferSizeHint / 2 * 3;
 }
@@ -68,7 +68,7 @@ uint64_t BlockCompressStream::compressedBytesWritten() {
 //////////////////////////////////////////////////////////////
 
 BlockDecompressStream::BlockDecompressStream(InputStream * stream, uint32_t bufferSizeHint)
-    : DecompressStream(stream), _tempBuffer(NULL), _tempBufferSize(0) {
+    : DecompressStream(stream), _tempBufferSize(0), _tempBuffer(NULL) {
   _hint = bufferSizeHint;
   _blockMax = bufferSizeHint / 2 * 3;
   _tempDecompressBuffer = NULL;
@@ -79,8 +79,9 @@ BlockDecompressStream::BlockDecompressStream(InputStream * stream, uint32_t buff
 }
 
 void BlockDecompressStream::init() {
-  _tempBufferSize = maxCompressedLength(_blockMax) + 8;
+   _tempBufferSize = maxCompressedLength(_blockMax) + 8;
   _tempBuffer = (char*)malloc(_tempBufferSize);
+
 }
 
 BlockDecompressStream::~BlockDecompressStream() {

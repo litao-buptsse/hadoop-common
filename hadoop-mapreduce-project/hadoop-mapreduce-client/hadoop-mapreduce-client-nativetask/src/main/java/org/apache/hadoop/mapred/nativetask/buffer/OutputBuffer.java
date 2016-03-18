@@ -20,9 +20,7 @@ package org.apache.hadoop.mapred.nativetask.buffer;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import org.apache.hadoop.classification.InterfaceAudience;
 
-@InterfaceAudience.Private
 public class OutputBuffer {
   protected ByteBuffer byteBuffer;
   private final BufferType type;

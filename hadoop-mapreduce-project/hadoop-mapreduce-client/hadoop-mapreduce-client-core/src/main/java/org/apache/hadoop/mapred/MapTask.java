@@ -401,9 +401,19 @@ public class MapTask extends Task {
         LOG.debug("Trying map output collector class: " + subclazz.getName());
         MapOutputCollector<KEY, VALUE> collector =
           ReflectionUtils.newInstance(subclazz, job);
-        collector.init(context);
-        LOG.info("Map output collector class = " + collector.getClass().getName());
-        return collector;
+        //collector.init(context);
+        //LOG.info("Map output collector class = " + collector.getClass().getName());
+        //return collector;
+        try {
+            collector.init(context);
+        } catch (Exception e) {
+            LOG.warn("Nativetask falling back to Java MapOutputCollector", e);
+            collector = new MapOutputBuffer();
+            collector.init(context);
+        } finally {
+            LOG.info("Map output collector class = " + collector.getClass().getName());
+            return collector;
+        }
       } catch (Exception e) {
         String msg = "Unable to initialize MapOutputCollector " + clazz.getName();
         if (--remainingCollectors > 0) {

@@ -20,13 +20,8 @@ package org.apache.hadoop.mapred.nativetask.util;
 
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
-import org.apache.hadoop.classification.InterfaceAudience;
 
-@InterfaceAudience.Private
 public class BytesUtil {
-
-  private static final char[] HEX_CHARS =
-      "0123456789abcdef".toCharArray();
 
   /**
    * Converts a big-endian byte array to a long value.
@@ -97,7 +92,7 @@ public class BytesUtil {
    * Write a printable representation of a byte array.
    *
    * @param b byte array
-   * @return the printable presentation
+   * @return string
    * @see #toStringBinary(byte[], int, int)
    */
   public static String toStringBinary(final byte [] b) {
@@ -129,9 +124,7 @@ public class BytesUtil {
         || " `~!@#$%^&*()-_=+[]{}|;:'\",.<>/?".indexOf(ch) >= 0 ) {
         result.append((char)ch);
       } else {
-        result.append("\\x");
-        result.append(HEX_CHARS[(ch >> 4) & 0x0F]);
-        result.append(HEX_CHARS[ch & 0x0F]);
+        result.append(String.format("\\x%02X", ch));
       }
     }
     return result.toString();

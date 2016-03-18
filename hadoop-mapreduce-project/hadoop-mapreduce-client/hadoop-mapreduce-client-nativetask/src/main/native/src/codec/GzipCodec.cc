@@ -18,7 +18,7 @@
 
 #include <zconf.h>
 #include <zlib.h>
-#include "lib/commons.h"
+#include "commons.h"
 #include "GzipCodec.h"
 #include <iostream>
 

@@ -20,7 +20,6 @@ package org.apache.hadoop.mapred.nativetask.serde;
 
 import java.io.IOException;
 
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.mapred.nativetask.buffer.DataInputStream;
 import org.apache.hadoop.mapred.nativetask.buffer.DataOutputStream;
 import org.apache.hadoop.mapred.nativetask.util.SizedWritable;
@@ -28,21 +27,45 @@ import org.apache.hadoop.mapred.nativetask.util.SizedWritable;
 /**
  * serializes key-value pair
  */
-@InterfaceAudience.Private
 public interface IKVSerializer {
 
   /**
    * update the length field of SizedWritable
+   * @param key
+   * @param value
+   * @throws IOException
    */
-  public void updateLength(SizedWritable<?> key, SizedWritable<?> value) throws IOException;
+  public void updateLength(SizedWritable key, SizedWritable value) throws IOException;
 
-  public int serializeKV(DataOutputStream out, SizedWritable<?> key,
-      SizedWritable<?> value) throws IOException;
+  /**
+   *
+   * @param out
+   * @param key
+   * @param value
+   * @return       bytes written
+   * @throws IOException
+   */
+  public int serializeKV(DataOutputStream out, SizedWritable key, SizedWritable value) throws IOException;
 
-  public int serializePartitionKV(DataOutputStream out, int partitionId,
-      SizedWritable<?> key, SizedWritable<?> value)
+  /**
+   * serialize partitionId as well
+   * @param out
+   * @param partitionId
+   * @param key
+   * @param value
+   * @return
+   * @throws IOException
+   */
+  public int serializePartitionKV(DataOutputStream out, int partitionId, SizedWritable key, SizedWritable value)
       throws IOException;
 
-  public int deserializeKV(DataInputStream in, SizedWritable<?> key, SizedWritable<?> value)
-    throws IOException;
+  /**
+   *
+   * @param in
+   * @param key
+   * @param value
+   * @return      bytes read
+   * @throws IOException
+   */
+  public int deserializeKV(DataInputStream in, SizedWritable key, SizedWritable value) throws IOException;
 }

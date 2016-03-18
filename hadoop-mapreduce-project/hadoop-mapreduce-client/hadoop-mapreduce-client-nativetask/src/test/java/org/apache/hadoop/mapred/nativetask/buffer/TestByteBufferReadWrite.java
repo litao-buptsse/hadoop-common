@@ -23,13 +23,11 @@ import com.google.common.base.Charsets;
 import com.google.common.primitives.Shorts;
 import org.apache.hadoop.mapred.nativetask.NativeDataTarget;
 
-import org.junit.Assert;
-import org.junit.Test;
-
+import junit.framework.Assert;
+import junit.framework.TestCase;
 import org.mockito.Mockito;
 
-public class TestByteBufferReadWrite {
-  @Test
+public class TestByteBufferReadWrite extends TestCase {
   public void testReadWrite() throws IOException {
     byte[] buff = new byte[10000];
 
@@ -91,7 +89,6 @@ public class TestByteBufferReadWrite {
    * Test that Unicode characters outside the basic multilingual plane,
    * such as this cat face, are properly encoded.
    */
-  @Test
   public void testCatFace() throws IOException {
     byte[] buff = new byte[10];
     MockDataTarget target = new MockDataTarget(buff);
@@ -103,14 +100,13 @@ public class TestByteBufferReadWrite {
     InputBuffer input = new InputBuffer(buff);
     input.rewind(0, buff.length);
     ByteBufferDataReader reader = new ByteBufferDataReader(input);
-    Assert.assertEquals(catFace, reader.readUTF());
+    assertEquals(catFace, reader.readUTF());
 
     // Check that the standard Java one can read it too
     String fromJava = new java.io.DataInputStream(new ByteArrayInputStream(buff)).readUTF();
-    Assert.assertEquals(catFace, fromJava);
+    assertEquals(catFace, fromJava);
   }
 
-  @Test
   public void testShortOfSpace() throws IOException {
     byte[] buff = new byte[10];
     MockDataTarget target = new MockDataTarget(buff);
@@ -124,8 +120,6 @@ public class TestByteBufferReadWrite {
     Assert.assertEquals(true, writer.shortOfSpace(100));
   }
 
-
-  @Test
   public void testFlush() throws IOException {
     byte[] buff = new byte[10];
     MockDataTarget target = Mockito.spy(new MockDataTarget(buff));

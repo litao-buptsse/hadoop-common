@@ -20,14 +20,14 @@
 #define PARTITION_BUCKET_H_
 
 #include "NativeTask.h"
-#include "lib/MemoryPool.h"
-#include "lib/MemoryBlock.h"
-#include "util/Timer.h"
-#include "lib/Buffers.h"
-#include "lib/MapOutputSpec.h"
-#include "lib/IFile.h"
-#include "lib/SpillInfo.h"
-#include "lib/Combiner.h"
+#include "MemoryPool.h"
+#include "MemoryBlock.h"
+#include "Timer.h"
+#include "Buffers.h"
+#include "MapOutputSpec.h"
+#include "IFile.h"
+#include "SpillInfo.h"
+#include "Combiner.h"
 
 namespace NativeTask {
 
@@ -50,8 +50,8 @@ private:
 public:
   PartitionBucket(MemoryPool * pool, uint32_t partition, ComparatorPtr comparator,
       ICombineRunner * combineRunner, uint32_t blockSize)
-      : _pool(pool), _partition(partition), _blockSize(blockSize),
-          _keyComparator(comparator), _combineRunner(combineRunner),  _sorted(false) {
+      : _pool(pool), _partition(partition), _keyComparator(comparator),
+          _combineRunner(combineRunner), _blockSize(blockSize), _sorted(false) {
     if (NULL == _pool || NULL == comparator) {
       THROW_EXCEPTION_EX(IOException, "pool is NULL, or comparator is not set");
     }
@@ -102,11 +102,11 @@ public:
     }
     _sorted = false;
     MemoryBlock * memBlock = NULL;
-    uint32_t memBlockSize = _memBlocks.size();
-    if (memBlockSize > 0) {
-      memBlock = _memBlocks[memBlockSize - 1];
+    uint32_t memBockSize = _memBlocks.size();
+    if (memBockSize > 0) {
+      memBlock = _memBlocks[memBockSize - 1];
     }
-    if (NULL != memBlock && memBlock->remainSpace() >= kvLength) {
+    if (NULL != memBockSize && memBlock->remainSpace() >= kvLength) {
       return memBlock->allocateKVBuffer(kvLength);
     } else {
       uint32_t min = kvLength;
@@ -117,6 +117,8 @@ public:
         memBlock = new MemoryBlock(buff, allocated);
         _memBlocks.push_back(memBlock);
         return memBlock->allocateKVBuffer(kvLength);
+      } else {
+        LOG("MemoryPool is full, fail to allocate new MemBlock, block size: %d, kv length: %d", expect, kvLength);
       }
     }
     return NULL;

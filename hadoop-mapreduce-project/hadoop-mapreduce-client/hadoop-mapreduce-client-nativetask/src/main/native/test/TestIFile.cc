@@ -17,11 +17,10 @@
  */
 
 #include <algorithm>
-#include "lib/commons.h"
-#include "config.h"
-#include "lib/BufferStream.h"
-#include "lib/FileSystem.h"
-#include "lib/IFile.h"
+#include "commons.h"
+#include "BufferStream.h"
+#include "FileSystem.h"
+#include "IFile.h"
 #include "test_commons.h"
 
 SingleSpillInfo * writeIFile(int partition, vector<pair<string, string> > & kvs,
@@ -91,9 +90,7 @@ TEST(IFile, WriteRead) {
   TestIFileReadWrite(TextType, partition, size, kvs);
   TestIFileReadWrite(BytesType, partition, size, kvs);
   TestIFileReadWrite(UnknownType, partition, size, kvs);
-#if defined HADOOP_SNAPPY_LIBRARY
   TestIFileReadWrite(TextType, partition, size, kvs, "org.apache.hadoop.io.compress.SnappyCodec");
-#endif
 }
 
 void TestIFileWriteRead2(vector<pair<string, string> > & kvs, char * buff, size_t buffsize,
@@ -119,17 +116,13 @@ void TestIFileWriteRead2(vector<pair<string, string> > & kvs, char * buff, size_
   InputBuffer inputBuffer = InputBuffer(buff, outputBuffer.tell());
   IFileReader * ir = new IFileReader(&inputBuffer, info);
   timer.reset();
-  int sum = 0;
   while (ir->nextPartition()) {
     const char * key, *value;
     uint32_t keyLen, valueLen;
     while (NULL != (key = ir->nextKey(keyLen))) {
       value = ir->value(valueLen);
-      sum += value[0];
     }
   }
-  // use the result so that value() calls don't get optimized out
-  ASSERT_NE(0xdeadbeef, sum);
   LOG("%s",
       timer.getSpeedM2(" Read data", info->getEndPosition(), info->getRealEndPosition()).c_str());
   delete ir;
@@ -166,10 +159,10 @@ TEST(Perf, IFile) {
   delete[] buff;
 }
 
-// The Glibc has a bug in the file tell api, it will overwrite the file data
-// unexpected.
+// The Glibc has a bug in the file tell api, it will overwrite the file data 
+// unexpected. 
 // Please check https://rhn.redhat.com/errata/RHBA-2013-0279.html
-// This case is to check whether the bug exists.
+// This case is to check wether the bug exists.
 // If it exists, it means you need to upgrade the glibc.
 TEST(IFile, TestGlibCBug) {
   std::string path("./testData/testGlibCBugSpill.out");
@@ -189,11 +182,12 @@ TEST(IFile, TestGlibCBug) {
   uint32_t length = 0;
   reader->nextPartition();
   uint32_t index = 0;
-  while (NULL != (key = reader->nextKey(length))) {
+  while(NULL != (key = reader->nextKey(length))) {
     int32_t realKey = (int32_t)bswap(*(uint32_t *)(key));
     ASSERT_LT(index, 5);
     ASSERT_EQ(expect[index], realKey);
     index++;
   }
   delete reader;
+
 }

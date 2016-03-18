@@ -30,9 +30,6 @@
 #include <memory.h>
 #include <fcntl.h>
 
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
-
 #include <limits>
 #include <string>
 #include <vector>
@@ -41,12 +38,13 @@
 #include <map>
 #include <algorithm>
 
-#include "lib/primitives.h"
-#include "lib/Log.h"
+#include "primitives.h"
+#include "Log.h"
 #include "NativeTask.h"
 
-#include "lib/Constants.h"
+#include "Constants.h"
 
-#include "lib/Iterator.h"
+#include "Iterator.h"
+#include "TrackingCollector.h"
 
 #endif /* COMMONS_H_ */

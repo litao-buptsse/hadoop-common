@@ -20,11 +20,7 @@ package org.apache.hadoop.mapred.nativetask.kvtest;
 import java.io.IOException;
 import java.util.zip.CRC32;
 
-import com.google.common.base.Stopwatch;
 import com.google.common.primitives.Longs;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,20 +36,17 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 public class KVJob {
   public static final String INPUTPATH = "nativetask.kvtest.inputfile.path";
   public static final String OUTPUTPATH = "nativetask.kvtest.outputfile.path";
-  private static final Log LOG = LogFactory.getLog(KVJob.class);
   Job job = null;
 
   public static class ValueMapper<KTYPE, VTYPE> extends Mapper<KTYPE, VTYPE, KTYPE, VTYPE> {
     @Override
-    public void map(KTYPE key, VTYPE value, Context context)
-      throws IOException, InterruptedException {
+    public void map(KTYPE key, VTYPE value, Context context) throws IOException, InterruptedException {
       context.write(key, value);
     }
   }
 
   public static class KVMReducer<KTYPE, VTYPE> extends Reducer<KTYPE, VTYPE, KTYPE, VTYPE> {
-    public void reduce(KTYPE key, VTYPE value, Context context)
-      throws IOException, InterruptedException {
+    public void reduce(KTYPE key, VTYPE value, Context context) throws IOException, InterruptedException {
       context.write(key, value);
     }
   }
@@ -61,9 +54,7 @@ public class KVJob {
   public static class KVReducer<KTYPE, VTYPE> extends Reducer<KTYPE, VTYPE, KTYPE, VTYPE> {
 
     @Override
-    @SuppressWarnings({"unchecked"})
-    public void reduce(KTYPE key, Iterable<VTYPE> values, Context context)
-      throws IOException, InterruptedException {
+    public void reduce(KTYPE key, Iterable<VTYPE> values, Context context) throws IOException, InterruptedException {
       long resultlong = 0;// 8 bytes match BytesFactory.fromBytes function
       final CRC32 crc32 = new CRC32();
       for (final VTYPE val : values) {
@@ -72,15 +63,13 @@ public class KVJob {
         resultlong += crc32.getValue();
       }
       final VTYPE V = null;
-      context.write(key, (VTYPE) BytesFactory.newObject(Longs.toByteArray(resultlong),
-                                                        V.getClass().getName()));
+      context.write(key, (VTYPE) BytesFactory.newObject(Longs.toByteArray(resultlong), V.getClass().getName()));
     }
   }
 
-  public KVJob(String jobname, Configuration conf,
-               Class<?> keyclass, Class<?> valueclass,
-               String inputpath, String outputpath) throws Exception {
-    job = Job.getInstance(conf, jobname);
+  public KVJob(String jobname, Configuration conf, Class<?> keyclass, Class<?> valueclass, String inputpath,
+      String outputpath) throws Exception {
+    job = new Job(conf, jobname);
     job.setJarByClass(KVJob.class);
     job.setMapperClass(KVJob.ValueMapper.class);
     job.setOutputKeyClass(keyclass);
@@ -93,16 +82,16 @@ public class KVJob {
       final TestInputFile testfile = new TestInputFile(Integer.valueOf(conf.get(
           TestConstants.FILESIZE_KEY, "1000")),
           keyclass.getName(), valueclass.getName(), conf);
-      Stopwatch sw = new Stopwatch().start();
       testfile.createSequenceTestFile(inputpath);
-      LOG.info("Created test file " + inputpath + " in " + sw.elapsedMillis() + "ms");
+
     }
     job.setInputFormatClass(SequenceFileInputFormat.class);
     FileInputFormat.addInputPath(job, new Path(inputpath));
     FileOutputFormat.setOutputPath(job, new Path(outputpath));
   }
 
-  public boolean runJob() throws Exception {
-    return job.waitForCompletion(true);
+  public void runJob() throws Exception {
+
+    job.waitForCompletion(true);
   }
 }

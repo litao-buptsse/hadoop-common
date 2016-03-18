@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
-#include "util/StringUtil.h"
-#include "util/WritableUtils.h"
+#include "commons.h"
+#include "StringUtil.h"
+#include "WritableUtils.h"
 
 namespace NativeTask {
 

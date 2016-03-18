@@ -18,11 +18,13 @@
 package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.mapred.InvalidJobConfException;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.nativetask.serde.INativeSerializer;
 import org.apache.hadoop.mapred.nativetask.serde.NativeSerialization;
@@ -37,8 +39,6 @@ import org.apache.hadoop.mapred.nativetask.serde.NativeSerialization;
  * that supports all key types of Hadoop and users could implement their custom
  * platform.
  */
-@InterfaceAudience.Public
-@InterfaceStability.Evolving
 public abstract class Platform {
   private final NativeSerialization serialization;
   protected Set<String> keyClassNames = new HashSet<String>();
@@ -49,6 +49,8 @@ public abstract class Platform {
 
   /**
    * initialize a platform, where we should call registerKey
+   *
+   * @throws IOException
    */
   public abstract void init() throws IOException;
 
@@ -63,8 +65,9 @@ public abstract class Platform {
    *
    * @param keyClassName map out key class name
    * @param key          key serializer class
+   * @throws IOException
    */
-  protected void registerKey(String keyClassName, Class<?> key) throws IOException {
+  protected void registerKey(String keyClassName, Class key) throws IOException {
     serialization.register(keyClassName, key);
     keyClassNames.add(keyClassName);
   }
@@ -82,19 +85,18 @@ public abstract class Platform {
    * @return             true if the platform has implemented native comparators of the key and
    *                     false otherwise
    */
-  protected abstract boolean support(String keyClassName,
-      INativeSerializer<?> serializer, JobConf job);
+  protected abstract boolean support(String keyClassName, INativeSerializer serializer, JobConf job);
 
 
   /**
    * whether it's the platform that has defined a custom Java comparator
    *
-   * NativeTask doesn't support custom Java comparators
-   * (set with mapreduce.job.output.key.comparator.class)
-   * but a platform (e.g Pig) could also set that conf and implement native
-   * comparators so we shouldn't bail out.
+   * NativeTask doesn't support custom Java comparator(set with mapreduce.job.output.key.comparator.class)
+   * but a platform (e.g Pig) could also set that conf and implement native comparators so
+   * we shouldn't bail out.
    *
    * @param keyComparator comparator set with mapreduce.job.output.key.comparator.class
+   * @return
    */
-  protected abstract boolean define(Class<?> keyComparator);
+  protected abstract boolean define(Class keyComparator);
 }

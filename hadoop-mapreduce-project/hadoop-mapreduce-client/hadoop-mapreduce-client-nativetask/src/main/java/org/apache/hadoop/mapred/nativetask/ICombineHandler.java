@@ -19,16 +19,14 @@ package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-
 /**
  * interacts with native side to support Java Combiner
  */
-@InterfaceAudience.Private
 public interface ICombineHandler {
 
   /**
    * run combiner
+   * @throws IOException
    */
   public void combine() throws IOException;
 
@@ -39,6 +37,7 @@ public interface ICombineHandler {
 
   /**
    * close handlers, buffer pullers and pushers
+   * @throws IOException
    */
   public void close() throws IOException;
 }

@@ -19,7 +19,7 @@
 #ifndef SNAPPYCODEC_H_
 #define SNAPPYCODEC_H_
 
-#include "lib/Compressions.h"
+#include "Compressions.h"
 #include "BlockCodec.h"
 
 namespace NativeTask {

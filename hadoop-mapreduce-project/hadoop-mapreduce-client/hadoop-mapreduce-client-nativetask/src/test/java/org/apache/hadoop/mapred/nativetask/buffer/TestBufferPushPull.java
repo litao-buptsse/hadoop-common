@@ -22,6 +22,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 
+import junit.framework.Assert;
+import junit.framework.TestCase;
+
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.mapred.RawKeyValueIterator;
@@ -39,24 +42,21 @@ import org.apache.hadoop.mapred.nativetask.testutil.TestInput;
 import org.apache.hadoop.mapred.nativetask.testutil.TestInput.KV;
 import org.apache.hadoop.mapred.nativetask.util.ReadWriteBuffer;
 import org.apache.hadoop.util.Progress;
-
-import org.junit.Assert;
 import org.junit.Before;
-import org.junit.Test;
 
-@SuppressWarnings({ "rawtypes", "unchecked"})
-public class TestBufferPushPull {
+@SuppressWarnings({ "rawtypes", "unchecked", "deprecation" })
+public class TestBufferPushPull extends TestCase {
 
   public static int BUFFER_LENGTH = 100; // 100 bytes
   public static int INPUT_KV_COUNT = 1000;
   private KV<BytesWritable, BytesWritable>[] dataInput;
 
+  @Override
   @Before
   public void setUp() {
     this.dataInput = TestInput.getMapInputs(INPUT_KV_COUNT);
   }
 
-  @Test
   public void testPush() throws Exception {
     final byte[] buff = new byte[BUFFER_LENGTH];
 
@@ -99,7 +99,6 @@ public class TestBufferPushPull {
     pushee.close();
   }
 
-  @Test
   public void testPull() throws Exception {
     final byte[] buff = new byte[BUFFER_LENGTH];
 

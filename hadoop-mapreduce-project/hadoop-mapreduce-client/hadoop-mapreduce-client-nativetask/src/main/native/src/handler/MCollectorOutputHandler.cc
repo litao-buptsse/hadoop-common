@@ -16,12 +16,11 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
+#include "commons.h"
 #include "util/StringUtil.h"
-#include "lib/TaskCounters.h"
 #include "MCollectorOutputHandler.h"
-#include "lib/NativeObjectFactory.h"
-#include "lib/MapOutputCollector.h"
+#include "NativeObjectFactory.h"
+#include "MapOutputCollector.h"
 #include "CombineHandler.h"
 
 using std::string;
@@ -95,4 +94,4 @@ KVBuffer * MCollectorOutputHandler::allocateKVBuffer(uint32_t partitionId, uint3
   return dest;
 }
 
-} // namespace NativeTask
+}      //namespace

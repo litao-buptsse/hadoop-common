@@ -21,8 +21,6 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -36,15 +34,13 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.VIntWritable;
 import org.apache.hadoop.io.VLongWritable;
-import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.nativetask.testutil.BytesFactory;
 import org.apache.hadoop.mapred.nativetask.testutil.ScenarioConfiguration;
 import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
 
 
 public class TestInputFile {
-	private static Log LOG = LogFactory.getLog(TestInputFile.class);
-
+	
   public static class KVSizeScope {
     private static final int DefaultMinNum = 1;
     private static final int DefaultMaxNum = 64;
@@ -89,8 +85,7 @@ public class TestInputFile {
     map.put(IntWritable.class.getName(), new KVSizeScope(4, 4));
   }
   
-  public TestInputFile(int filesize, String keytype, String valuetype,
-                       Configuration conf) throws Exception {
+  public TestInputFile(int filesize, String keytype, String valuetype, Configuration conf) throws Exception {
     this.filesize = filesize;
     this.databuf = new byte[DATABUFSIZE];
     this.keyClsName = keytype;
@@ -125,8 +120,8 @@ public class TestInputFile {
   }
   
   public void createSequenceTestFile(String filepath, int base,  byte start) throws Exception {
-    LOG.info("creating file " + filepath + "(" + filesize + " bytes)");
-    LOG.info(keyClsName + " " + valueClsName);
+    System.out.println("create file " + filepath);
+    System.out.println(keyClsName + " " + valueClsName);
     Class<?> tmpkeycls, tmpvaluecls;
     try {
       tmpkeycls = Class.forName(keyClsName);
@@ -141,11 +136,8 @@ public class TestInputFile {
     try {
       final Path outputfilepath = new Path(filepath);
       final ScenarioConfiguration conf= new ScenarioConfiguration();
-      writer = SequenceFile.createWriter(
-        conf,
-        SequenceFile.Writer.file(outputfilepath),
-        SequenceFile.Writer.keyClass(tmpkeycls),
-        SequenceFile.Writer.valueClass(tmpvaluecls));
+      final FileSystem hdfs = outputfilepath.getFileSystem(conf);
+      writer = new SequenceFile.Writer(hdfs, conf, outputfilepath, tmpkeycls, tmpvaluecls);
     } catch (final Exception e) {
       e.printStackTrace();
     }
@@ -183,9 +175,6 @@ public class TestInputFile {
     int valuebytesnum = 0;
     int offset = 0;
 
-    Writable keyWritable = BytesFactory.newObject(null, keyClsName);
-    Writable valWritable = BytesFactory.newObject(null, valueClsName);
-
     while (offset < buflen) {
       final int remains = buflen - offset;
       keybytesnum = keyMaxBytesNum;
@@ -210,12 +199,9 @@ public class TestInputFile {
 
       System.arraycopy(databuf, offset, value, 0, valuebytesnum);
       offset += valuebytesnum;
-
-      BytesFactory.updateObject(keyWritable, key);
-      BytesFactory.updateObject(valWritable, value);
-     
+      
       try {
-        writer.append(keyWritable, valWritable);
+        writer.append(BytesFactory.newObject(key, this.keyClsName), BytesFactory.newObject(value, this.valueClsName));
       } catch (final IOException e) {
         e.printStackTrace();
         throw new Exception("sequence file create failed", e);

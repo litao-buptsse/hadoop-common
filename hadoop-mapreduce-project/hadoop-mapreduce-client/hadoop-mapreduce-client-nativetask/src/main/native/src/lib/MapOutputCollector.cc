@@ -16,21 +16,19 @@
  * limitations under the License.
  */
 
-#include <string>
-
-#include "lib/commons.h"
+#include "commons.h"
 #include "util/Timer.h"
 #include "util/StringUtil.h"
-#include "lib/FileSystem.h"
-#include "lib/NativeObjectFactory.h"
-#include "lib/MapOutputCollector.h"
-#include "lib/Merge.h"
+#include "FileSystem.h"
+#include "NativeObjectFactory.h"
+#include "MapOutputCollector.h"
+#include "Merge.h"
 #include "NativeTask.h"
-#include "util/WritableUtils.h"
+#include "WritableUtils.h"
 #include "util/DualPivotQuickSort.h"
-#include "lib/Combiner.h"
-#include "lib/TaskCounters.h"
-#include "lib/MinHeap.h"
+#include "Combiner.h"
+#include "TaskCounters.h"
+#include "MinHeap.h"
 
 namespace NativeTask {
 
@@ -38,18 +36,22 @@ ICombineRunner * CombineRunnerWrapper::createCombiner() {
 
   ICombineRunner * combineRunner = NULL;
   if (NULL != _config->get(NATIVE_COMBINER)) {
-    // Earlier versions of this code supported user-defined
-    // native Combiner implementations. This simplified version
-    // no longer supports it.
-    THROW_EXCEPTION_EX(UnsupportException, "Native Combiners not supported");
-  }
-
-  CombineHandler * javaCombiner = _spillOutput->getJavaCombineHandler();
-  if (NULL != javaCombiner) {
-    _isJavaCombiner = true;
-    combineRunner = (ICombineRunner *)javaCombiner;
+    const char * combinerClass = _config->get(NATIVE_COMBINER);
+    ObjectCreatorFunc objectCreater = NativeObjectFactory::GetObjectCreator(combinerClass);
+    if (NULL == objectCreater) {
+      THROW_EXCEPTION_EX(UnsupportException, "Combiner not found: %s", combinerClass);
+    } else {
+      LOG("[MapOutputCollector::configure] native combiner is enabled: %s", combinerClass);
+    }
+    combineRunner = new NativeCombineRunner(_config, objectCreater);
   } else {
-    LOG("[MapOutputCollector::getCombiner] cannot get combine handler from java");
+    CombineHandler * javaCombiner = _spillOutput->getJavaCombineHandler();
+    if (NULL != javaCombiner) {
+      _isJavaCombiner = true;
+      combineRunner = (ICombineRunner *)javaCombiner;
+    } else {
+      LOG("[MapOutputCollector::getCombiner] cannot get combine handler from java");
+    }
   }
   return combineRunner;
 }
@@ -74,11 +76,9 @@ void CombineRunnerWrapper::combine(CombineContext type, KVIterator * kvIterator,
 /////////////////////////////////////////////////////////////////
 
 MapOutputCollector::MapOutputCollector(uint32_t numberPartitions, SpillOutputService * spillService)
-    : _config(NULL), _numPartitions(numberPartitions), _buckets(NULL),
-      _keyComparator(NULL), _combineRunner(NULL),
-      _mapOutputRecords(NULL), _mapOutputBytes(NULL),
-      _mapOutputMaterializedBytes(NULL), _spilledRecords(NULL),
-      _spillOutput(spillService), _defaultBlockSize(0), _pool(NULL) {
+    : _config(NULL), _buckets(NULL), _keyComparator(NULL), _defaultBlockSize(0),
+        _combineRunner(NULL), _spilledRecords(NULL), _spillOutput(spillService), _pool(NULL),
+        _numPartitions(numberPartitions) {
   _pool = new MemoryPool();
 }
 
@@ -108,7 +108,7 @@ MapOutputCollector::~MapOutputCollector() {
 }
 
 void MapOutputCollector::init(uint32_t defaultBlockSize, uint32_t memoryCapacity,
-    ComparatorPtr keyComparator, ICombineRunner * combiner) {
+    ComparatorPtr keyComparator, Counter * spilledRecords, ICombineRunner * combiner) {
 
   this->_combineRunner = combiner;
 
@@ -116,7 +116,7 @@ void MapOutputCollector::init(uint32_t defaultBlockSize, uint32_t memoryCapacity
 
   _pool->init(memoryCapacity);
 
-  // TODO: add support for customized comparator
+  //TODO: add support for customized comparator
   this->_keyComparator = keyComparator;
 
   _buckets = new PartitionBucket*[_numPartitions];
@@ -128,15 +128,7 @@ void MapOutputCollector::init(uint32_t defaultBlockSize, uint32_t memoryCapacity
     _buckets[partitionId] = pb;
   }
 
-  _mapOutputRecords = NativeObjectFactory::GetCounter(
-      TaskCounters::TASK_COUNTER_GROUP, TaskCounters::MAP_OUTPUT_RECORDS);
-  _mapOutputBytes = NativeObjectFactory::GetCounter(
-      TaskCounters::TASK_COUNTER_GROUP, TaskCounters::MAP_OUTPUT_BYTES);
-  _mapOutputMaterializedBytes = NativeObjectFactory::GetCounter(
-      TaskCounters::TASK_COUNTER_GROUP,
-      TaskCounters::MAP_OUTPUT_MATERIALIZED_BYTES);
-  _spilledRecords = NativeObjectFactory::GetCounter(
-      TaskCounters::TASK_COUNTER_GROUP, TaskCounters::SPILLED_RECORDS);
+  _spilledRecords = spilledRecords;
 
   _collectTimer.reset();
 }
@@ -158,11 +150,13 @@ void MapOutputCollector::configure(Config * config) {
   uint32_t capacity = config->getInt(MAPRED_IO_SORT_MB, 300) * 1024 * 1024;
 
   uint32_t defaultBlockSize = getDefaultBlockSize(capacity, _numPartitions, maxBlockSize);
-  LOG("Native Total MemoryBlockPool: num_partitions %u, min_block_size %uK, "
-      "max_block_size %uK, capacity %uM", _numPartitions, defaultBlockSize / 1024,
+  LOG("Native Total MemoryBlockPool: num_partitions %u, min_block_size %uK, max_block_size %uK, capacity %uM", _numPartitions, defaultBlockSize / 1024,
       maxBlockSize / 1024, capacity / 1024 / 1024);
 
   ComparatorPtr comparator = getComparator(config, _spec);
+
+  Counter * spilledRecord = NativeObjectFactory::GetCounter(TaskCounters::TASK_COUNTER_GROUP,
+      TaskCounters::SPILLED_RECORDS);
 
   ICombineRunner * combiner = NULL;
   if (NULL != config->get(NATIVE_COMBINER)
@@ -172,14 +166,13 @@ void MapOutputCollector::configure(Config * config) {
     combiner = new CombineRunnerWrapper(config, _spillOutput);
   }
 
-  init(defaultBlockSize, capacity, comparator, combiner);
+  init(defaultBlockSize, capacity, comparator, spilledRecord, combiner);
 }
 
 KVBuffer * MapOutputCollector::allocateKVBuffer(uint32_t partitionId, uint32_t kvlength) {
   PartitionBucket * partition = getPartition(partitionId);
   if (NULL == partition) {
-    THROW_EXCEPTION_EX(IOException, "Partition is NULL, partition_id: %d, num_partitions: %d",
-                       partitionId, _numPartitions);
+    THROW_EXCEPTION_EX(IOException, "Partition is NULL, partition_id: %d, num_partitions: %d", partitionId, _numPartitions);
   }
 
   KVBuffer * dest = partition->allocateKVBuffer(kvlength);
@@ -189,19 +182,17 @@ KVBuffer * MapOutputCollector::allocateKVBuffer(uint32_t partitionId, uint32_t k
     if (NULL == spillpath || spillpath->length() == 0) {
       THROW_EXCEPTION(IOException, "Illegal(empty) spill files path");
     } else {
-      middleSpill(*spillpath, "", false);
+      middleSpill(*spillpath, "");
       delete spillpath;
     }
 
-    dest = partition->allocateKVBuffer(kvlength);
+    dest = dest = partition->allocateKVBuffer(kvlength);
     if (NULL == dest) {
       // io.sort.mb too small, cann't proceed
       // should not get here, cause get_buffer_to_put can throw OOM exception
       THROW_EXCEPTION(OutOfMemoryException, "key/value pair larger than io.sort.mb");
     }
   }
-  _mapOutputRecords->increase();
-  _mapOutputBytes->increase(kvlength - KVBuffer::headerLength());
   return dest;
 }
 
@@ -281,9 +272,10 @@ void MapOutputCollector::sortPartitions(SortOrder orderType, SortAlgorithm sortT
 }
 
 void MapOutputCollector::middleSpill(const std::string & spillOutput,
-    const std::string & indexFilePath, bool final) {
+    const std::string & indexFilePath) {
 
   uint64_t collecttime = _collectTimer.now() - _collectTimer.last();
+  const uint64_t M = 1000000; //million
 
   if (spillOutput.empty()) {
     THROW_EXCEPTION(IOException, "MapOutputCollector: Spill file path empty");
@@ -301,24 +293,10 @@ void MapOutputCollector::middleSpill(const std::string & spillOutput,
     info->path = spillOutput;
     uint64_t spillTime = timer.now() - timer.last() - metrics.sortTime;
 
-    const uint64_t M = 1000000; // million
-    LOG("%s-spill: { id: %d, collect: %"PRIu64" ms, "
-        "in-memory sort: %"PRIu64" ms, in-memory records: %"PRIu64", "
-        "merge&spill: %"PRIu64" ms, uncompressed size: %"PRIu64", "
-        "real size: %"PRIu64" path: %s }",
-        final ? "Final" : "Mid",
-        _spillInfos.getSpillCount(),
-        collecttime / M,
-        metrics.sortTime  / M,
-        metrics.recordCount,
-        spillTime  / M,
-        info->getEndPosition(),
-        info->getRealEndPosition(),
-        spillOutput.c_str());
-
-    if (final) {
-      _mapOutputMaterializedBytes->increase(info->getRealEndPosition());
-    }
+    LOG(
+        "[MapOutputCollector::mid_spill] Sort and spill: {spilled file path: %s, id: %d, collect: %llu ms, sort: %llu ms, spill: %llu ms, records: %llu, uncompressed total bytes: %llu, compressed total bytes: %llu}",
+        info->path.c_str(), _spillInfos.getSpillCount(), collecttime / M, metrics.sortTime  / M, spillTime  / M,
+        metrics.recordCount, info->getEndPosition(), info->getRealEndPosition());
 
     if (indexFilePath.length() > 0) {
       info->writeSpillInfo(indexFilePath);
@@ -342,8 +320,11 @@ void MapOutputCollector::middleSpill(const std::string & spillOutput,
 void MapOutputCollector::finalSpill(const std::string & filepath,
     const std::string & idx_file_path) {
 
+  const uint64_t M = 1000000; //million
+  LOG("[MapOutputCollector::final_merge_and_spill] Spilling file path: %s", filepath.c_str());
+
   if (_spillInfos.getSpillCount() == 0) {
-    middleSpill(filepath, idx_file_path, true);
+    middleSpill(filepath, idx_file_path);
     return;
   }
 
@@ -358,32 +339,16 @@ void MapOutputCollector::finalSpill(const std::string & filepath,
 
   SortMetrics metrics;
   sortPartitions(_spec.sortOrder, _spec.sortAlgorithm, NULL, metrics);
+  LOG("[MapOutputCollector::mid_spill] Sort final in memory kvs: {sort: %llu ms, records: %llu}",
+      metrics.sortTime / M, metrics.recordCount);
 
   merger->addMergeEntry(new MemoryMergeEntry(_buckets, _numPartitions));
 
   Timer timer;
   merger->merge();
-
-  uint64_t outputSize;
-  uint64_t realOutputSize;
-  uint64_t recordCount;
-  writer->getStatistics(outputSize, realOutputSize, recordCount);
-
-  const uint64_t M = 1000000; // million
-  LOG("Final-merge-spill: { id: %d, in-memory sort: %"PRIu64" ms, "
-      "in-memory records: %"PRIu64", merge&spill: %"PRIu64" ms, "
-      "records: %"PRIu64", uncompressed size: %"PRIu64", "
-      "real size: %"PRIu64" path: %s }",
-      _spillInfos.getSpillCount(),
-      metrics.sortTime / M,
-      metrics.recordCount,
-      (timer.now() - timer.last()) / M,
-      recordCount,
-      outputSize,
-      realOutputSize,
-      filepath.c_str());
-
-  _mapOutputMaterializedBytes->increase(realOutputSize);
+  LOG(
+      "[MapOutputCollector::final_merge_and_spill]  Merge and Spill:{spilled file id: %d, merge and spill time: %llu ms}",
+      _spillInfos.getSpillCount(), (timer.now() - timer.last()) / M);
 
   delete merger;
 

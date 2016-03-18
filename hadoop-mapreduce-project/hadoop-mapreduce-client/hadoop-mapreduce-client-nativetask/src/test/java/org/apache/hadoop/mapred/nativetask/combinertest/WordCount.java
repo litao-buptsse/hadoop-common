@@ -44,8 +44,7 @@ public class WordCount {
     private final Text word = new Text();
 
     @Override
-    public void map(Object key, Text value, Context context)
-      throws IOException, InterruptedException {
+    public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
       final StringTokenizer itr = new StringTokenizer(value.toString());
       while (itr.hasMoreTokens()) {
         word.set(itr.nextToken());
@@ -76,8 +75,7 @@ public class WordCount {
       System.err.println("Usage: wordcount <in> <out>");
       System.exit(2);
     }
-    final Job job = Job.getInstance(conf,
-                                    conf.get(MRJobConfig.JOB_NAME, "word count"));
+    final Job job = new Job(conf, conf.get(MRJobConfig.JOB_NAME, "word count"));
     job.setJarByClass(WordCount.class);
     job.setMapperClass(TokenizerMapper.class);
     job.setCombinerClass(IntSumReducer.class);

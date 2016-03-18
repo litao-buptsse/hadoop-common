@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 
-#include "lib/commons.h"
-#include "lib/MapOutputSpec.h"
+#include "commons.h"
+#include "MapOutputSpec.h"
 #include "NativeTask.h"
 
 namespace NativeTask {

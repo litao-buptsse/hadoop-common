@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "lib/Path.h"
+#include "Path.h"
 
 namespace NativeTask {
 

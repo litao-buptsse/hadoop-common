@@ -24,9 +24,9 @@ const int LENGTH_OF_REFILL_STRING = 6;
 const Command CombineHandler::COMBINE(4, "Combine");
 
 CombineHandler::CombineHandler()
-    : _combineContext(NULL), _kvIterator(NULL), _writer(NULL), _kType(UnknownType),
-        _vType(UnknownType), _config(NULL), _kvCached(false), _combineInputRecordCount(0),
-        _combineInputBytes(0), _combineOutputRecordCount(0), _combineOutputBytes(0) {
+    : _combineContext(NULL), _kvIterator(NULL), _writer(NULL), _config(NULL), _kvCached(false),
+      _kType(UnknownType), _vType(UnknownType), _combineInputRecordCount(0), _combineInputBytes(0),
+      _combineOutputRecordCount(0),_combineOutputBytes(0){
 }
 
 CombineHandler::~CombineHandler() {
@@ -95,6 +95,7 @@ uint32_t CombineHandler::feedDataToJavaInWritableSerialization() {
  * KV: key or value
  */
 void CombineHandler::outputKeyOrValue(SerializeInfo & KV, KeyValueType type) {
+  uint32_t length = 0;
   switch (type) {
   case TextType:
     output(KV.varBytes, KV.outerLength - KV.buffer.length());
@@ -158,6 +159,7 @@ uint32_t CombineHandler::feedDataToJava(SerializationFramework serializationType
 void CombineHandler::handleInput(ByteBuffer & in) {
   char * buff = in.current();
   uint32_t length = in.remain();
+  const char * end = buff + length;
   uint32_t remain = length;
   char * pos = buff;
   if (_asideBuffer.remain() > 0) {
@@ -181,7 +183,7 @@ void CombineHandler::handleInput(ByteBuffer & in) {
     THROW_EXCEPTION(IOException, "k/v meta information incomplete");
   }
 
-  uint32_t kvLength = kvBuffer->lengthConvertEndium();
+  int kvLength = kvBuffer->lengthConvertEndium();
 
   if (kvLength > remain) {
     _asideBytes.resize(kvLength);
@@ -208,6 +210,7 @@ void CombineHandler::write(char * buf, uint32_t length) {
     outputRecordCount++;
     remain -= kv->length();
     pos += kv->length();
+    ;
   }
 
   _combineOutputRecordCount += outputRecordCount;
@@ -241,8 +244,7 @@ void CombineHandler::combine(CombineContext type, KVIterator * kvIterator, IFile
   this->_writer = writer;
   call(COMBINE, NULL);
 
-  LOG("[CombineHandler] input Record Count: %d, input Bytes: %d, "
-      "output Record Count: %d, output Bytes: %d",
+  LOG("[CombineHandler] input Record Count: %d, input Bytes: %d, output Record Count: %d, output Bytes: %d",
       _combineInputRecordCount, _combineInputBytes,
       _combineOutputRecordCount, _combineOutputBytes);
   return;

@@ -27,10 +27,18 @@ public:
 
   static const char * MAP_INPUT_RECORDS;
   static const char * MAP_OUTPUT_RECORDS;
+  static const char * MAP_SKIPPED_RECORDS;
+  static const char * MAP_INPUT_BYTES;
   static const char * MAP_OUTPUT_BYTES;
   static const char * MAP_OUTPUT_MATERIALIZED_BYTES;
   static const char * COMBINE_INPUT_RECORDS;
   static const char * COMBINE_OUTPUT_RECORDS;
+  static const char * REDUCE_INPUT_GROUPS;
+  static const char * REDUCE_SHUFFLE_BYTES;
+  static const char * REDUCE_INPUT_RECORDS;
+  static const char * REDUCE_OUTPUT_RECORDS;
+  static const char * REDUCE_SKIPPED_GROUPS;
+  static const char * REDUCE_SKIPPED_RECORDS;
   static const char * SPILLED_RECORDS;
 
   static const char * FILESYSTEM_COUNTER_GROUP;

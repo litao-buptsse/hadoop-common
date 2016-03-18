@@ -20,13 +20,11 @@ package org.apache.hadoop.mapred.nativetask;
 import java.io.IOException;
 import java.util.ServiceLoader;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.nativetask.serde.INativeSerializer;
 import org.apache.hadoop.mapred.nativetask.serde.NativeSerialization;
+import org.apache.log4j.Logger;
 
 
 /**
@@ -34,10 +32,9 @@ import org.apache.hadoop.mapred.nativetask.serde.NativeSerialization;
  * it is also the facade to check for key type support and other
  * platform methods
  */
-@InterfaceAudience.Private
 public class Platforms {
 
-  private static final Log LOG = LogFactory.getLog(Platforms.class);
+  private static final Logger LOG = Logger.getLogger(Platforms.class);
   private static final ServiceLoader<Platform> platforms = ServiceLoader.load(Platform.class);
   
   public static void init(Configuration conf) throws IOException {
@@ -50,8 +47,7 @@ public class Platforms {
     }
   }
 
-  public static boolean support(String keyClassName,
-      INativeSerializer<?> serializer, JobConf job) {
+  public static boolean support(String keyClassName, INativeSerializer serializer, JobConf job) {
     synchronized (platforms) {
       for (Platform platform : platforms) {
         if (platform.support(keyClassName, serializer, job)) {
@@ -64,7 +60,7 @@ public class Platforms {
     return false;
   }
 
-  public static boolean define(Class<?> keyComparator) {
+  public static boolean define(Class keyComparator) {
     synchronized (platforms) {
       for (Platform platform : platforms) {
         if (platform.define(keyComparator)) {

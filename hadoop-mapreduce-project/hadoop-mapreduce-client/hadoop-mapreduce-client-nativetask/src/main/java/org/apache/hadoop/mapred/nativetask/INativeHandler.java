@@ -19,14 +19,12 @@ package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
 
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.nativetask.util.ReadWriteBuffer;
 
 /**
  * A Handler accept input, and give output can be used to transfer command and data
  */
-@InterfaceAudience.Private
 public interface INativeHandler extends NativeDataTarget, NativeDataSource {
 
   public String name();
@@ -45,9 +43,17 @@ public interface INativeHandler extends NativeDataTarget, NativeDataSource {
 
   /**
    * call command to downstream
+   * 
+   * @param command
+   * @param parameter
+   * @return
+   * @throws IOException
    */
   public ReadWriteBuffer call(Command command, ReadWriteBuffer parameter) throws IOException;
 
+  /**
+   * @param handler
+   */
   void setCommandDispatcher(CommandDispatcher handler);
 
 }

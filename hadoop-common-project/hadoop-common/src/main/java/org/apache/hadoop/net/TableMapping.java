@@ -82,6 +82,13 @@ public class TableMapping extends CachedDNSToSwitchMapping {
     getRawMapping().reloadCachedMappings();
   }
   
+  @Override
+  public void reloadCachedMappings(List<String> names) {
+    // TableMapping has to reload all mappings at once
+    super.reloadCachedMappings(names);
+    getRawMapping().reloadCachedMappings(names);
+  }
+  
   private static final class RawTableMapping extends Configured
       implements DNSToSwitchMapping {
     

@@ -156,6 +156,15 @@ public class TestTableMapping {
     assertEquals(names.size(), result.size());
     assertEquals(NetworkTopology.DEFAULT_RACK, result.get(0));
     assertEquals(NetworkTopology.DEFAULT_RACK, result.get(1));
+
+    Files.write("a.b.c /rack1\n" +
+        "1.2.3.4\t/rack2\n" + 
+        "2.3.4.5\t/rack3\n", mapFile, Charsets.UTF_8);
+    List<String> addNodeNames = new ArrayList<String>();
+    addNodeNames.add("2.3.4.5");
+    mapping.reloadCachedMappings(addNodeNames);
+    result = mapping.resolve(addNodeNames);
+    assertEquals("/rack3", result.get(0));
   }
 
 

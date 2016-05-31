@@ -215,7 +215,13 @@ abstract class CommandWithDestination extends FsCommand {
         throw new PathExistsException(dst.toString());
       }
     } else if (!dst.parentExists()) {
-      throw new PathNotFoundException(dst.toString());
+        try {
+            Path parentPath = dst.representsDirectory() ? dst.path : dst.path.getParent();
+            createParentDir(dst,parentPath);
+        } catch (IOException ios) {
+            throw new PathNotFoundException(ios.getMessage());
+        }
+        //throw new PathNotFoundException(dst.toString());
     }
     super.processArguments(args);
   }
@@ -247,6 +253,13 @@ abstract class CommandWithDestination extends FsCommand {
       }
     }
     super.processPathArgument(src);
+  }
+
+  private void createParentDir(PathData pData, Path path) throws IOException {
+      if (!pData.fs.exists(path.getParent())) {
+          createParentDir(pData, path.getParent());
+      }
+      pData.fs.mkdirs(path);
   }
 
   @Override

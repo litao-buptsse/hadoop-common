@@ -32,9 +32,9 @@ import java.util.concurrent.atomic.AtomicLong;
 @InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
 @InterfaceStability.Evolving
 public class DU extends Shell {
-  private String  dirPath;
+  protected String  dirPath;
 
-  private AtomicLong used = new AtomicLong();
+  protected AtomicLong used = new AtomicLong();
   private volatile boolean shouldRun = true;
   private Thread refreshUsed;
   private IOException duException = null;

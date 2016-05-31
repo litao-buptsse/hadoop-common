@@ -33,6 +33,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.DU;
+import org.apache.hadoop.fs.DFForUsage;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
@@ -77,6 +78,7 @@ class BlockPoolSlice {
   
   // TODO:FEDERATION scalability issue - a thread per DU is needed
   private final DU dfsUsage;
+  private Configuration conf;
 
   /**
    * Create a blook pool slice 
@@ -88,6 +90,7 @@ class BlockPoolSlice {
    */
   BlockPoolSlice(String bpid, FsVolumeImpl volume, File bpDir,
       Configuration conf) throws IOException {
+    this.conf = conf;
     this.bpid = bpid;
     this.volume = volume;
     this.currentDir = new File(bpDir, DataStorage.STORAGE_DIR_CURRENT); 
@@ -133,6 +136,11 @@ class BlockPoolSlice {
     // Use cached value initially if available. Or the following call will
     // block until the initial du command completes.
     this.dfsUsage = new DU(bpDir, conf, loadDfsUsed());
+    if (conf.getBoolean("hdfs.use.df.check.usage", false)) {
+      this.dfsUsage = new DFForUsage(bpDir, conf, loadDfsUsed());
+    } else {
+      this.dfsUsage = new DU(bpDir, conf, loadDfsUsed());
+    }
     this.dfsUsage.start();
 
     // Make the dfs usage to be saved during shutdown.

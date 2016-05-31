@@ -88,6 +88,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
   private final File currentDir;    // <StorageDirectory>/current
   private final DF usage;           
   private final long reserved;
+  private boolean useDF = false;
   private CloseableReferenceCount reference = new CloseableReferenceCount();
 
   // Disk space reserved for open blocks.
@@ -118,6 +119,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
     File parent = currentDir.getParentFile();
     this.usage = new DF(parent, conf);
     this.storageType = storageType;
+    this.useDF = conf.getBoolean("hdfs.use.df.check.usage", false);
     this.configuredCapacity = -1;
     cacheExecutor = initializeCacheExecutor(parent);
   }
@@ -297,8 +299,12 @@ public class FsVolumeImpl implements FsVolumeSpi {
   public long getDfsUsed() throws IOException {
     long dfsUsed = 0;
     synchronized(dataset) {
-      for(BlockPoolSlice s : bpSlices.values()) {
-        dfsUsed += s.getDfsUsed();
+      if(!useDF) {
+        for(BlockPoolSlice s : bpSlices.values()) {
+          dfsUsed += s.getDfsUsed();
+        }
+      } else {
+        dfsUsed = bpSlices.values().toArray(new BlockPoolSlice[bpSlices.values().size()])[0].getDfsUsed();
       }
     }
     return dfsUsed;

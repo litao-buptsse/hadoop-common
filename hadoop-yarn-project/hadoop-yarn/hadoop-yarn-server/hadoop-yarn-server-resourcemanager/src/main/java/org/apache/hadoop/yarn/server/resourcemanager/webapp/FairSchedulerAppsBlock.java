@@ -111,8 +111,15 @@ public class FairSchedulerAppsBlock extends HtmlBlock {
       }
       AppInfo appInfo = new AppInfo(app, true, WebAppUtils.getHttpSchemePrefix(conf));
       String percent = String.format("%.1f", appInfo.getProgress());
-      ApplicationAttemptId attemptId = app.getCurrentAppAttempt().getAppAttemptId();
-      int fairShare = fsinfo.getAppFairShare(attemptId);
+      ApplicationAttemptId attemptId = null;
+      int fairShare = 0;
+      try {
+        attemptId = app.getCurrentAppAttempt().getAppAttemptId();
+        fairShare = fsinfo.getAppFairShare(attemptId);
+      } catch (NullPointerException e) {
+        // Ignore exception
+        LOG.warn("Exception happened in render: " + e + ", ignore it in this phase.");
+      }
       if (fairShare == FairSchedulerInfo.INVALID_FAIR_SHARE) {
         // FairScheduler#applications don't have the entry. Skip it.
         continue;

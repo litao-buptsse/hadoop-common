@@ -105,6 +105,16 @@ case $COMMAND in
       CLASS=org.apache.hadoop.crypto.key.KeyShell
     elif [ "$COMMAND" = "checknative" ] ; then
       CLASS=org.apache.hadoop.util.NativeLibraryChecker
+    elif [ "$COMMAND" = "hbasedump" ] ; then
+      CLASS=com.sogou.tool.HBaseDumpUtil
+    elif [ "$COMMAND" = "createtable" ] ; then
+      CLASS=com.sogou.mapreduce.RegionSplitterTool
+    elif [ "$COMMAND" = "splittable" ] ; then
+      CLASS=com.sogou.mapreduce.BigRegionFirstSplitter
+    elif [ "$COMMAND" = "hbaseget" ] ; then
+      CLASS=com.sogou.tool.HBaseTableUtil
+    elif [ "$COMMAND" = "rsync" ] ; then
+      CLASS=com.sogou.tool.FileUtility
     elif [ "$COMMAND" = "distcp" ] ; then
       CLASS=org.apache.hadoop.tools.DistCp
       CLASSPATH=${CLASSPATH}:${TOOL_PATH}

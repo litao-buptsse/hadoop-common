@@ -66,7 +66,9 @@ public class BlockInfo extends Block implements LightWeightGSet.LinkedElement {
    * @param from BlockInfo to copy from.
    */
   protected BlockInfo(BlockInfo from) {
-    this(from, from.bc.getBlockReplication());
+  //  this(from, from.bc.getBlockReplication());
+    super(from);
+    this.triplets = new Object[from.triplets.length];
     this.bc = from.bc;
   }
 

@@ -55,18 +55,7 @@ import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.security.GroupMappingServiceProvider;
 import org.apache.hadoop.yarn.MockApps;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
-import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
-import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
-import org.apache.hadoop.yarn.api.records.NodeId;
-import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.QueueInfo;
-import org.apache.hadoop.yarn.api.records.Resource;
-import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.*;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationSubmissionContextPBImpl;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
@@ -74,7 +63,6 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.server.resourcemanager.ApplicationMasterService;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
-import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.MockRMApp;
@@ -87,6 +75,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptI
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.UpdatedContainerInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
@@ -5621,6 +5610,78 @@ public class TestFairScheduler extends FairSchedulerTestBase {
     scheduler.fsOpDurations.getMetrics(collector, true);
     assertEquals("Incorrect number of perf metrics", 1,
         collector.getRecords().size());
+  }
+
+
+  @Test
+  public void testCompletedContainerReleaseSameContainerTwice()
+          throws IOException {
+    scheduler.init(conf);
+    scheduler.start();
+    scheduler.reinitialize(conf, resourceManager.getRMContext());
+
+    // Add one nodes
+    RMNode node1 =
+            MockNodes.newNodeInfo(1, Resources.createResource(8 * 1024, 8), 1,
+                    "127.0.0.1");
+    scheduler.handle(new NodeAddedSchedulerEvent(node1));
+
+    int allocatedResMB =
+      FairSchedulerConfiguration.DEFAULT_RM_SCHEDULER_INCREMENT_ALLOCATION_MB;
+    // Create resource request
+    ApplicationAttemptId attemptId = createSchedulingRequest(
+            allocatedResMB, 2,
+            "queue1", "user1", 1);
+
+    // update scheduler
+    scheduler.handle(new NodeUpdateSchedulerEvent(node1));
+
+    FSAppAttempt app = scheduler.getApplicationAttempt(attemptId);
+
+    // Assert usedResource of this app
+    assertEquals(1, app.getLiveContainersMap().size());
+    assertEquals(allocatedResMB, app.getResourceUsage().getMemory());
+    assertEquals(2, app.getResourceUsage().getVirtualCores());
+
+    assertEquals(1, app.getLiveContainers().size());
+    ContainerId containerId = app.getLiveContainers()
+            .toArray(new RMContainer[0])[0].getContainerId();
+
+    // Fire NodeUpdateSchedulerEvent with completedContainer of containerId
+    ContainerStatus status = ContainerStatus.newInstance(containerId,
+            ContainerState.COMPLETE, "", 0);
+
+    List<UpdatedContainerInfo> updatedContainerInfos
+            = new ArrayList<UpdatedContainerInfo>();
+    List<ContainerStatus> completedContainers =
+            new ArrayList<ContainerStatus>();
+    completedContainers.add(status);
+    updatedContainerInfos.add(new UpdatedContainerInfo(
+            new ArrayList<ContainerStatus>(), completedContainers));
+
+    RMNode node1Update =
+            MockNodes.newNodeInfo(1, Resources.createResource(8 * 1024, 8), 1,
+                    "127.0.0.1", updatedContainerInfos);
+
+    NodeUpdateSchedulerEvent event = new NodeUpdateSchedulerEvent(node1Update);
+    scheduler.handle(event);
+
+    assertEquals(0, app.getLiveContainersMap().size());
+    assertEquals(0, app.getResourceUsage().getMemory());
+    assertEquals(0, app.getResourceUsage().getVirtualCores());
+
+    // call allocate with release request of containerId
+    List<ContainerId> releasedContainers = new ArrayList<ContainerId>();
+    releasedContainers.add(containerId);
+    scheduler.allocate(attemptId,
+            new ArrayList<ResourceRequest>(),
+            releasedContainers,
+            new ArrayList<String>(), new ArrayList<String>());
+
+    // Assert usedResource of this App be zero.
+    assertEquals(0, app.getLiveContainersMap().size());
+    assertEquals(0, app.getResourceUsage().getMemory());
+    assertEquals(0, app.getResourceUsage().getVirtualCores());
   }
 
   @Test

@@ -355,11 +355,11 @@ public abstract class QueuePlacementRule {
   protected String cleanName(String name) {
     name = name.trim();
     if (name.contains(".")) {
-      String converted = name.replaceAll("\\.", "_dot_");
-      LOG.warn("Name " + name + " is converted to " + converted
-          + " when it is used as a queue name.");
-      return converted;
-    } else {
+//      String converted = name.replaceAll("\\.", "_dot_");
+//      LOG.warn("Name " + name + " is converted to " + converted
+//          + " when it is used as a queue name.");
+//      return converted;
+//    } else {
       return name;
     }
   }

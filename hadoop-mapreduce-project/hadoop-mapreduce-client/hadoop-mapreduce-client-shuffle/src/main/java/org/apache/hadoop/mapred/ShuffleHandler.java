@@ -649,7 +649,7 @@ public class ShuffleHandler extends AuxiliaryService {
       if (sslFactory != null) {
         pipeline.addLast("ssl", new SslHandler(sslFactory.createSSLEngine()));
       }
-      pipeline.addLast("decoder", new HttpRequestDecoder());
+      pipeline.addLast("decoder", new HttpRequestDecoder(65536, 8096, 8096));
       pipeline.addLast("aggregator", new HttpChunkAggregator(1 << 16));
       pipeline.addLast("encoder", new HttpResponseEncoder());
       pipeline.addLast("chunking", new ChunkedWriteHandler());

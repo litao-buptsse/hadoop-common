@@ -158,5 +158,11 @@ public class PipeReducer extends PipeMapRed implements Reducer {
   OutputReader createOutputReader() throws IOException {
     return super.createOutputReader(reduceOutputReaderClass_);
   }
+  
+  @Override
+  public void mapRedFinished() { 
+    super.mapRedFinished();
+    uploadFile("streaming.reducer.upload.when.complete.local", "streaming.reducer.upload.when.complete.hdfs", "r");
+  }
 
 }

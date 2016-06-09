@@ -1057,9 +1057,21 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
             TaskAttemptCompletionEventStatus.FAILED);
         // we don't need a new event if we already have a spare
         task.inProgressAttempts.remove(taskAttemptId);
-        if (task.inProgressAttempts.size() == 0
-            && task.successfulAttempt == null) {
-          task.addAndScheduleAttempt(Avataar.VIRGIN);
+        if (task.successfulAttempt == null) {
+          boolean shouldAddNewAttempt = true;
+          if (task.inProgressAttempts.size() > 0) {
+            // if not all of the inProgressAttempts are hanging for resource
+            for (TaskAttemptId attemptId : task.inProgressAttempts) {
+              if (((TaskAttemptImpl) task.getAttempt(attemptId))
+                  .isContainerAssigned()) {
+                shouldAddNewAttempt = false;
+                break;
+              }
+            }
+          }
+          if (shouldAddNewAttempt) {
+            task.addAndScheduleAttempt(Avataar.VIRGIN);
+          }
         }
       } else {
         task.handleTaskAttemptCompletion(

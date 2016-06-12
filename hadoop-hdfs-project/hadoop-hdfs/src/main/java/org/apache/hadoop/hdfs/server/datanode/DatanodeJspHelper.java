@@ -28,6 +28,10 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 
+import java.util.Set;
+import java.util.Iterator;
+import java.nio.charset.Charset;
+
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -411,7 +415,7 @@ public class DatanodeJspHelper {
       out.print("Invalid input (filename absent)");
       return;
     }
-    
+    final String blockIdStr = req.getParameter("blockId");
     final Long blockId = JspHelper.validateLong(req.getParameter("blockId"));
     if (blockId == null) {
       out.print("Invalid input (blockId absent)");
@@ -444,6 +448,7 @@ public class DatanodeJspHelper {
       }
     }
 
+    final String blockGenStamp = req.getParameter("genstamp");
     final Long genStamp = JspHelper.validateLong(req.getParameter("genstamp"));
     if (genStamp == null) {
       out.print("Invalid input (genstamp absent)");
@@ -504,6 +509,30 @@ public class DatanodeJspHelper {
     if (prevUrl != null) {
       out.print("<a href=\"" + prevUrl + "\">View Prev chunk</a>&nbsp;&nbsp;");
     }
+    String charSet = req.getParameter("charSet");
+    String delegationStr = req.getParameter("delegation");
+    if (charSet == null) {
+      charSet = "GBK";
+    }
+
+    out.print("<hr>");
+    StringBuilder html = new StringBuilder();
+
+    html.append("<select id=\"sel\" " +
+            "onchange=\"window.location = '/browseBlock.jsp?blockId=" + blockIdStr +
+            "&blockSize=" + blockSizeStr + "&genstamp=" + blockGenStamp + "&filename=" + filename +
+            "&datanodePort=" + datanodePortStr + "&namenodeInfoPort=" + namenodeInfoPortStr +
+            "&" + JspHelper.NAMENODE_ADDRESS + "=" + nnAddr +
+            "&delegation=" + delegationStr + "&charSet=<CHOICE>" +
+            "'.replace('<CHOICE>', document.getElementById('sel').value);\">\n");
+    Set<String> charsetNames = Charset.availableCharsets().keySet();
+    for (Iterator it = charsetNames.iterator(); it.hasNext();) {
+      String choice = (String) it.next();
+      html.append(String.format("<option value=\"%s\"%s>%s</option>\n",
+              choice, (choice.equals(charSet) ? " selected" : ""), choice));
+    }
+    html.append("</select>\n");
+    out.print(html.toString());
 
     out.print("<hr>");
     out.print("<textarea cols=\"100\" rows=\"25\" wrap=\"virtual\" style=\"width:100%\" READONLY>");
@@ -511,7 +540,7 @@ public class DatanodeJspHelper {
       JspHelper.streamBlockInAscii(new InetSocketAddress(req.getServerName(),
           datanodePort), bpid, blockId, blockToken, genStamp, blockSize,
           startOffset, chunkSizeToView, out, conf, dfs.getConf(),
-          dfs, getSaslDataTransferClient(req));
+          dfs, getSaslDataTransferClient(req), charSet);
     } catch (Exception e) {
       out.print(e);
     }
@@ -670,7 +699,7 @@ public class DatanodeJspHelper {
     out.print("<textarea cols=\"100\" rows=\"25\" wrap=\"virtual\" style=\"width:100%\" READONLY>");
     JspHelper.streamBlockInAscii(addr, poolId, blockId, accessToken, genStamp,
         blockSize, startOffset, chunkSizeToView, out, conf, dfs.getConf(),
-        dfs, getSaslDataTransferClient(req));
+        dfs, getSaslDataTransferClient(req), null);
     out.print("</textarea>");
     dfs.close();
   }

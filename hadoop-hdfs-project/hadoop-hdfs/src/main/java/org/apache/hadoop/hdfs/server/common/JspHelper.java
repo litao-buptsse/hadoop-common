@@ -215,7 +215,7 @@ public class JspHelper {
       long blockId, final Token<BlockTokenIdentifier> blockToken, long genStamp,
       long blockSize, long offsetIntoBlock, long chunkSizeToView,
       JspWriter out, final Configuration conf, DFSClient.Conf dfsConf,
-      final DFSClient dfs, final SaslDataTransferClient saslClient)
+      final DFSClient dfs, final SaslDataTransferClient saslClient, String charSet)
           throws IOException {
     if (chunkSizeToView == 0) return;
     int amtToRead = (int)Math.min(chunkSizeToView, blockSize - offsetIntoBlock);
@@ -278,7 +278,12 @@ public class JspHelper {
     } finally {
       blockReader.close();
     }
-    out.print(HtmlQuoting.quoteHtmlChars(new String(buf, Charsets.UTF_8)));
+    blockReader.close();
+    if (charSet != null) {
+      out.print(HtmlQuoting.quoteHtmlChars(new String(buf, charSet)));
+    } else {
+      out.print(HtmlQuoting.quoteHtmlChars(new String(buf, Charsets.UTF_8)));
+    }
   }
 
   public static void addTableHeader(JspWriter out) throws IOException {

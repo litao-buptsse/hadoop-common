@@ -61,7 +61,7 @@ public class Groups {
   
   private final GroupMappingServiceProvider impl;
 
-  private final LoadingCache<String, List<String>> cache;
+  private final LoadingCache<String, UserGroupInfo> cache;
   private final Map<String, List<String>> staticUserToGroupsMap =
       new HashMap<String, List<String>>();
   private final long cacheTimeout;
@@ -179,7 +179,7 @@ public class Groups {
     }
 
     try {
-      return cache.get(user);
+      return cache.get(user).getGroups();
     } catch (ExecutionException e) {
       throw (IOException)e.getCause();
     }
@@ -203,9 +203,44 @@ public class Groups {
   }
 
   /**
+   * Store password and grouplist for ConfigBasedGroupMapping
+   */
+  private static class UserGroupInfo {
+    final String password;
+    final List<String> groups;
+
+    public UserGroupInfo(String password, List<String> groups) {
+      this.password = password;
+      this.groups = groups;
+    }
+
+    public String getPassword() {
+      return this.password;
+    }
+
+    public List<String> getGroups() {
+      return this.groups;
+    }
+  }
+
+  public String getPassword(String user) throws IOException {
+    UserGroupInfo usrInfo = null;
+    try {
+      usrInfo = cache.get(user);
+    } catch (ExecutionException e) {
+      throw (IOException)e.getCause();
+    }
+    return usrInfo.getPassword();
+  }
+
+  public GroupMappingServiceProvider getImpl() {
+    return impl;
+  }
+
+  /**
    * Deals with loading data into the cache.
    */
-  private class GroupCacheLoader extends CacheLoader<String, List<String>> {
+  private class GroupCacheLoader extends CacheLoader<String, UserGroupInfo> {
     /**
      * This method will block if a cache entry doesn't exist, and
      * any subsequent requests for the same user will wait on this
@@ -216,7 +251,7 @@ public class Groups {
      * @throws IOException to prevent caching negative entries
      */
     @Override
-    public List<String> load(String user) throws Exception {
+    public UserGroupInfo load(String user) throws Exception {
       List<String> groups = fetchGroupList(user);
 
       if (groups.isEmpty()) {
@@ -228,7 +263,12 @@ public class Groups {
         throw noGroupsForUser(user);
       }
 
-      return groups;
+      if (impl instanceof ConfigBasedGroupMapping) {
+
+        return new UserGroupInfo(((ConfigBasedGroupMapping) impl).getPassword(user), groups);
+      } else {
+        return new UserGroupInfo(null, groups);
+      }
     }
 
     /**

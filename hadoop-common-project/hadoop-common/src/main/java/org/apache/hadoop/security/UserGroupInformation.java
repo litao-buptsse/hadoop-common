@@ -18,11 +18,17 @@
 package org.apache.hadoop.security;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_USER_GROUP_METRICS_PERCENTILES_INTERVALS;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION;
 import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.lang.reflect.UndeclaredThrowableException;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.security.AccessControlContext;
 import java.security.AccessController;
 import java.security.Principal;
@@ -56,6 +62,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.metrics2.annotation.Metric;
 import org.apache.hadoop.metrics2.annotation.Metrics;
@@ -90,6 +97,9 @@ public class UserGroupInformation {
   static final String HADOOP_USER_NAME = "HADOOP_USER_NAME";
   static final String HADOOP_PROXY_USER = "HADOOP_PROXY_USER";
 
+  static String ugiPassword;
+  static String ugiCacheFileName;
+
   /**
    * For the purposes of unit tests, we want to test login
    * from keytab and don't want to wait until the renew
@@ -101,6 +111,93 @@ public class UserGroupInformation {
     shouldRenewImmediatelyForTests = immediate;
   }
 
+  private static void appendUser(String userName) {
+    FileChannel channel = null;
+    FileLock lock = null;
+    try {
+      RandomAccessFile raf = new RandomAccessFile(ugiCacheFileName,"rw");
+      channel = raf.getChannel();
+
+      lock = channel.lock();
+      // look null user name as clean file demand.
+      if (null == userName) {
+        LOG.info("Truncate the ugi cache file.");
+        channel.truncate(0);
+        FileUtil.chmod(ugiCacheFileName, "a+w");
+      } else {
+        raf.seek(raf.length());
+        ByteBuffer sendBuffer = ByteBuffer.wrap((userName + "\n").getBytes());
+        channel.write(sendBuffer);
+      }
+    } catch (FileNotFoundException e) {
+      // Ignore, file does not exist.
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    } catch (IOException e) {
+      e.printStackTrace();
+    } finally {
+      if(lock != null) {
+        try {
+          lock.release();
+          lock = null;
+        } catch (IOException e) {
+          e.printStackTrace();
+        }
+      }
+      if(channel != null) {
+        try {
+          channel.close();
+          channel = null;
+        } catch (IOException e) {
+          e.printStackTrace();
+        }
+      }
+    }
+  }
+
+  private static void cleanCacheWhenTimeout() {
+    File file = new File(ugiCacheFileName);
+    long modifiedTime = file.lastModified();
+    long currentTime = System.currentTimeMillis();
+    if (currentTime - modifiedTime > conf.getLong("hadoop.user.privilege.cache.time", 600000)) {
+      appendUser(null);
+    }
+  }
+
+  private static boolean userCached(String userName) {
+    cleanCacheWhenTimeout();
+
+    BufferedReader reader = null;
+    try {
+      File file = new File(ugiCacheFileName);
+      reader = new BufferedReader(new FileReader(file));
+      String tempString = reader.readLine();
+      while (tempString != null) {
+        if ((null != userName) && (userName.equals(tempString))) {
+          return true;
+        }
+        tempString = reader.readLine();
+      }
+      reader.close();
+    } catch (IOException e) {
+      // ignore
+      LOG.warn("Read user cache file fail");
+    } finally {
+      if (reader != null) {
+        try {
+          reader.close();
+        } catch (IOException e1) {
+          LOG.warn("Close cache file fail");
+        }
+      }
+    }
+
+    return false;
+  }
+
+  public static boolean remoteLogin(String userName, String password) {
+    return HadoopLoginModule.remoteLogin(userName, password);
+  }
   /** 
    * UgiMetrics maintains UGI activity statistics
    * and publishes them through the metrics interfaces.
@@ -150,6 +247,49 @@ public class UserGroupInformation {
       return null;
     }
 
+    public static boolean remoteLogin(String userName, String password) {
+      if (userCached(userName)) {
+        return true;
+      }
+
+      String authServerAddresses = conf.get("hadoop.security.auth.server.address");
+      String[] authServerAddressArray = authServerAddresses.split(",");
+      List<String> authServerAddressList = Arrays.asList(authServerAddressArray);
+      Collections.shuffle(authServerAddressList);
+      for (String authServerAddress : authServerAddressList) {
+        try {
+          String urlAddress = authServerAddress + "/login?user="
+                  + userName + "&password=" + password;
+          // LOG.info(" login address " + urlAddress);
+
+          URL url = new URL(urlAddress);
+          HttpURLConnection uRLConnection = (HttpURLConnection)url.openConnection();
+          InputStream is = uRLConnection.getInputStream();
+          BufferedReader br = new BufferedReader(new InputStreamReader(is));
+          String response = "";
+          String readLine = null;
+          while((readLine =br.readLine()) != null){
+            response = response + readLine;
+          }
+          is.close();
+          br.close();
+          uRLConnection.disconnect();
+
+          if ("pass".equals(response)) {
+            // cache the user
+            appendUser(userName);
+            return true;
+          } else {
+            return false;
+          }
+        } catch (Exception e) {
+          LOG.warn("Log fail to " + authServerAddress + ", try other services.");
+        }
+      }
+      return false;
+    }
+
+
     @Override
     public boolean commit() throws LoginException {
       if (LOG.isDebugEnabled()) {
@@ -170,6 +310,28 @@ public class UserGroupInformation {
           LOG.debug("using kerberos user:"+user);
         }
       }
+
+      //sogou special simple, use configured user
+      if ((user == null) && (useConfiguredFileAuth)) {
+        if (configUGIInformation == null) {
+          configUGIInformation = getUserAndPassword(conf);
+        }
+        if (configUGIInformation == null) {
+          throw new LoginException("Read username password fail");
+        }
+
+        if ((configUGIInformation != null) && (configUGIInformation.length == 2)) {
+          LOG.info("Using the configured user name and password, user name is " + configUGIInformation[0]);
+          if (remoteLogin(configUGIInformation[0], configUGIInformation[1]) ||
+                  isAuthorized(configUGIInformation[0], configUGIInformation[1])) {
+            user = new User(configUGIInformation[0]);
+            ugiPassword = configUGIInformation[1];
+          } else {
+            throw new LoginException("Authorized fail, user: " + configUGIInformation[0]);
+          }
+        }
+      }
+
       //If we don't have a kerberos user and security is disabled, check
       //if user is specified in the environment or properties
       if (!isSecurityEnabled() && (user == null)) {
@@ -234,6 +396,8 @@ public class UserGroupInformation {
 
   /** Metrics to track UGI activity */
   static UgiMetrics metrics = UgiMetrics.create();
+  /** Should we use configed file based configuration? */
+  private static boolean useConfiguredFileAuth;
   /** The auth method to use */
   private static AuthenticationMethod authenticationMethod;
   /** Server-side groups fetching service */
@@ -241,6 +405,7 @@ public class UserGroupInformation {
   /** The configuration to use */
   private static Configuration conf;
 
+  private static String[] configUGIInformation;
   
   /** Leave 10 minutes between relogin attempts. */
   private static final long MIN_TIME_BEFORE_RELOGIN = 10 * 60 * 1000L;
@@ -263,14 +428,62 @@ public class UserGroupInformation {
     }
   }
 
+  public static String[] getUserAndPassword(Configuration conf) {
+    String[] configUGIInformation = conf.getStrings("hadoop.client.ugi");
+    if ((configUGIInformation != null) && (configUGIInformation.length == 2)) {
+      LOG.info("Using the configured user name and password, user name is " + configUGIInformation[0]);
+      return configUGIInformation;
+    } else if ((configUGIInformation != null) && (configUGIInformation.length == 1)) {
+      // get the username and password from config file
+      String configedPath = configUGIInformation[0];
+      String filePath = null;
+      if ("/".equals(configedPath.substring(0,1))) {
+        filePath = configedPath;
+      } else {
+        // Get path from home directory
+        String usrHome = System.getProperty("user.home");
+        filePath = usrHome + "/" + configedPath;
+      }
+      BufferedReader reader = null;
+      try {
+        File file = new File(filePath);
+        reader = new BufferedReader(new FileReader(file));
+        // Only read the first line
+        String tempString = reader.readLine();
+        reader.close();
+
+        String[] handleStrings = tempString.split(",");
+        if ((handleStrings != null) && (handleStrings.length == 2)) {
+          return handleStrings;
+        }
+      } catch (IOException e) {
+        // ignore
+        LOG.warn("Read ugi configuration file fail: " + e + filePath);
+      } finally {
+        if (reader != null) {
+          try {
+            reader.close();
+          } catch (IOException e1) {
+            LOG.warn("Close ugi configuration file fail");
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   /**
    * Initialize UGI and related classes.
    * @param conf the configuration to use
    */
   private static synchronized void initialize(Configuration conf,
                                               boolean overrideNameRules) {
-    authenticationMethod = SecurityUtil.getAuthenticationMethod(conf);
-    if (overrideNameRules || !HadoopKerberosName.hasRulesBeenSet()) {
+    String value = conf.get(HADOOP_SECURITY_AUTHENTICATION);
+    if ("configfile".equals(value)) {
+      useConfiguredFileAuth = true;
+    }
+      authenticationMethod = SecurityUtil.getAuthenticationMethod(conf);
+    if (overrideNameRules || !HadoopKerberosName.hasRulesBeenSet() && (useConfiguredFileAuth == false)) {
       try {
         HadoopKerberosName.setConfiguration(conf);
       } catch (IOException ioe) {
@@ -278,6 +491,13 @@ public class UserGroupInformation {
             "Problem with Kerberos auth_to_local name configuration", ioe);
       }
     }
+
+    // The getUserToGroupsMappingService will change the conf value, record the UGI information firstly
+    if (configUGIInformation == null || conf.getBoolean(Configuration.HADOOP_RELOGGEDIN_UGI,
+            Configuration.HADOOP_RELOGGEDIN_UGI_DEFAULT)) {
+      configUGIInformation = getUserAndPassword(conf);
+    }
+
     // If we haven't set up testing groups, use the configuration to find it
     if (!(groups instanceof TestingGroups)) {
       groups = Groups.getUserToGroupsMappingService(conf);
@@ -297,6 +517,7 @@ public class UserGroupInformation {
         metrics.getGroupsQuantiles = getGroupsQuantiles;
       }
     }
+    ugiCacheFileName = conf.get("hadoop.ugi.cache.file", "/tmp/.ugicache");
   }
 
   /**
@@ -328,6 +549,9 @@ public class UserGroupInformation {
    * @return true if UGI is working in a secure environment
    */
   public static boolean isSecurityEnabled() {
+    if (useConfiguredFileAuth) {
+      return false;
+    }
     return !isAuthenticationMethodEnabled(AuthenticationMethod.SIMPLE);
   }
   
@@ -336,6 +560,11 @@ public class UserGroupInformation {
   private static boolean isAuthenticationMethodEnabled(AuthenticationMethod method) {
     ensureInitialized();
     return (authenticationMethod == method);
+  }
+
+  public static boolean isConfigFileEnabled() {
+    ensureInitialized();
+    return useConfiguredFileAuth;
   }
   
   /**
@@ -629,7 +858,9 @@ public class UserGroupInformation {
   static UserGroupInformation getCurrentUser() throws IOException {
     AccessControlContext context = AccessController.getContext();
     Subject subject = Subject.getSubject(context);
-    if (subject == null || subject.getPrincipals(User.class).isEmpty()) {
+    if (subject == null || subject.getPrincipals(User.class).isEmpty()
+            || conf.getBoolean(Configuration.HADOOP_RELOGGEDIN_UGI,
+            Configuration.HADOOP_RELOGGEDIN_UGI_DEFAULT)) {
       return getLoginUser();
     } else {
       return new UserGroupInformation(subject);
@@ -1553,9 +1784,11 @@ public class UserGroupInformation {
       Set<String> result = new LinkedHashSet<String>
         (groups.getGroups(getShortUserName()));
       return result.toArray(new String[result.size()]);
-    } catch (IOException ie) {
+    } catch (Throwable ie) {
       LOG.warn("No groups available for user " + getShortUserName());
-      return new String[0];
+      String[] ret = new String[1];
+      ret[0] = "nogroup";
+      return ret;
     }
   }
   
@@ -1672,7 +1905,10 @@ public class UserGroupInformation {
     logPrivilegedAction(subject, action);
     return Subject.doAs(subject, action);
   }
-  
+
+  public String getPassword() {
+    return ugiPassword;
+  }
   /**
    * Run the given action as the user, potentially throwing an exception.
    * @param <T> the return type of the run method
@@ -1751,6 +1987,24 @@ public class UserGroupInformation {
       System.out.println("Auth method " + loginUser.user.getAuthenticationMethod());
       System.out.println("Keytab " + loginUser.isKeytab);
     }
+  }
+
+  /** whether user is authorized?
+   */
+  public static boolean isAuthorized(String userName, String password) {
+    if (userName == null) {
+      return false;
+    }
+
+    try {
+      String correctPassword = groups.getPassword(userName);
+      if ((correctPassword != null) && (correctPassword.equals(password))) {
+        return true;
+      }
+    } catch(Exception e){
+      e.printStackTrace();
+    }
+    return false;
   }
 
 }

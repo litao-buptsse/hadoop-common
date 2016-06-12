@@ -135,7 +135,6 @@ class BlockPoolSlice {
     }
     // Use cached value initially if available. Or the following call will
     // block until the initial du command completes.
-    this.dfsUsage = new DU(bpDir, conf, loadDfsUsed());
     if (conf.getBoolean("hdfs.use.df.check.usage", false)) {
       this.dfsUsage = new DFForUsage(bpDir, conf, loadDfsUsed());
     } else {

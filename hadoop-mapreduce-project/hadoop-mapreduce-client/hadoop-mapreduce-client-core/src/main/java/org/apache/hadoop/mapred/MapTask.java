@@ -725,18 +725,17 @@ public class MapTask extends Task {
             public int getPartition(K key, V value, int numPartitions) {
                return 0;
             }
-          }
-        };
-      } else {
-        partitioner = new org.apache.hadoop.mapreduce.Partitioner<K,V>() {
-          @Override
-          public int getPartition(K key, V value, int numPartitions) {
-            return partitions - 1;
-          }
-        };
-      }
+          };
+        } else {
+          partitioner = new org.apache.hadoop.mapreduce.Partitioner<K,V>() {
+            @Override
+            public int getPartition(K key, V value, int numPartitions) {
+              return partitions - 1;
+            }  
+          };
+        }
+      }  
     }
-  }
     
 
     @Override

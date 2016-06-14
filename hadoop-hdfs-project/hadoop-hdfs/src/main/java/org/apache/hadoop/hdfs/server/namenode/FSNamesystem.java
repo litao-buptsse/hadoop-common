@@ -1159,6 +1159,8 @@ public class FSNamesystem implements Namesystem, FSClusterStats,
         getFSImage().editLog.openForWrite();
       }
 
+      // Initialize the quota count
+      updateCountForQuota();
       // Enable quota checks.
       dir.enableQuotaChecks();
       if (haEnabled) {
@@ -1186,6 +1188,10 @@ public class FSNamesystem implements Namesystem, FSClusterStats,
       checkSafeMode();
       writeUnlock();
     }
+  }
+
+  void updateCountForQuota() {
+      FSImage.updateCountForQuota(dir.rootDir);
   }
 
   /**

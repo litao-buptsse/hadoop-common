@@ -36,6 +36,7 @@ import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 
+
 @SuppressWarnings("deprecation")
 public class MapReduceChildJVM {
 
@@ -135,7 +136,8 @@ public class MapReduceChildJVM {
     TaskAttemptID attemptID = task.getTaskID();
     JobConf conf = task.conf;
 
-    Vector<String> vargs = new Vector<String>(8);
+    Vector<String> vargs = new Vector<String>(10);
+    vargs.add("(");
 
     vargs.add(MRApps.crossPlatformifyMREnv(task.conf, Environment.JAVA_HOME)
         + "/bin/java");
@@ -203,8 +205,11 @@ public class MapReduceChildJVM {
 
     // Finally add the jvmID
     vargs.add(String.valueOf(jvmID.getId()));
-    vargs.add("1>" + getTaskLogFile(TaskLog.LogName.STDOUT));
-    vargs.add("2>" + getTaskLogFile(TaskLog.LogName.STDERR));
+    vargs.add(" < /dev/null  | rotatelogs -t " + getTaskLogFile(TaskLog.LogName.STDOUT) + " "
+        + logSize + "B ;exit $PIPESTATUS ) 2>&1 |  rotatelogs -t " + getTaskLogFile(TaskLog.LogName.STDERR)
+        + " " + logSize + "B;exit $PIPESTATUS");
+    //vargs.add("1>" + getTaskLogFile(TaskLog.LogName.STDOUT));
+    //vargs.add("2>" + getTaskLogFile(TaskLog.LogName.STDERR));
 
     // Final commmand
     StringBuilder mergedCommand = new StringBuilder();

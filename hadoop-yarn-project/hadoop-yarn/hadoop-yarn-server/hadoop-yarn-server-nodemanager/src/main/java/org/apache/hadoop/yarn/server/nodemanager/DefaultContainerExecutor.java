@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.nodemanager;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
@@ -38,6 +39,7 @@ import java.util.Map;
 import org.apache.commons.lang.math.RandomUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
@@ -57,7 +59,6 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.Conta
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 
-import com.google.common.annotations.VisibleForTesting;
 
 public class DefaultContainerExecutor extends ContainerExecutor {
 
@@ -65,6 +66,8 @@ public class DefaultContainerExecutor extends ContainerExecutor {
       .getLog(DefaultContainerExecutor.class);
 
   private static final int WIN_MAX_PATH = 260;
+
+  private String cgexecGParamValue;
 
   protected final FileContext lfs;
 
@@ -86,6 +89,16 @@ public class DefaultContainerExecutor extends ContainerExecutor {
   
   protected void setScriptExecutable(Path script, String owner) throws IOException {
     lfs.setPermission(script, ContainerExecutor.TASK_LAUNCH_SCRIPT_PERMISSION);
+  }
+
+  @Override
+  public void setConf(Configuration conf) {
+    super.setConf(conf);
+    String v = conf.getTrimmed(YarnConfiguration.NM_DEFAULT_CONTAINER_EXECUTOR_CGEXEC_G_PARAM_VALUE);
+    if (v != null && !v.isEmpty()){
+      cgexecGParamValue = v;
+      LOG.debug(String.format("Init DefaultContainerExecutor with cgexecGParamValue = '%s' ", v));
+    }
   }
 
   @Override
@@ -354,6 +367,11 @@ public class DefaultContainerExecutor extends ContainerExecutor {
         pout.println("echo $$ > " + pidFile.toString() + ".tmp");
         pout.println("/bin/mv -f " + pidFile.toString() + ".tmp " + pidFile);
         String exec = Shell.isSetsidAvailable? "exec setsid" : "exec";
+        if (cgexecGParamValue != null) {
+          if (Shell.isSetCgroupSupported(cgexecGParamValue)) {
+            exec = exec + " cgexec -g " + cgexecGParamValue;
+          }
+        }
         pout.println(exec + " /bin/bash \"" +
             launchDst.toUri().getPath().toString() + "\"");
       } finally {

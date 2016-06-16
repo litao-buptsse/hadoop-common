@@ -269,7 +269,7 @@ public class ContainerLaunch implements Callable<Integer> {
           localResources, nmPrivateClasspathJarDir);
         
         // Write out the environment
-        exec.writeLaunchEnv(containerScriptOutStream, environment, localResources,
+        exec.writeLaunchEnv(containerID.getId(), containerScriptOutStream, environment, localResources,
             launchContext.getCommands());
         
         // /////////// End of writing out container-script
@@ -548,9 +548,12 @@ public class ContainerLaunch implements Callable<Integer> {
     protected abstract void link(Path src, Path dst) throws IOException;
 
     protected abstract void mkdir(Path path) throws IOException;
+
+    public abstract void setContainerId(int id);
   }
 
   private static final class UnixShellScriptBuilder extends ShellScriptBuilder {
+    private int container_id;
 
     private void errorCheck() {
       line("hadoop_shell_errorcode=$?");
@@ -566,8 +569,17 @@ public class ContainerLaunch implements Callable<Integer> {
     }
 
     @Override
+    public void setContainerId(int id) {
+      container_id = id;
+    }
+
+    @Override
     public void command(List<String> command) {
-      line("exec /bin/bash -c \"", StringUtils.join(" ", command), "\"");
+      if (container_id == 1) { // for aapplication master
+        line("exec /bin/bash -c \"", StringUtils.join(" ", command), "\"");
+      } else {
+        line(" ", StringUtils.join(" ", command), " ");
+      }
       errorCheck();
     }
 
@@ -606,6 +618,10 @@ public class ContainerLaunch implements Callable<Integer> {
       line();
     }
 
+    @Override
+    public void setContainerId(int id) {
+      //for windows nothing to do
+    }
     @Override
     public void command(List<String> command) throws IOException {
       lineWithLenCheck("@call ", StringUtils.join(" ", command));

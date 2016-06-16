@@ -280,8 +280,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
   }
 
   @Override
-  public void writeLaunchEnv(OutputStream out, Map<String, String> environment, Map<Path, List<String>> resources, List<String> command) throws IOException {
+  public void writeLaunchEnv(int id, OutputStream out, Map<String, String> environment, Map<Path, List<String>> resources, List<String> command) throws IOException {
     ContainerLaunch.ShellScriptBuilder sb = ContainerLaunch.ShellScriptBuilder.create();
+    sb.setContainerId(id);
 
     Set<String> exclusionSet = new HashSet<String>();
     exclusionSet.add(YarnConfiguration.NM_DOCKER_CONTAINER_EXECUTOR_IMAGE_NAME);

@@ -18,11 +18,6 @@
 
 package org.apache.hadoop.yarn.conf;
 
-import java.net.InetSocketAddress;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
@@ -34,6 +29,11 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
+
+import java.net.InetSocketAddress;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 @Public
 @Evolving
@@ -581,6 +581,8 @@ public class YarnConfiguration extends Configuration {
   /** Prefix for all node manager configs.*/
   public static final String NM_PREFIX = "yarn.nodemanager.";
 
+  public static final String DEFAULT_NM_USER_LOG_RETAIN_SIZE = NM_PREFIX + "user.log.retain.size";
+
   /** Environment variables that will be sent to containers.*/
   public static final String NM_ADMIN_USER_ENV = NM_PREFIX + "admin-env";
   public static final String DEFAULT_NM_ADMIN_USER_ENV = "MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX";
@@ -1004,6 +1006,10 @@ public class YarnConfiguration extends Configuration {
   public static final String NM_HEALTH_CHECK_INTERVAL_MS = 
     NM_PREFIX + "health-checker.interval-ms";
   public static final long DEFAULT_NM_HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+
+  /** The cgexec -g param value to use DefaultContainerExecutor with cgroup */
+  public static final String NM_DEFAULT_CONTAINER_EXECUTOR_CGEXEC_G_PARAM_VALUE =
+      NM_PREFIX + "default-container-executor.cgexec.g.param.value";
 
   /** Health check script time out period.*/  
   public static final String NM_HEALTH_CHECK_SCRIPT_TIMEOUT_MS = 

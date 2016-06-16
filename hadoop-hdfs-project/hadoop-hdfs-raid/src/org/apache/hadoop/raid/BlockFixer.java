@@ -993,7 +993,7 @@ public abstract class BlockFixer extends Configured implements Runnable {
 							        DFSConfigKeys.DFS_DATANODE_READAHEAD_BYTES_DEFAULT));
 		String clientname = getDFS(new Path("/")).getClient().getClientName();
 		new Sender(out).writeBlock(block.getBlock(), StorageType.DEFAULT, accessToken, clientname, targets, new StorageType[0], srcNode,
-				            BlockConstructionStage.TRANSFER_FINALIZED, 0, 0, 0, 0, blockSender.getChecksum(), cachingStrategy);
+				            BlockConstructionStage.TRANSFER_FINALIZED, 0, 0, 0, 0, blockSender.getChecksum(), cachingStrategy, false, false, null);
 
 		LOG.info("Sending block " + block.getBlock() + " to " + datanode.getXferAddr());
 		

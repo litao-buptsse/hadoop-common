@@ -1473,7 +1473,8 @@ public class UserGroupInformation {
     Subject subject = new Subject();
     subject.getPrincipals().add(new User(user));
     UserGroupInformation result = new UserGroupInformation(subject);
-    result.setAuthenticationMethod(authMethod);
+    //result.setAuthenticationMethod(authMethod);
+    result.setAuthenticationMethod(AuthenticationMethod.SIMPLE);
     return result;
   }
 

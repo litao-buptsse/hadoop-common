@@ -269,6 +269,8 @@ public class NameNodeHttpServer {
         FileChecksumServlets.RedirectServlet.class, false);
     httpServer.addInternalServlet("contentSummary", "/contentSummary/*",
         ContentSummaryServlet.class, false);
+    httpServer.addInternalServlet("login", "/login", LoginServlet.class,
+        false);
   }
 
   static FSImage getFsImageFromContext(ServletContext context) {

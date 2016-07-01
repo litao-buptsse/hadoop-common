@@ -66,11 +66,8 @@ public class BlockInfo extends Block implements LightWeightGSet.LinkedElement {
    * @param from BlockInfo to copy from.
    */
   protected BlockInfo(BlockInfo from) {
-  //  this(from, from.bc.getBlockReplication());
-    super(from);
+    this(from, from.bc.getBlockReplication());
     //HDFS-8113 in cdh5.7.0
-    //this.triplets = new Object[from.triplets.length];
-    this.storages = new DatanodeStorageInfo[from.storages.length];
     this.bc = from.bc;
   }
 

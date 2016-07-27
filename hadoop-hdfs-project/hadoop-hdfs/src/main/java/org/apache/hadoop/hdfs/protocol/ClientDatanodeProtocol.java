@@ -64,6 +64,8 @@ public interface ClientDatanodeProtocol {
    */
   public static final long versionID = 9L;
 
+  void copyBlock(ExtendedBlock src, ExtendedBlock dst, DatanodeInfo dstDn) throws IOException;
+
   /** Return the visible length of a replica. */
   long getReplicaVisibleLength(ExtendedBlock b) throws IOException;
   

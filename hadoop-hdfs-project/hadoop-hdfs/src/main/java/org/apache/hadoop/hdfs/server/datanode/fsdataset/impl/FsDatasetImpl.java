@@ -2991,5 +2991,25 @@ class FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl> {
       s.add(blockId);
     }
   }
+
+
+  @Override
+  public void hardLinkOneBlock(ExtendedBlock srcBlock, ExtendedBlock dstBlock) throws IOException {
+    BlockLocalPathInfo blpi = getBlockLocalPathInfo(srcBlock);
+    File src = new File(blpi.getBlockPath());
+    File srcMeta = new File(blpi.getMetaPath());
+
+    if (getVolume(srcBlock).getAvailable() < dstBlock.getNumBytes()) {
+      throw new DiskOutOfSpaceException("Insufficient space for hardlink block " + srcBlock);
+    }
+
+    BlockPoolSlice dstBPS = getVolume(srcBlock).getBlockPoolSlice(dstBlock.getBlockPoolId());
+
+    File dstBlockFile = dstBPS.hardLinkOneBlock(src, srcMeta, dstBlock.getLocalBlock());
+    dstBlockFile = dstBPS.addBlock(dstBlock.getLocalBlock(), dstBlockFile);
+
+    ReplicaInfo replicaInfo = new FinalizedReplica(dstBlock.getLocalBlock(), getVolume(srcBlock), dstBlockFile.getParentFile());
+    volumeMap.add(dstBlock.getBlockPoolId(), replicaInfo);
+  }
 }
 

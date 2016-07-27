@@ -247,4 +247,32 @@ public class DU extends Shell {
 
     System.out.println(new DU(new File(path), new Configuration()).toString());
   }
+
+  protected Runnable getNewRefreshThreadInstance() {
+    return new DURefreshThread();
+  }
+
+  protected void setUsed(long used) {
+    this.used.set(used);
+  }
+
+  public boolean isShouldRun() {
+    return shouldRun;
+  }
+
+  public Thread getRefreshUsed() {
+    return refreshUsed;
+  }
+
+  public IOException getDuException() {
+    return duException;
+  }
+
+  public long getRefreshInterval() {
+    return refreshInterval;
+  }
+
+  public void setDuException(IOException duException) {
+    this.duException = duException;
+  }
 }

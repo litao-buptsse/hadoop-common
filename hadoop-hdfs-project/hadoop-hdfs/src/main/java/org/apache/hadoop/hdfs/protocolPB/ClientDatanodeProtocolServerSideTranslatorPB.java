@@ -81,12 +81,27 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
       StartReconfigurationResponseProto.newBuilder().build();
   private final static TriggerBlockReportResponseProto TRIGGER_BLOCK_REPORT_RESP =
       TriggerBlockReportResponseProto.newBuilder().build();
+  private final static CopyBlockResponseProto COPY_BLOCK_RESP =
+      CopyBlockResponseProto.newBuilder().build();
   
   private final ClientDatanodeProtocol impl;
 
   public ClientDatanodeProtocolServerSideTranslatorPB(
       ClientDatanodeProtocol impl) {
     this.impl = impl;
+  }
+
+  @Override
+  public CopyBlockResponseProto copyBlock(RpcController controller,
+      CopyBlockRequestProto request) throws ServiceException {
+    try {
+      impl.copyBlock(PBHelper.convert(request.getSrcBlock()),
+          PBHelper.convert(request.getDstBlock()),
+          PBHelper.convert(request.getDstDn()));
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return COPY_BLOCK_RESP;
   }
 
   @Override

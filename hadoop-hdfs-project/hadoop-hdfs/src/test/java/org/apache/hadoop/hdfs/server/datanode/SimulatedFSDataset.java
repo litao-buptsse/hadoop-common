@@ -1177,5 +1177,10 @@ public class SimulatedFSDataset implements FsDatasetSpi<FsVolumeSpi> {
       FileDescriptor fd, long offset, long nbytes, int flags) {
     throw new UnsupportedOperationException();
   }
+
+  @Override
+  public void hardLinkOneBlock(ExtendedBlock srcBlock, ExtendedBlock dstBlock) {
+    throw new UnsupportedOperationException();
+  }
 }
 

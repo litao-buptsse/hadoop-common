@@ -17,37 +17,23 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
-import java.io.BufferedInputStream;
-import java.io.DataInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.RandomAccessFile;
-import java.util.Scanner;
-
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.DU;
 import org.apache.hadoop.fs.DFForUsage;
+import org.apache.hadoop.fs.DU;
 import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.fs.HardLink;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.server.datanode.BlockMetadataHeader;
-import org.apache.hadoop.hdfs.server.datanode.DataStorage;
-import org.apache.hadoop.hdfs.server.datanode.DatanodeUtil;
-import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
-import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
-import org.apache.hadoop.hdfs.server.datanode.ReplicaBeingWritten;
-import org.apache.hadoop.hdfs.server.datanode.ReplicaWaitingToBeRecovered;
+import org.apache.hadoop.hdfs.server.datanode.*;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.Time;
+
+import java.io.*;
+import java.util.Scanner;
 
 /**
  * A block pool slice represents a portion of a block pool stored on a volume.  
@@ -465,5 +451,16 @@ class BlockPoolSlice {
     saveDfsUsed();
     dfsUsedSaved = true;
     dfsUsage.shutdown();
+  }
+
+  public File hardLinkOneBlock(File src, File srcMeta, Block dstBlock) throws IOException {
+    File dstMeta = new File(tmpDir, DatanodeUtil.getMetaName(dstBlock.getBlockName(),
+        dstBlock.getGenerationStamp()));
+    HardLink.createHardLink(srcMeta, dstMeta);
+
+    File dstBlockFile = new File(tmpDir, dstBlock.getBlockName());
+    HardLink.createHardLink(src, dstBlockFile);
+
+    return dstBlockFile;
   }
 }

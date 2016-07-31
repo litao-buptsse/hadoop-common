@@ -20,7 +20,6 @@ package org.apache.hadoop.fs;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.util.Shell;
 
 import java.io.BufferedReader;
@@ -246,5 +245,33 @@ public class DU extends Shell {
     }
 
     System.out.println(new DU(new File(path), new Configuration()).toString());
+  }
+
+  protected Runnable getNewRefreshThreadInstance() {
+    return new DURefreshThread();
+  }
+
+  protected void setUsed(long used) {
+    this.used.set(used);
+  }
+
+  public boolean isShouldRun() {
+    return shouldRun;
+  }
+
+  public Thread getRefreshUsed() {
+    return refreshUsed;
+  }
+
+  public IOException getDuException() {
+    return duException;
+  }
+
+  public long getRefreshInterval() {
+    return refreshInterval;
+  }
+
+  public void setDuException(IOException duException) {
+    this.duException = duException;
   }
 }

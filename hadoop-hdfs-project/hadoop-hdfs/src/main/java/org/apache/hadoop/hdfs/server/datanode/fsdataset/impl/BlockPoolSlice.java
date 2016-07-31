@@ -141,6 +141,10 @@ class BlockPoolSlice {
   long getDfsUsed() throws IOException {
     return dfsUsage.getUsed();
   }
+
+  void incDfsUsed(long value) {
+    dfsUsage.incDfsUsed(value);
+  }
   
    /**
    * Read in the cached DU value and return it if it is less than 600 seconds

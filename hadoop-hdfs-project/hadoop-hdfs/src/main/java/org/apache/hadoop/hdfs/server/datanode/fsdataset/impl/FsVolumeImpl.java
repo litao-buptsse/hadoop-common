@@ -396,7 +396,6 @@ class FsVolumeImpl implements FsVolumeSpi {
       LOG.error("ERROR when get volumn DU", e);
     }
     return blockFile;
-    return getBlockPoolSlice(bpid).addBlock(b, f);
   }
 
   Executor getCacheExecutor() {

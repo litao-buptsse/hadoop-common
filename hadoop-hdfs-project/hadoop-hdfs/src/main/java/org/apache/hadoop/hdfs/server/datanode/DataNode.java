@@ -3101,8 +3101,7 @@ public class DataNode extends ReconfigurableBase
         new Sender(out).writeBlock(dst, StorageType.DEFAULT, accessToken,
             "", new DatanodeInfo[] {target}, new StorageType[] {StorageType.DEFAULT}, srcNode,
             BlockConstructionStage.PIPELINE_SETUP_CREATE,
-            0, 0, 0, 0, blockSender.getChecksum(), cachingStrategy,
-            false, false, null);
+            0, 0, 0, 0, blockSender.getChecksum(), cachingStrategy);
 
         // send data & checksum
         blockSender.sendBlock(out, unbufOut, null);
@@ -3115,7 +3114,7 @@ public class DataNode extends ReconfigurableBase
         LOG.warn(bpReg + ":Failed to transfer " + src + " to " +
             target + " " + dst + " got ", ie);
         // check if there are any disk problem
-        checkDiskErrorAsync();
+        checkDiskError();
       } finally {
         xmitsInProgress.getAndDecrement();
         IOUtils.closeStream(blockSender);

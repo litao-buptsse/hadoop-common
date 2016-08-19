@@ -66,6 +66,7 @@ function print_usage(){
   echo "  crypto               configure HDFS encryption zones"
   echo "  storagepolicies      list/get/set block storage policies"
   echo "  fastCopy             run fastCopy"
+  echo "  fastGet              run fastGet"
   echo "  version              print the version"
   echo ""
   echo "Most commands print help when invoked w/o parameters."
@@ -230,6 +231,8 @@ elif [ "$COMMAND" = "crypto" ] ; then
   CLASS=org.apache.hadoop.hdfs.tools.CryptoAdmin
 elif [ "$COMMAND" = "fastCopy" ] ; then
   CLASS=org.apache.hadoop.hdfs.FastCopy
+elif [ "$COMMAND" = "fastGet" ] ; then
+  CLASS=org.apache.hadoop.hdfs.tools.FastGet
 elif [ "$COMMAND" = "version" ] ; then
   CLASS=org.apache.hadoop.util.VersionInfo
 elif [ "$COMMAND" = "debug" ]; then

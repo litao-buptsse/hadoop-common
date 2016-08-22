@@ -8,11 +8,12 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -23,12 +24,12 @@ import java.util.concurrent.Future;
 public class FastGet {
   private static final Log LOG = LogFactory.getLog(DFSAdmin.class);
 
-  private final static long DEFAULT_BLOCK_SIZE = 128 * 1024 * 1024;
+  private final static long DEFAULT_BLOCK_SIZE = 128;
   private final static int DEFAULT_THREAD_NUM = 10;
 
-  public static void main(String[] args) throws IOException {
+  public static void main(String[] args) {
     if (args.length < 2) {
-      LOG.error("Usage: hdfs fastGet <src> <localdst> [threadNum] [blockSize]");
+      LOG.error("Usage: hdfs fastGet <src> <localdst> [threadNum] [blockSize(MB)]");
       System.exit(1);
     }
 
@@ -44,43 +45,77 @@ public class FastGet {
     if (args.length >= 4) {
       blockSize = Long.parseLong(args[3]);
     }
+    blockSize *= 1024 * 1024;
 
-    Path srcPath = new Path(src);
-    Configuration conf = new Configuration();
-    FileSystem srcFS = srcPath.getFileSystem(conf);
-    FileStatus srcFile = srcFS.getFileStatus(srcPath);
-    FSDataInputStream input = srcFS.open(srcPath);
-    long length = srcFile.getLen();
+    FSDataInputStream input = null;
+    RandomAccessFile dstFile = null;
+    ExecutorService service = null;
 
-    RandomAccessFile dstFile = new RandomAccessFile(localdst, "rw");
+    try {
+      Path srcPath = new Path(src);
+      Configuration conf = new Configuration();
+      FileSystem srcFS = srcPath.getFileSystem(conf);
+      FileStatus srcFile = srcFS.getFileStatus(srcPath);
 
-    ExecutorService service = Executors.newFixedThreadPool(threadNum);
-    List<Future> futures = new ArrayList<Future>();
-
-    long position = 0;
-    for (; position <= length - blockSize; position += blockSize) {
-      futures.add(service.submit(new GetTask(input, dstFile, position, blockSize)));
-    }
-    if (length > position) {
-      futures.add(service.submit(new GetTask(input, dstFile, position, length - position)));
-    }
-
-    for (Future future : futures) {
-      try {
-        future.get();
-      } catch (InterruptedException e) {
-        e.printStackTrace();
-      } catch (ExecutionException e) {
-        e.printStackTrace();
+      if (srcFile.isDirectory()) {
+        LOG.error("Not support FastGet for directory");
+        System.exit(1);
       }
-    }
 
-    input.close();
-    dstFile.close();
-    service.shutdown();
+      input = srcFS.open(srcPath);
+      long length = srcFile.getLen();
+
+      File dst = new File(localdst);
+      if (dst.exists()) {
+        if (dst.isFile()) {
+          LOG.error(String.format("%s is already exist", localdst));
+          System.exit(1);
+        } else if (dst.isDirectory()) {
+          localdst = srcPath.getName();
+        }
+      }
+
+      dstFile = new RandomAccessFile(localdst, "rw");
+
+      service = Executors.newFixedThreadPool(threadNum);
+      List<Future<Void>> futures = new ArrayList<Future<Void>>();
+      long position = 0;
+
+      // submit tasks for each block
+      for (; position <= length - blockSize; position += blockSize) {
+        futures.add(service.submit(new GetTask(input, dstFile, position, blockSize)));
+      }
+      if (length > position) {
+        futures.add(service.submit(new GetTask(input, dstFile, position, length - position)));
+      }
+
+      // wait for each task complete
+      for (Future<Void> future : futures) {
+        future.get();
+      }
+    } catch (Exception e) {
+      LOG.error("Exception Occured: ", e);
+      System.exit(1);
+    } finally {
+      if (input != null) {
+        try {
+          input.close();
+        } catch (IOException e) {
+          // ignore it
+        }
+      }
+      if (dstFile != null) {
+        try {
+          dstFile.close();
+        } catch (IOException e) {
+          // ignore it
+        }
+      }
+      service.shutdown();
+    }
   }
 
-  static class GetTask implements Runnable {
+  static class GetTask implements Callable<Void> {
     private final static int BUFFER_SIZE = 256 * 1024;
 
     private FSDataInputStream input;
@@ -98,28 +133,26 @@ public class FastGet {
       buffer = new byte[BUFFER_SIZE];
     }
 
-    public void run() {
-      try {
-        int bytesRead = 0;
-        while (bytesRead >= 0 && totalBytesRead < length) {
-          int toRead = (int) Math.min(buffer.length, length - bytesRead);
-          bytesRead = input.read(offset + totalBytesRead, buffer, 0, toRead);
+    @Override
+    public Void call() throws Exception {
+      int bytesRead = 0;
+      while (bytesRead >= 0 && totalBytesRead < length) {
+        int toRead = (int) Math.min(buffer.length, length - bytesRead);
+        bytesRead = input.read(offset + totalBytesRead, buffer, 0, toRead);
 
-          if (bytesRead < 0) {
-            break;
-          }
-
-          synchronized (dst) {
-            dst.seek(offset + totalBytesRead);
-            dst.write(buffer, 0, bytesRead);
-            dst.getFD().sync();
-          }
-
-          totalBytesRead += bytesRead;
+        if (bytesRead < 0) {
+          break;
         }
-      } catch (IOException e) {
-        e.printStackTrace();
+
+        synchronized (dst) {
+          dst.seek(offset + totalBytesRead);
+          dst.write(buffer, 0, bytesRead);
+          dst.getFD().sync();
+        }
+
+        totalBytesRead += bytesRead;
       }
+      return null;
     }
   }
 }

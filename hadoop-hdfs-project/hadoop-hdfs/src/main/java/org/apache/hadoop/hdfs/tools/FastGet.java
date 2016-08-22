@@ -66,13 +66,13 @@ public class FastGet {
       long length = srcFile.getLen();
 
       File dst = new File(localdst);
-      if (dst.exists()) {
-        if (dst.isFile()) {
-          LOG.error(String.format("%s is already exist", localdst));
-          System.exit(1);
-        } else if (dst.isDirectory()) {
-          localdst = srcPath.getName();
-        }
+      if (dst.isDirectory()) {
+        localdst = srcPath.getName();
+        dst = new File(dst, localdst);
+      }
+      if (dst.isFile()) {
+        LOG.error(String.format("%s is already exist", localdst));
+        System.exit(1);
       }
 
       dstFile = new RandomAccessFile(localdst, "rw");

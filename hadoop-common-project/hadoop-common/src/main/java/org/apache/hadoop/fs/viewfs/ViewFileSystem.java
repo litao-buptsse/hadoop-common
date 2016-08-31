@@ -23,31 +23,13 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Arrays;
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.Map.Entry;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.BlockLocation;
-import org.apache.hadoop.fs.ContentSummary;
-import org.apache.hadoop.fs.CreateFlag;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileAlreadyExistsException;
-import org.apache.hadoop.fs.FileChecksum;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FsConstants;
-import org.apache.hadoop.fs.FsServerDefaults;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.UnsupportedFileSystemException;
-import org.apache.hadoop.fs.XAttrSetFlag;
+import org.apache.hadoop.fs.*;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.AclUtil;
@@ -440,9 +422,62 @@ public class ViewFileSystem extends FileSystem {
     //
     // Alternate 3 : renames ONLY within the the same mount links.
     //
-    if (resSrc.targetFileSystem !=resDst.targetFileSystem) {
-      throw new IOException("Renames across Mount points not supported");
+    if (resSrc.targetFileSystem != resDst.targetFileSystem) {
+      if(!config.getBoolean("fs.viewfs.rename-across-mount-point.enabled", false)) {
+        throw new IOException("Renames across Mount points not supported");
+      }
+
+      FastCopy fastCopy = null;
+      try {
+        if (!(resSrc.targetFileSystem instanceof ChRootedFileSystem)
+            && !(resDst.targetFileSystem instanceof ChRootedFileSystem)) {
+          throw new Exception("src or dst targetFileSystem not ChRootedFileSystem");
+        }
+        ChRootedFileSystem chrSrcFs = (ChRootedFileSystem) resSrc.targetFileSystem;
+        ChRootedFileSystem chrDstFs = (ChRootedFileSystem) resDst.targetFileSystem;
+        FileSystem rawSrcFs = chrSrcFs.getRawFileSystem();
+        FileSystem rawDstFs = chrDstFs.getRawFileSystem();
+        Path rawSrc = new Path(resSrc.resolvedPath + resSrc.remainingPath.toString());
+        Path rawDst = new Path(resDst.resolvedPath + resDst.remainingPath.toString());
+
+        if (rawDstFs.exists(rawDst) && !rawDstFs.isDirectory(rawDst)) {
+          throw new Exception(String.format("dst %s is not a directory", rawDst.toString()));
+        }
+
+        int threadPoolSize = config.getInt("dfs.fastcopy.threadpoolsize", 3);
+
+        List<String> failedSrcs = FastCopyUtil.fastCopy(config,
+            new String[]{rawSrc.toString()}, rawDst, rawSrcFs, rawDstFs, threadPoolSize);
+
+        if (failedSrcs.size() > 0) {
+          LOG.error("some fast copy failed: " + failedSrcs);
+          // TODO roll back the copyed files
+        }
+
+        Map<String, Void> failedSrcMap = new HashMap<String, Void>();
+        for(String failedSrc : failedSrcs) {
+          failedSrcMap.put(failedSrc, null);
+        }
+
+        boolean ret = true;
+        for (FileStatus f : rawSrcFs.globStatus(rawSrc)) {
+          if(!failedSrcMap.containsKey(f.getPath().toString())) {
+            if(!rawSrcFs.delete(f.getPath(), true)) {
+              LOG.error("fail to delete src: " + rawSrc);
+              ret = false;
+            }
+          }
+        }
+        return ret;
+      } catch (Exception e) {
+        throw new IOException(e);
+      } finally {
+        if (fastCopy != null) {
+          fastCopy.shutdown();
+        }
+      }
     }
+
     return resSrc.targetFileSystem.rename(resSrc.remainingPath,
         resDst.remainingPath);
   }

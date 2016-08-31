@@ -1,24 +1,19 @@
 package org.apache.hadoop.hdfs.tools;
 
-import static org.junit.Assert.assertTrue;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FastCopy;
+import org.apache.hadoop.fs.FastCopy.FastFileCopyRequest;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.*;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DFSTestUtil;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
-import org.apache.hadoop.hdfs.FastCopy;
-import org.apache.hadoop.hdfs.FastCopy.FastFileCopyRequest;
-import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.MiniDFSNNTopology;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.Assert.assertTrue;
 
 public class TestFastCopy {
   private Configuration conf = null;
@@ -70,7 +65,7 @@ public class TestFastCopy {
   @Test
   public void testFastCopy() throws Exception {
 
-    FastCopy fcp = new FastCopy(conf, 2, true);
+    FastCopy fcp = new FastCopyImpl(conf, 2, true);
 
     List<FastFileCopyRequest> requests = new ArrayList<FastFileCopyRequest>();
 

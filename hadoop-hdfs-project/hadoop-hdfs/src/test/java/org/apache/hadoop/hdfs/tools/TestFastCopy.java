@@ -1,9 +1,10 @@
 package org.apache.hadoop.hdfs.tools;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FastCopy;
+import org.apache.hadoop.fs.FastCopy.FastFileCopyRequest;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.*;
-import org.apache.hadoop.hdfs.FastCopy.FastFileCopyRequest;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -64,7 +65,7 @@ public class TestFastCopy {
   @Test
   public void testFastCopy() throws Exception {
 
-    FastCopy fcp = new FastCopy(conf, 2, true);
+    FastCopy fcp = new FastCopyImpl(conf, 2, true);
 
     List<FastFileCopyRequest> requests = new ArrayList<FastFileCopyRequest>();
 
